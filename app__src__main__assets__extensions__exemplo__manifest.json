@@ -1,0 +1,12 @@
+{
+  "name": "Exemplo",
+  "version": "1.0",
+  "content_scripts": [
+    {
+      "matches": ["*://*.wikipedia.org/*"],
+      "css": ["style.css"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}

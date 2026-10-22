@@ -1,0 +1,6 @@
+body { border-top: 6px solid #e91e63; }
+.ext-exemplo-badge {
+  position: fixed; right: 8px; bottom: 8px; z-index: 2147483647;
+  background: #e91e63; color: #fff; font: 13px sans-serif;
+  padding: 6px 10px; border-radius: 12px;
+}
