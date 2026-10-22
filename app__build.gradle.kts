@@ -14,6 +14,16 @@ android {
         versionCode = 1
         versionName = "1.0"
     }
+
+    // Chave fixa: todo build sai assinado igual, então "adb install -r" atualiza sem desinstalar.
+    signingConfigs {
+        getByName("debug") {
+            storeFile = file("debug.keystore")
+            storePassword = "android"
+            keyAlias = "androiddebugkey"
+            keyPassword = "android"
+        }
+    }
 }
 
 kotlin {
