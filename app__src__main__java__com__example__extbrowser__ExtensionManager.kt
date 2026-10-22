@@ -14,7 +14,13 @@ data class ContentScript(
     val runAt: String,
 )
 
-data class Extension(val id: String, val name: String, val dir: File, val scripts: List<ContentScript>) {
+data class Extension(
+    val id: String,
+    val name: String,
+    val dir: File,
+    val scripts: List<ContentScript>,
+    val blockRegexes: List<String> = emptyList(),
+) {
     fun allowsOrigin(scheme: String?, host: String?) =
         scripts.any { s -> s.matches.any { MatchPattern.matchesOrigin(it, scheme, host) } }
 }
@@ -23,10 +29,13 @@ class ExtensionManager(private val context: Context) {
     private val tag = "ExtManager"
     val root = File(context.filesDir, "extensions")
 
-    /** Na primeira execução, copia as extensões de assets/extensions para filesDir/extensions. */
+    /** Copia para filesDir/extensions cada extensão de assets/extensions que ainda não existe lá. */
     fun seedFromAssets() {
-        val empty = root.listFiles()?.none { it.isDirectory } ?: true
-        if (empty) copyAsset("extensions", root)
+        root.mkdirs()
+        for (name in context.assets.list("extensions") ?: emptyArray()) {
+            val dest = File(root, name)
+            if (!dest.exists()) copyAsset("extensions/$name", dest)
+        }
     }
 
     private fun copyAsset(path: String, dest: File) {
@@ -77,7 +86,9 @@ class ExtensionManager(private val context: Context) {
                 runAt = o.optString("run_at", "document_idle"),
             )
         }
-        return Extension(dir.name, m.optString("name", dir.name), dir, scripts)
+        val blocks = m.optJSONArray("block_requests").strings()
+            .map { MatchPattern.toRegex(it) ?: error("Match pattern inválido: $it") }
+        return Extension(dir.name, m.optString("name", dir.name), dir, scripts, blocks)
     }
 
     /** Origens onde a ponte e o bootstrap serão expostos. */

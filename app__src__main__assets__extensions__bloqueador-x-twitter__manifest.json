@@ -1,0 +1,11 @@
+{
+  "name": "Bloqueador do X/Twitter",
+  "version": "1.0.0",
+  "description": "Bloqueia o acesso ao X/Twitter.",
+  "block_requests": [
+    "*://x.com/*",
+    "*://*.x.com/*",
+    "*://twitter.com/*",
+    "*://*.twitter.com/*"
+  ]
+}

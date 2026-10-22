@@ -5,10 +5,13 @@ import android.graphics.Bitmap
 import android.net.Uri
 import android.os.Bundle
 import android.text.InputType
+import android.text.TextUtils
 import android.util.Log
 import android.view.ViewGroup.LayoutParams.MATCH_PARENT
 import android.view.ViewGroup.LayoutParams.WRAP_CONTENT
 import android.view.inputmethod.EditorInfo
+import android.webkit.WebResourceRequest
+import android.webkit.WebResourceResponse
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.widget.EditText
@@ -22,10 +25,17 @@ import androidx.webkit.JavaScriptReplyProxy
 import androidx.webkit.WebMessageCompat
 import androidx.webkit.WebViewCompat
 import androidx.webkit.WebViewFeature
+import java.io.ByteArrayInputStream
 
 class MainActivity : ComponentActivity() {
+    private class Blocker(val extName: String, val regex: Regex)
+
     private lateinit var webView: WebView
     private lateinit var urlBar: EditText
+
+    /** Regras de bloqueio das extensões (campo block_requests). Lidas em thread de rede. */
+    @Volatile
+    private var blockers: List<Blocker> = emptyList()
 
     @SuppressLint("SetJavaScriptEnabled")
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -62,6 +72,26 @@ class MainActivity : ComponentActivity() {
             override fun onPageStarted(view: WebView, url: String, favicon: Bitmap?) {
                 if (!urlBar.hasFocus()) urlBar.setText(url)
             }
+
+            override fun shouldInterceptRequest(view: WebView, request: WebResourceRequest): WebResourceResponse? {
+                val url = request.url.toString()
+                val hit = blockers.firstOrNull { it.regex.matches(url) } ?: return null
+                return if (request.isForMainFrame) {
+                    val html = "<!doctype html><meta charset=utf-8>" +
+                        "<meta name=viewport content='width=device-width,initial-scale=1'>" +
+                        "<body style='font:18px sans-serif;padding:40px 24px;text-align:center'>" +
+                        "<h2>Bloqueado</h2><p>" + TextUtils.htmlEncode(hit.extName) + "</p></body>"
+                    WebResourceResponse(
+                        "text/html", "utf-8", 200, "OK", emptyMap(),
+                        ByteArrayInputStream(html.toByteArray(Charsets.UTF_8)),
+                    )
+                } else {
+                    WebResourceResponse(
+                        "text/plain", "utf-8", 403, "Blocked", emptyMap(),
+                        ByteArrayInputStream(ByteArray(0)),
+                    )
+                }
+            }
         }
 
         setupExtensions()
@@ -76,18 +106,23 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun setupExtensions() {
+        val manager = ExtensionManager(this)
+        manager.seedFromAssets()
+        val extensions = manager.load()
+
+        // Bloqueio de requisições: não depende das APIs de content script.
+        blockers = extensions.flatMap { e -> e.blockRegexes.map { Blocker(e.name, Regex(it)) } }
+
+        val origins = manager.allowedOrigins(extensions)
+        Log.i("ExtBrowser", "Extensões: ${extensions.map { it.id }}, bloqueios: ${blockers.size}, origens: $origins")
+        if (origins.isEmpty()) return
+
         val supported = WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT) &&
             WebViewFeature.isFeatureSupported(WebViewFeature.WEB_MESSAGE_LISTENER)
         if (!supported) {
             Toast.makeText(this, "WebView sem suporte às APIs necessárias. Atualize o Android System WebView.", Toast.LENGTH_LONG).show()
             return
         }
-        val manager = ExtensionManager(this)
-        manager.seedFromAssets()
-        val extensions = manager.load()
-        val origins = manager.allowedOrigins(extensions)
-        Log.i("ExtBrowser", "Extensões: ${extensions.map { it.id }}, origens: $origins")
-        if (origins.isEmpty()) return
 
         val router = BridgeRouter(this, extensions)
         WebViewCompat.addWebMessageListener(webView, "__extBridge", origins, object : WebViewCompat.WebMessageListener {
