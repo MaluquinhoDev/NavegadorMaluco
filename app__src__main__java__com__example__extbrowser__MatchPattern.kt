@@ -1,6 +1,6 @@
 package com.example.extbrowser
 
-/** Suporte a match patterns no estilo WebExtensions: <all_urls>, *://*.exemplo.com/*, https://a.com/x/* */
+// Suporte a match patterns no estilo WebExtensions (all_urls, esquema://host/caminho com curingas).
 object MatchPattern {
     private val PATTERN = Regex("^(\\*|https?)://(\\*|\\*\\.[^/*]+|[^/*]+)(/.*)$")
 
