@@ -1,6 +1,7 @@
 package com.example.extbrowser
 
 import android.annotation.SuppressLint
+import android.content.Intent
 import android.graphics.Bitmap
 import android.net.Uri
 import android.os.Bundle
@@ -14,11 +15,13 @@ import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import android.widget.Button
 import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.OnBackPressedCallback
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.webkit.JavaScriptReplyProxy
@@ -37,6 +40,11 @@ class MainActivity : ComponentActivity() {
     @Volatile
     private var blockers: List<Blocker> = emptyList()
 
+    /** Ao voltar da tela de extensões com mudanças, recria a tela para aplicá-las. */
+    private val extLauncher = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { r ->
+        if (r.resultCode == RESULT_OK) recreate()
+    }
+
     @SuppressLint("SetJavaScriptEnabled")
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -50,10 +58,19 @@ class MainActivity : ComponentActivity() {
                 if (actionId == EditorInfo.IME_ACTION_GO) { navigate(text.toString()); true } else false
             }
         }
+        val extButton = Button(this).apply {
+            text = "Ext"
+            setOnClickListener { extLauncher.launch(Intent(this@MainActivity, ExtensionsActivity::class.java)) }
+        }
+        val bar = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            addView(urlBar, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
+            addView(extButton, LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT))
+        }
         webView = WebView(this)
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            addView(urlBar, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
+            addView(bar, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
             addView(webView, LinearLayout.LayoutParams(MATCH_PARENT, 0, 1f))
         }
         setContentView(root)
@@ -102,13 +119,18 @@ class MainActivity : ComponentActivity() {
             }
         })
 
-        webView.loadUrl("https://www.wikipedia.org")
+        webView.loadUrl(savedInstanceState?.getString("url") ?: "https://www.wikipedia.org")
+    }
+
+    override fun onSaveInstanceState(outState: Bundle) {
+        super.onSaveInstanceState(outState)
+        webView.url?.let { outState.putString("url", it) }
     }
 
     private fun setupExtensions() {
         val manager = ExtensionManager(this)
         manager.seedFromAssets()
-        val extensions = manager.load()
+        val extensions = manager.loadEnabled()
 
         // Bloqueio de requisições: não depende das APIs de content script.
         blockers = extensions.flatMap { e -> e.blockRegexes.map { Blocker(e.name, Regex(it)) } }
