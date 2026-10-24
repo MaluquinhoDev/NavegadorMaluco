@@ -529,7 +529,7 @@ class MainActivity : ComponentActivity() {
     private fun showLibrary() {
         val audioLabel = "Áudio em segundo plano: " + (if (backgroundAudioEnabled) "ligado" else "desligado")
         AlertDialog.Builder(this).setTitle("Biblioteca")
-            .setItems(arrayOf("Favoritos", "Histórico", audioLabel, "Vídeo em janela flutuante (PiP)", "Player nativo: abrir URL de mídia", "Player nativo: tentar mídia da página", "Vídeos detectados", "Media3: retomar na página")) { _, which ->
+            .setItems(arrayOf("Favoritos", "Histórico", audioLabel, "Vídeo em janela flutuante (PiP)", "Player nativo: abrir URL de mídia", "Player nativo: tentar mídia da página", "Vídeos detectados", "Media3: retomar na página", "Player nativo: abrir vídeo")) { _, which ->
                 when (which) {
                     0 -> showSavedPages(true)
                     1 -> showSavedPages(false)
@@ -539,6 +539,7 @@ class MainActivity : ComponentActivity() {
                     5 -> tryNativeMediaFromPage()
                     6 -> showRequestMediaCandidates()
                     7 -> returnMedia3ToPage()
+                    8 -> showNativeVideoPlayer()
                 }
             }.show()
     }
@@ -738,6 +739,116 @@ class MainActivity : ComponentActivity() {
             AlertDialog.Builder(this).setTitle("Comparação do vídeo")
                 .setMessage(message).setPositiveButton("OK", null).show()
         }
+    }
+
+    /** Interface de vídeo vinculada à sessão que já toca áudio em segundo plano. */
+    private fun showNativeVideoPlayer() {
+        val dialog = android.app.Dialog(this)
+        val outer = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setBackgroundColor(android.graphics.Color.BLACK)
+        }
+        val surface = android.view.SurfaceView(this)
+        outer.addView(surface, LinearLayout.LayoutParams(MATCH_PARENT, 0, 1f))
+        val info = TextView(this).apply {
+            text = "Conectando ao player..."
+            setTextColor(android.graphics.Color.WHITE)
+            gravity = android.view.Gravity.CENTER
+        }
+        outer.addView(info, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
+        val progress = android.widget.SeekBar(this)
+        outer.addView(progress, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
+        val controls = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = android.view.Gravity.CENTER
+        }
+        val back = Button(this).apply { text = "−10 s" }
+        val play = Button(this).apply { text = "Play/Pause" }
+        val forward = Button(this).apply { text = "+10 s" }
+        val close = Button(this).apply { text = "Fechar" }
+        listOf(back, play, forward, close).forEach { controls.addView(it,
+            LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f)) }
+        outer.addView(controls, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
+        dialog.setContentView(outer)
+        dialog.window?.setLayout(MATCH_PARENT, MATCH_PARENT)
+        val token = SessionToken(this, ComponentName(this, Media3PlaybackService::class.java))
+        val future = MediaController.Builder(this, token).buildAsync()
+        var player: MediaController? = null
+        var seeking = false
+        var closed = false
+        val update = object : Runnable {
+            override fun run() {
+                val c = player
+                if (!closed && c != null) {
+                    val duration = c.duration
+                    val pos = c.currentPosition.coerceAtLeast(0L)
+                    val total = if (duration > 0L && duration != androidx.media3.common.C.TIME_UNSET)
+                        duration else 0L
+                    if (!seeking) {
+                        progress.max = if (total > 0L) 1000 else 0
+                        progress.progress = if (total > 0L)
+                            ((pos.coerceAtMost(total) * 1000L) / total).toInt() else 0
+                    }
+                    fun clock(ms: Long): String {
+                        val sec = ms.coerceAtLeast(0L) / 1000L
+                        return "%02d:%02d".format(sec / 60, sec % 60)
+                    }
+                    info.text = if (total > 0L) "${clock(pos)} / ${clock(total)}"
+                        else "Áudio/vídeo nativo · ${clock(pos)}"
+                    play.text = if (c.isPlaying) "Pausar" else "Reproduzir"
+                    handler.postDelayed(this, 500L)
+                }
+            }
+        }
+        progress.setOnSeekBarChangeListener(object : android.widget.SeekBar.OnSeekBarChangeListener {
+            override fun onStartTrackingTouch(seekBar: android.widget.SeekBar?) { seeking = true }
+            override fun onStopTrackingTouch(seekBar: android.widget.SeekBar?) {
+                val c = player
+                if (c != null && c.duration > 0L &&
+                    c.duration != androidx.media3.common.C.TIME_UNSET) {
+                    c.seekTo(c.duration * progress.progress / 1000L)
+                }
+                seeking = false
+            }
+            override fun onProgressChanged(seekBar: android.widget.SeekBar?, p: Int, fromUser: Boolean) {}
+        })
+        play.setOnClickListener {
+            player?.let { if (it.isPlaying) it.pause() else it.play() }
+        }
+        back.setOnClickListener { player?.let { it.seekTo((it.currentPosition - 10000L).coerceAtLeast(0L)) } }
+        forward.setOnClickListener {
+            player?.let { c ->
+                val target = c.currentPosition + 10000L
+                c.seekTo(if (c.duration > 0L && c.duration != androidx.media3.common.C.TIME_UNSET)
+                    target.coerceAtMost(c.duration) else target)
+            }
+        }
+        close.setOnClickListener { dialog.dismiss() }
+        dialog.setOnDismissListener {
+            closed = true
+            handler.removeCallbacks(update)
+            player?.let { c ->
+                runCatching { c.clearVideoSurfaceView(surface) }
+            }
+            MediaController.releaseFuture(future)
+        }
+        dialog.show()
+        dialog.window?.setLayout(MATCH_PARENT, MATCH_PARENT)
+        future.addListener({
+            if (closed || isFinishing || isDestroyed) {
+                MediaController.releaseFuture(future)
+            } else {
+                try {
+                    val c = future.get()
+                    player = c
+                    c.setVideoSurfaceView(surface)
+                    handler.post(update)
+                } catch (e: Exception) {
+                    info.text = "Não foi possível conectar ao player."
+                    android.util.Log.e("NavegadorMedia3", "Falha ao abrir tela nativa", e)
+                }
+            }
+        }, androidx.core.content.ContextCompat.getMainExecutor(this))
     }
 
     /** Uma transferência explícita de reprodução. Não é uma sincronização contínua
