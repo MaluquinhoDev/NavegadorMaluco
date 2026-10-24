@@ -18,6 +18,7 @@ import android.net.Uri
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.os.Message
 import android.os.SystemClock
 import android.text.InputType
 import android.view.View
@@ -28,6 +29,7 @@ import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import android.webkit.WebSettings
 import android.widget.Button
 import android.widget.EditText
 import android.widget.LinearLayout
@@ -49,6 +51,8 @@ class MainActivity : ComponentActivity() {
     private data class Tab(val view: WebView, var title: String = "Nova aba", var url: String = HOME)
 
     private val tabs = mutableListOf<Tab>()
+    // WebViews em espera pelo transporte de uma nova janela.
+    private val pendingPopups = mutableSetOf<WebView>()
     private var activeIndex = 0
     private val webView get() = tabs[activeIndex].view
     private lateinit var webHost: LinearLayout
@@ -177,6 +181,9 @@ class MainActivity : ComponentActivity() {
         val view = WebView(this)
         view.settings.javaScriptEnabled = true
         view.settings.domStorageEnabled = true
+        view.settings.setSupportMultipleWindows(true)
+        // target=_blank funciona, mas window.open automático sem gesto fica desabilitado.
+        view.settings.javaScriptCanOpenWindowsAutomatically = false
         WebView.setWebContentsDebuggingEnabled((applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) != 0)
         view.webViewClient = object : WebViewClient() {
             override fun onPageStarted(v: WebView, url: String, favicon: Bitmap?) {
@@ -197,9 +204,14 @@ class MainActivity : ComponentActivity() {
                 if (v === webView) Attention.onUrl(url)?.let { showBlocked(it) }
             }
             override fun shouldOverrideUrlLoading(v: WebView, request: WebResourceRequest): Boolean {
-                if (request.url.scheme != "extbrowser") return false
-                if (v === webView) handleBreakAction(request.url)
-                return true
+                val target = request.url
+                if (target.scheme == "extbrowser") {
+                    if (v === webView) handleBreakAction(target)
+                    return true
+                }
+                if (target.scheme == "http" || target.scheme == "https") return false
+                if (!request.isForMainFrame) return false
+                return openExternalLink(target)
             }
             override fun shouldInterceptRequest(v: WebView, request: WebResourceRequest): WebResourceResponse? {
                 val url = request.url.toString()
@@ -216,6 +228,33 @@ class MainActivity : ComponentActivity() {
         }
         // Upload de arquivos e vídeos HTML5 em tela cheia.
         view.webChromeClient = object : WebChromeClient() {
+            override fun onCreateWindow(
+                source: WebView?, isDialog: Boolean, isUserGesture: Boolean, resultMsg: Message?
+            ): Boolean {
+                // Não permitir pop-ups automáticos nem exceder o limite de abas.
+                if (!isUserGesture || resultMsg == null || tabs.size >= MAX_TABS) {
+                    if (tabs.size >= MAX_TABS)
+                        Toast.makeText(this@MainActivity, "Limite de $MAX_TABS abas", Toast.LENGTH_SHORT).show()
+                    return false
+                }
+                val transport = resultMsg.obj as? WebView.WebViewTransport ?: return false
+                // Uma nova WebView recebe a navegação diretamente do mecanismo Android.
+                // Não reconstruímos URL, preservando POST e scripts de abertura.
+                val popup = createWebView()
+                tabs.add(Tab(popup, title = "Nova aba", url = "about:blank"))
+                activeIndex = tabs.lastIndex
+                pendingPopups.add(popup)
+                showActive()
+                transport.webView = popup
+                resultMsg.sendToTarget()
+                // Após o transporte, a WebView passa a carregar a página normalmente.
+                pendingPopups.remove(popup)
+                return true
+            }
+            override fun onCloseWindow(window: WebView?) {
+                val index = tabs.indexOfFirst { it.view === window }
+                if (index >= 0) closeTab(index)
+            }
             override fun onShowFileChooser(
                 webView: WebView?,
                 filePathCallback: ValueCallback<Array<Uri>>?,
@@ -291,6 +330,38 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    /** Encaminha apenas esquemas externos reconhecidos para aplicativos do Android. */
+    private fun openExternalLink(uri: Uri): Boolean {
+        val scheme = uri.scheme?.lowercase() ?: return true
+        val allowed = setOf("mailto", "tel", "sms", "smsto", "geo", "market")
+        if (scheme !in allowed && scheme != "intent") return true
+        try {
+            if (scheme == "intent") {
+                val intent = Intent.parseUri(uri.toString(), Intent.URI_INTENT_SCHEME).apply {
+                    addCategory(Intent.CATEGORY_BROWSABLE)
+                    component = null
+                    selector = null
+                }
+                try {
+                    startActivity(intent)
+                } catch (e: ActivityNotFoundException) {
+                    val fallback = intent.getStringExtra("browser_fallback_url")
+                    val fallbackUri = fallback?.let { Uri.parse(it) }
+                    if (fallbackUri?.scheme == "https" || fallbackUri?.scheme == "http") {
+                        webView.loadUrl(fallback!!)
+                    } else {
+                        Toast.makeText(this, "Aplicativo necessário não instalado", Toast.LENGTH_SHORT).show()
+                    }
+                }
+            } else {
+                startActivity(Intent(Intent.ACTION_VIEW, uri).addCategory(Intent.CATEGORY_BROWSABLE))
+            }
+        } catch (e: Exception) {
+            Toast.makeText(this, "Não foi possível abrir este link", Toast.LENGTH_SHORT).show()
+        }
+        return true
+    }
+
     private fun setupExtensions(view: WebView) {
         val manager = extensionManager ?: return
         val origins = manager.allowedOrigins(extensionList)
@@ -322,7 +393,7 @@ class MainActivity : ComponentActivity() {
         (newView.parent as? android.view.ViewGroup)?.removeView(newView)
         webHost.addView(newView, LinearLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT))
         newView.onResume()
-        if (newView.url == null) newView.loadUrl(tabs[activeIndex].url)
+        if (newView.url == null && newView !in pendingPopups) newView.loadUrl(tabs[activeIndex].url)
         urlBar.setText(newView.url ?: tabs[activeIndex].url)
         tabsButton.text = "${tabs.size} abas"
         servedBlockUrl = null
@@ -346,6 +417,7 @@ class MainActivity : ComponentActivity() {
     private fun closeTab(index: Int) {
         val tab = tabs.removeAt(index)
         if (webHost.childCount > 0 && webHost.getChildAt(0) === tab.view) webHost.removeView(tab.view)
+        pendingPopups.remove(tab.view)
         tab.view.stopLoading()
         tab.view.destroy()
         if (tabs.isEmpty()) { tabs.add(Tab(createWebView())) ; activeIndex = 0 }
