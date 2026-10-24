@@ -231,6 +231,7 @@ class MainActivity : ComponentActivity() {
         view.webViewClient = object : WebViewClient() {
             override fun onPageStarted(v: WebView, url: String, favicon: Bitmap?) {
                 val t = tabs.firstOrNull { it.view === v } ?: return
+                synchronized(mediaCandidateLock) { mediaCandidates.remove(v) }
                 t.url = url
                 if (v === webView && !urlBar.hasFocus()) urlBar.setText(url)
                 if (v === webView) updateFavorite()
@@ -240,6 +241,7 @@ class MainActivity : ComponentActivity() {
                 t.title = v.title ?: url
                 t.url = url
                 if (v === webView) { updateFavorite(); persistTabs() }
+                scanDeclaredMedia(v)
             }
             override fun doUpdateVisitedHistory(v: WebView, url: String, isReload: Boolean) {
                 if (!isReload && (url.startsWith("https://") || url.startsWith("http://")))
@@ -525,8 +527,71 @@ class MainActivity : ComponentActivity() {
             }.show()
     }
 
+    /**
+     * Lê fontes já declaradas no DOM, sem disparar play, fazer downloads,
+     * inspecionar scripts ou ultrapassar a política de mesma origem dos iframes.
+     */
+    private fun scanDeclaredMedia(view: WebView, after: (() -> Unit)? = null) {
+        val originalPage = view.url
+        val js = """(function() {
+            const found = new Set();
+            const accepted = /\\.(mp3|m4a|aac|ogg|oga|opus|wav|flac|mp4|m4v|webm|m3u8|mpd)(?:[?#]|$)/i;
+            function record(raw, base) {
+                if (!raw || found.size >= 60) return;
+                try {
+                    const u = new URL(raw, base);
+                    if ((u.protocol === 'https:' || u.protocol === 'http:') && accepted.test(u.href)) {
+                        found.add(u.href);
+                    }
+                } catch (_) {}
+            }
+            function visit(doc, depth) {
+                if (!doc || depth > 2) return;
+                const base = doc.baseURI;
+                doc.querySelectorAll('video,audio,source').forEach(el => {
+                    record(el.currentSrc, base);
+                    record(el.getAttribute('src'), base);
+                    record(el.getAttribute('data-src'), base);
+                });
+                doc.querySelectorAll('meta[property="og:video"],meta[property="og:video:url"],meta[property="og:audio"],meta[name="twitter:player:stream"]').forEach(el => {
+                    record(el.getAttribute('content'), base);
+                });
+                doc.querySelectorAll('iframe').forEach(el => {
+                    try { if (el.contentDocument) visit(el.contentDocument, depth + 1); } catch (_) {}
+                });
+            }
+            visit(document, 0);
+            return JSON.stringify(Array.from(found));
+        })()"""
+        view.evaluateJavascript(js) { result ->
+            if (view.url == originalPage) {
+                runCatching {
+                    val decoded = org.json.JSONArray("[$result]").getString(0)
+                    val urls = org.json.JSONArray(decoded)
+                    synchronized(mediaCandidateLock) {
+                        val candidates = mediaCandidates.getOrPut(view) { LinkedHashSet() }
+                        for (i in 0 until urls.length()) {
+                            val u = urls.optString(i)
+                            val uri = Uri.parse(u)
+                            if ((uri.scheme == "http" || uri.scheme == "https") &&
+                                !uri.host.isNullOrBlank() && mediaExtension.containsMatchIn(u)) {
+                                if (candidates.size >= 60) candidates.remove(candidates.first())
+                                candidates.add(u)
+                            }
+                        }
+                    }
+                }.onFailure { android.util.Log.w("NavegadorMedia3", "Falha ao examinar fontes no DOM: ${it.javaClass.simpleName}") }
+            }
+            after?.invoke()
+        }
+    }
+
     /** Fontes observadas pela WebView; nenhuma foi previamente validada. */
     private fun showRequestMediaCandidates() {
+        scanDeclaredMedia(webView) { showDetectedMediaDialog() }
+    }
+
+    private fun showDetectedMediaDialog() {
         val found = synchronized(mediaCandidateLock) {
             mediaCandidates[webView]?.toList().orEmpty().reversed()
         }
