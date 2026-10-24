@@ -708,7 +708,7 @@ class MainActivity : ComponentActivity() {
                 val host = Uri.parse(url).host ?: "desconhecido"
                 val refHost = observedOrigins[url] ?: "não observado em requisição"
                 "Fonte ${index + 1}: mídia=$host, Referer observado=$refHost"
-            }.joinToString("\\n")
+            }.joinToString("\n")
             val mediaHostCounts = candidates.mapNotNull { Uri.parse(it).host }
                 .groupingBy { it.lowercase(java.util.Locale.ROOT) }.eachCount()
             val mediaHosts = mediaHostCounts.entries.sortedBy { it.key }
@@ -734,7 +734,7 @@ class MainActivity : ComponentActivity() {
                 "fontesCorrespondentes=${indices.joinToString(",")}; " +
                 "dominiosIframe=$frameHosts; dominiosFontes=$mediaHosts; " +
                 "dominiosCoincidentes=${shared.joinToString(",")}; " +
-                "contextoRequisicoes=${requestContext.replace("\\n", " | ")}")
+                "contextoRequisicoes=${requestContext.replace("\n", " | ")}")
             AlertDialog.Builder(this).setTitle("Comparação do vídeo")
                 .setMessage(message).setPositiveButton("OK", null).show()
         }
