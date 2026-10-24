@@ -88,6 +88,18 @@ class MainActivity : ComponentActivity() {
     // Apenas metadados de requisições. Nunca intercepta conteúdo, tokens nem corpos HTTP.
     private val mediaCandidates = WeakHashMap<WebView, LinkedHashSet<String>>()
     private val mediaCandidateLock = Any()
+    // Domínio do Referer observado por fonte, sem valores completos de cabeçalhos.
+    private val mediaRequestOrigins = WeakHashMap<WebView, LinkedHashMap<String, String>>()
+    private fun refererHost(headers: Map<String, String>): String {
+        val value = headers.entries.firstOrNull { it.key.equals("referer", true) }?.value
+            ?: return "não informado"
+        return runCatching {
+            val uri = Uri.parse(value)
+            if (uri.scheme in listOf("https", "http")) uri.host ?: "não informado"
+            else "não informado"
+        }.getOrDefault("não informado")
+    }
+
     private val mediaExtension = Regex("(?i)\\.(mp3|m4a|aac|ogg|oga|opus|wav|flac|mp4|m4v|webm|m3u8|mpd)(?:[?#]|$)")
 
 
@@ -231,7 +243,7 @@ class MainActivity : ComponentActivity() {
         view.webViewClient = object : WebViewClient() {
             override fun onPageStarted(v: WebView, url: String, favicon: Bitmap?) {
                 val t = tabs.firstOrNull { it.view === v } ?: return
-                synchronized(mediaCandidateLock) { mediaCandidates.remove(v) }
+                synchronized(mediaCandidateLock) { mediaCandidates.remove(v); mediaRequestOrigins.remove(v) }
                 t.url = url
                 if (v === webView && !urlBar.hasFocus()) urlBar.setText(url)
                 if (v === webView) updateFavorite()
@@ -269,6 +281,10 @@ class MainActivity : ComponentActivity() {
                         val found = mediaCandidates.getOrPut(v) { LinkedHashSet() }
                         if (found.size >= 60) found.remove(found.first())
                         found.add(url)
+                        val origins = mediaRequestOrigins.getOrPut(v) { LinkedHashMap() }
+                        if (origins.size >= 60 && !origins.containsKey(url))
+                            origins.remove(origins.keys.first())
+                        origins[url] = refererHost(request.requestHeaders)
                     }
                 }
                 val hit = blockerList.firstOrNull { it.regex.matches(url) }
@@ -685,6 +701,14 @@ class MainActivity : ComponentActivity() {
             val iframesJson = result.optJSONArray("iframeHosts")
             val iframeHosts = (0 until (iframesJson?.length() ?: 0))
                 .mapNotNull { iframesJson?.optString(it) }.filter { it.isNotBlank() }
+            val observedOrigins = synchronized(mediaCandidateLock) {
+                mediaRequestOrigins[view]?.toMap().orEmpty()
+            }
+            val requestContext = candidates.mapIndexed { index, url ->
+                val host = Uri.parse(url).host ?: "desconhecido"
+                val refHost = observedOrigins[url] ?: "não observado em requisição"
+                "Fonte ${index + 1}: mídia=$host, Referer observado=$refHost"
+            }.joinToString("\\n")
             val mediaHostCounts = candidates.mapNotNull { Uri.parse(it).host }
                 .groupingBy { it.lowercase(java.util.Locale.ROOT) }.eachCount()
             val mediaHosts = mediaHostCounts.entries.sortedBy { it.key }
@@ -701,6 +725,7 @@ class MainActivity : ComponentActivity() {
                 matchingText + "\n\nDomínios dos iframes: $frameHosts" +
                 "\nDomínios das fontes: $mediaHosts" +
                 "\nDomínios coincidentes: ${shared.joinToString(", ").ifEmpty { "nenhum" }}" +
+                "\n\nContexto observado nas requisições:\n$requestContext" +
                 "\n\nA coincidência de domínio não prova qual player solicitou a mídia."
             android.util.Log.i("NavegadorMedia3",
                 "ComparacaoDOM: elementos=${result.optInt("elements")}; " +
@@ -708,7 +733,8 @@ class MainActivity : ComponentActivity() {
                 "http=${result.optInt("http")}; iframesInacessiveis=${result.optInt("inaccessible")}; " +
                 "fontesCorrespondentes=${indices.joinToString(",")}; " +
                 "dominiosIframe=$frameHosts; dominiosFontes=$mediaHosts; " +
-                "dominiosCoincidentes=${shared.joinToString(",")}")
+                "dominiosCoincidentes=${shared.joinToString(",")}; " +
+                "contextoRequisicoes=${requestContext.replace("\\n", " | ")}")
             AlertDialog.Builder(this).setTitle("Comparação do vídeo")
                 .setMessage(message).setPositiveButton("OK", null).show()
         }
