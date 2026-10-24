@@ -622,9 +622,76 @@ class MainActivity : ComponentActivity() {
                     .setPositiveButton("Reproduzir no player nativo") { _, _ -> startMedia3(candidate) }
                     .setNegativeButton("Cancelar", null).show()
             }
+            .setPositiveButton("Comparar com player") { _, _ ->
+                compareWithPagePlayer(webView, entries)
+            }
             .setNeutralButton("Limpar lista") { _, _ ->
                 synchronized(mediaCandidateLock) { mediaCandidates.remove(webView) }
             }.setNegativeButton("Cancelar", null).show()
+    }
+
+    /** Compara apenas URLs visíveis no DOM; não registra URLs, cookies ou tokens. */
+    private fun compareWithPagePlayer(view: WebView, candidates: List<String>) {
+        val pageUrl = view.url
+        val urlsJson = org.json.JSONArray(candidates).toString()
+        val js = """(function() {
+            const candidates = $urlsJson;
+            let elements = 0, playing = 0, inaccessible = 0, blob = 0, http = 0;
+            const matches = new Set();
+            function visit(doc, depth) {
+                if (!doc || depth > 2) return;
+                doc.querySelectorAll('video,audio').forEach(m => {
+                    elements++;
+                    if (!m.paused && !m.ended) playing++;
+                    const raw = m.currentSrc || m.src || '';
+                    if (raw.startsWith('blob:')) blob++;
+                    if (/^https?:/i.test(raw)) http++;
+                    const index = candidates.indexOf(raw);
+                    if (index >= 0) matches.add(index + 1);
+                });
+                doc.querySelectorAll('iframe').forEach(frame => {
+                    try {
+                        if (frame.contentDocument) visit(frame.contentDocument, depth + 1);
+                        else inaccessible++;
+                    } catch (_) { inaccessible++; }
+                });
+            }
+            visit(document, 0);
+            return JSON.stringify({
+                elements: elements, playing: playing,
+                inaccessible: inaccessible, blob: blob, http: http,
+                matches: Array.from(matches).sort((a,b) => a-b)
+            });
+        })()"""
+        view.evaluateJavascript(js) { raw ->
+            if (isFinishing || isDestroyed || view.url != pageUrl) return@evaluateJavascript
+            val result = runCatching {
+                org.json.JSONObject(org.json.JSONArray("[$raw]").getString(0))
+            }.getOrNull()
+            if (result == null) {
+                AlertDialog.Builder(this).setTitle("Comparação do vídeo")
+                    .setMessage("Não foi possível consultar o player da página.")
+                    .setPositiveButton("OK", null).show()
+                return@evaluateJavascript
+            }
+            val matched = result.optJSONArray("matches")
+            val indices = (0 until (matched?.length() ?: 0)).map { matched!!.optInt(it) }
+            val matchingText = if (indices.isEmpty()) "Nenhuma das fontes detectadas coincide com o currentSrc acessível."
+                else "Fonte(s) correspondente(s): ${indices.joinToString(", ")}."
+            val message = "Elementos de áudio/vídeo acessíveis: ${result.optInt("elements")}\n" +
+                "Em reprodução: ${result.optInt("playing")}\n" +
+                "Fontes blob: ${result.optInt("blob")}\n" +
+                "Fontes HTTP(S) em elementos: ${result.optInt("http")}\n" +
+                "Iframes inacessíveis: ${result.optInt("inaccessible")}\n\n" +
+                matchingText + "\n\nEsta comparação não verifica respostas HTTP nem o conteúdo de iframes de outra origem."
+            android.util.Log.i("NavegadorMedia3",
+                "ComparacaoDOM: elementos=${result.optInt("elements")}; " +
+                "tocando=${result.optInt("playing")}; blob=${result.optInt("blob")}; " +
+                "http=${result.optInt("http")}; iframesInacessiveis=${result.optInt("inaccessible")}; " +
+                "fontesCorrespondentes=${indices.joinToString(",")}")
+            AlertDialog.Builder(this).setTitle("Comparação do vídeo")
+                .setMessage(message).setPositiveButton("OK", null).show()
+        }
     }
 
     /** Uma transferência explícita de reprodução. Não é uma sincronização contínua
