@@ -741,6 +741,11 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    private var nativeVideoDialog: android.app.Dialog? = null
+    private var nativeVideoControls: View? = null
+    private var nativeVideoInfo: View? = null
+    private var nativeVideoProgress: View? = null
+
     /** Interface de vídeo vinculada à sessão que já toca áudio em segundo plano. */
     private fun showNativeVideoPlayer() {
         val dialog = android.app.Dialog(this)
@@ -765,12 +770,17 @@ class MainActivity : ComponentActivity() {
         val back = Button(this).apply { text = "−10 s" }
         val play = Button(this).apply { text = "Play/Pause" }
         val forward = Button(this).apply { text = "+10 s" }
+        val rotate = Button(this).apply { text = "Girar" }
+        val pipButton = Button(this).apply { text = "PiP" }
         val close = Button(this).apply { text = "Fechar" }
-        listOf(back, play, forward, close).forEach { controls.addView(it,
+        listOf(back, play, forward, rotate, pipButton, close).forEach { controls.addView(it,
             LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f)) }
         outer.addView(controls, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
         dialog.setContentView(outer)
-        dialog.window?.setLayout(MATCH_PARENT, MATCH_PARENT)
+        nativeVideoDialog = dialog
+        nativeVideoControls = controls
+        nativeVideoInfo = info
+        nativeVideoProgress = progress
         val token = SessionToken(this, ComponentName(this, Media3PlaybackService::class.java))
         val future = MediaController.Builder(this, token).buildAsync()
         var player: MediaController? = null
@@ -823,9 +833,26 @@ class MainActivity : ComponentActivity() {
                     target.coerceAtMost(c.duration) else target)
             }
         }
+        rotate.setOnClickListener {
+            requestedOrientation = if (resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE)
+                android.content.pm.ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+            else android.content.pm.ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
+        }
+        pipButton.setOnClickListener {
+            if (player == null) Toast.makeText(this, "Player ainda conectando", Toast.LENGTH_SHORT).show()
+            else enterPip()
+        }
         close.setOnClickListener { dialog.dismiss() }
         dialog.setOnDismissListener {
             closed = true
+            if (nativeVideoDialog === dialog) {
+                nativeVideoDialog = null
+                nativeVideoControls = null
+                nativeVideoInfo = null
+                nativeVideoProgress = null
+            }
+            if (!isInPictureInPictureMode)
+                requestedOrientation = android.content.pm.ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
             handler.removeCallbacks(update)
             player?.let { c ->
                 runCatching { c.clearVideoSurfaceView(surface) }
@@ -834,6 +861,10 @@ class MainActivity : ComponentActivity() {
         }
         dialog.show()
         dialog.window?.setLayout(MATCH_PARENT, MATCH_PARENT)
+        dialog.window?.setFlags(
+            android.view.WindowManager.LayoutParams.FLAG_FULLSCREEN,
+            android.view.WindowManager.LayoutParams.FLAG_FULLSCREEN
+        )
         future.addListener({
             if (closed || isFinishing || isDestroyed) {
                 MediaController.releaseFuture(future)
@@ -1159,6 +1190,13 @@ class MainActivity : ComponentActivity() {
 
     override fun onPictureInPictureModeChanged(isInPictureInPictureMode: Boolean, newConfig: Configuration) {
         super.onPictureInPictureModeChanged(isInPictureInPictureMode, newConfig)
+        // No PiP, mostra somente a superfície nativa; fora dele, devolve os controles.
+        if (nativeVideoDialog?.isShowing == true) {
+            val visibility = if (isInPictureInPictureMode) View.GONE else View.VISIBLE
+            nativeVideoControls?.visibility = visibility
+            nativeVideoInfo?.visibility = visibility
+            nativeVideoProgress?.visibility = visibility
+        }
         // Preserva as mesmas WebViews e só esconde os controles do navegador.
         browserBar.visibility = if (isInPictureInPictureMode) View.GONE else View.VISIBLE
         statusView.visibility = if (isInPictureInPictureMode) View.GONE else
