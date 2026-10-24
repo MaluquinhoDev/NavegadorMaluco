@@ -3,6 +3,15 @@ package com.example.extbrowser
 import android.annotation.SuppressLint
 import android.app.AlertDialog
 import android.content.Intent
+import android.app.DownloadManager
+import android.content.Context
+import android.os.Environment
+import android.webkit.CookieManager
+import android.webkit.URLUtil
+import android.webkit.WebChromeClient
+import android.webkit.ValueCallback
+import android.widget.FrameLayout
+import android.content.ActivityNotFoundException
 import android.graphics.Bitmap
 import android.net.Uri
 import android.os.Bundle
@@ -55,6 +64,18 @@ class MainActivity : ComponentActivity() {
     private var lastBlockMs = 0L
     private var servedBlockUrl: String? = null
     private val handler = Handler(Looper.getMainLooper())
+    private var fileCallback: ValueCallback<Array<Uri>>? = null
+    private var fullscreenView: View? = null
+    private var fullscreenCallback: WebChromeClient.CustomViewCallback? = null
+
+    // O Android devolve aqui o arquivo escolhido em formulários <input type="file">.
+    private val filePicker = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+        val selected = if (result.resultCode == RESULT_OK)
+            WebChromeClient.FileChooserParams.parseResult(result.resultCode, result.data)
+        else null
+        fileCallback?.onReceiveValue(selected)
+        fileCallback = null
+    }
 
     companion object { private const val HOME = "https://www.wikipedia.org"; private const val MAX_TABS = 6 }
 
@@ -143,7 +164,8 @@ class MainActivity : ComponentActivity() {
 
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
             override fun handleOnBackPressed() {
-                if (webView.canGoBack()) webView.goBack()
+                if (fullscreenView != null) exitFullscreen()
+                else if (webView.canGoBack()) webView.goBack()
                 else { isEnabled = false; onBackPressedDispatcher.onBackPressed() }
             }
         })
@@ -154,7 +176,7 @@ class MainActivity : ComponentActivity() {
         val view = WebView(this)
         view.settings.javaScriptEnabled = true
         view.settings.domStorageEnabled = true
-        WebView.setWebContentsDebuggingEnabled(true)
+        WebView.setWebContentsDebuggingEnabled((applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) != 0)
         view.webViewClient = object : WebViewClient() {
             override fun onPageStarted(v: WebView, url: String, favicon: Bitmap?) {
                 val t = tabs.firstOrNull { it.view === v } ?: return
@@ -191,8 +213,81 @@ class MainActivity : ComponentActivity() {
                 return null
             }
         }
+        // Upload de arquivos e vídeos HTML5 em tela cheia.
+        view.webChromeClient = object : WebChromeClient() {
+            override fun onShowFileChooser(
+                webView: WebView?,
+                filePathCallback: ValueCallback<Array<Uri>>?,
+                fileChooserParams: FileChooserParams?
+            ): Boolean {
+                fileCallback?.onReceiveValue(null)
+                fileCallback = filePathCallback
+                if (filePathCallback == null || fileChooserParams == null) return false
+                try {
+                    filePicker.launch(fileChooserParams.createIntent())
+                } catch (e: ActivityNotFoundException) {
+                    fileCallback?.onReceiveValue(null)
+                    fileCallback = null
+                    Toast.makeText(this@MainActivity, "Nenhum seletor de arquivos disponível", Toast.LENGTH_LONG).show()
+                } catch (e: Exception) {
+                    fileCallback?.onReceiveValue(null)
+                    fileCallback = null
+                    Toast.makeText(this@MainActivity, "Não foi possível selecionar o arquivo", Toast.LENGTH_LONG).show()
+                }
+                return true
+            }
+            override fun onShowCustomView(customView: View?, callback: CustomViewCallback?) {
+                if (fullscreenView != null || customView == null) {
+                    callback?.onCustomViewHidden()
+                    return
+                }
+                fullscreenView = customView
+                fullscreenCallback = callback
+                val decor = window.decorView as FrameLayout
+                decor.addView(customView, FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT))
+                customView.systemUiVisibility = View.SYSTEM_UI_FLAG_FULLSCREEN or View.SYSTEM_UI_FLAG_HIDE_NAVIGATION or View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
+            }
+            override fun onHideCustomView() { exitFullscreen() }
+        }
+        view.setDownloadListener { url, userAgent, contentDisposition, mimeType, _ ->
+            enqueueDownload(url, userAgent, contentDisposition, mimeType)
+        }
         setupExtensions(view)
         return view
+    }
+
+    private fun exitFullscreen() {
+        val v = fullscreenView ?: return
+        (v.parent as? android.view.ViewGroup)?.removeView(v)
+        fullscreenView = null
+        v.systemUiVisibility = 0
+        fullscreenCallback?.onCustomViewHidden()
+        fullscreenCallback = null
+    }
+
+    // Usa o gerenciador de downloads do Android, sem solicitar acesso irrestrito ao armazenamento.
+    private fun enqueueDownload(url: String, agent: String?, disposition: String?, mime: String?) {
+        val uri = runCatching { Uri.parse(url) }.getOrNull() ?: return
+        if (uri.scheme != "https" && uri.scheme != "http") {
+            Toast.makeText(this, "Este tipo de download ainda não é suportado", Toast.LENGTH_LONG).show()
+            return
+        }
+        try {
+            val name = URLUtil.guessFileName(url, disposition, mime)
+                .replace(Regex("[\\/:*?\"<>|\\p{Cntrl}]"), "_")
+            val request = DownloadManager.Request(uri)
+                .setTitle(name)
+                .setDescription("NavegadorMaluco")
+                .setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
+                .setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, name)
+            if (!mime.isNullOrBlank()) request.setMimeType(mime)
+            if (!agent.isNullOrBlank()) request.addRequestHeader("User-Agent", agent)
+            CookieManager.getInstance().getCookie(url)?.let { request.addRequestHeader("Cookie", it) }
+            (getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager).enqueue(request)
+            Toast.makeText(this, "Download iniciado: $name", Toast.LENGTH_LONG).show()
+        } catch (e: Exception) {
+            Toast.makeText(this, "Falha ao iniciar o download: ${e.message}", Toast.LENGTH_LONG).show()
+        }
     }
 
     private fun setupExtensions(view: WebView) {
@@ -372,6 +467,9 @@ class MainActivity : ComponentActivity() {
     override fun onResume() { super.onResume(); handler.removeCallbacks(ticker); handler.post(ticker) }
     override fun onPause() { handler.removeCallbacks(ticker); Attention.pause(); persistTabs(); super.onPause() }
     override fun onDestroy() {
+        fileCallback?.onReceiveValue(null)
+        fileCallback = null
+        exitFullscreen()
         handler.removeCallbacks(ticker)
         tabs.forEach { (it.view.parent as? android.view.ViewGroup)?.removeView(it.view); it.view.destroy() }
         store.close()
