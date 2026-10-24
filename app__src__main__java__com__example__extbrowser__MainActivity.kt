@@ -638,6 +638,7 @@ class MainActivity : ComponentActivity() {
             const candidates = $urlsJson;
             let elements = 0, playing = 0, inaccessible = 0, blob = 0, http = 0;
             const matches = new Set();
+            const iframeHosts = new Set();
             function visit(doc, depth) {
                 if (!doc || depth > 2) return;
                 doc.querySelectorAll('video,audio').forEach(m => {
@@ -651,6 +652,10 @@ class MainActivity : ComponentActivity() {
                 });
                 doc.querySelectorAll('iframe').forEach(frame => {
                     try {
+                        const u = new URL(frame.getAttribute('src') || '', doc.baseURI);
+                        if (u.protocol === 'https:' || u.protocol === 'http:') iframeHosts.add(u.hostname);
+                    } catch (_) {}
+                    try {
                         if (frame.contentDocument) visit(frame.contentDocument, depth + 1);
                         else inaccessible++;
                     } catch (_) { inaccessible++; }
@@ -660,7 +665,8 @@ class MainActivity : ComponentActivity() {
             return JSON.stringify({
                 elements: elements, playing: playing,
                 inaccessible: inaccessible, blob: blob, http: http,
-                matches: Array.from(matches).sort((a,b) => a-b)
+                matches: Array.from(matches).sort((a,b) => a-b),
+                iframeHosts: Array.from(iframeHosts).sort().slice(0,20)
             });
         })()"""
         view.evaluateJavascript(js) { raw ->
@@ -676,6 +682,15 @@ class MainActivity : ComponentActivity() {
             }
             val matched = result.optJSONArray("matches")
             val indices = (0 until (matched?.length() ?: 0)).map { matched!!.optInt(it) }
+            val iframesJson = result.optJSONArray("iframeHosts")
+            val iframeHosts = (0 until (iframesJson?.length() ?: 0))
+                .mapNotNull { iframesJson?.optString(it) }.filter { it.isNotBlank() }
+            val mediaHostCounts = candidates.mapNotNull { Uri.parse(it).host }
+                .groupingBy { it.lowercase(java.util.Locale.ROOT) }.eachCount()
+            val mediaHosts = mediaHostCounts.entries.sortedBy { it.key }
+                .joinToString(", ") { "${it.key} (${it.value})" }.ifEmpty { "nenhum" }
+            val frameHosts = iframeHosts.joinToString(", ").ifEmpty { "nenhum identificado" }
+            val shared = iframeHosts.intersect(mediaHostCounts.keys)
             val matchingText = if (indices.isEmpty()) "Nenhuma das fontes detectadas coincide com o currentSrc acessível."
                 else "Fonte(s) correspondente(s): ${indices.joinToString(", ")}."
             val message = "Elementos de áudio/vídeo acessíveis: ${result.optInt("elements")}\n" +
@@ -683,12 +698,17 @@ class MainActivity : ComponentActivity() {
                 "Fontes blob: ${result.optInt("blob")}\n" +
                 "Fontes HTTP(S) em elementos: ${result.optInt("http")}\n" +
                 "Iframes inacessíveis: ${result.optInt("inaccessible")}\n\n" +
-                matchingText + "\n\nEsta comparação não verifica respostas HTTP nem o conteúdo de iframes de outra origem."
+                matchingText + "\\n\\nDomínios dos iframes: $frameHosts" +
+                "\\nDomínios das fontes: $mediaHosts" +
+                "\\nDomínios coincidentes: ${shared.joinToString(", ").ifEmpty { "nenhum" }}" +
+                "\\n\\nA coincidência de domínio não prova qual player solicitou a mídia."
             android.util.Log.i("NavegadorMedia3",
                 "ComparacaoDOM: elementos=${result.optInt("elements")}; " +
                 "tocando=${result.optInt("playing")}; blob=${result.optInt("blob")}; " +
                 "http=${result.optInt("http")}; iframesInacessiveis=${result.optInt("inaccessible")}; " +
-                "fontesCorrespondentes=${indices.joinToString(",")}")
+                "fontesCorrespondentes=${indices.joinToString(",")}; " +
+                "dominiosIframe=$frameHosts; dominiosFontes=$mediaHosts; " +
+                "dominiosCoincidentes=${shared.joinToString(",")}")
             AlertDialog.Builder(this).setTitle("Comparação do vídeo")
                 .setMessage(message).setPositiveButton("OK", null).show()
         }
