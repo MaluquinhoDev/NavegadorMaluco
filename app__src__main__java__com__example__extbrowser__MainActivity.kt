@@ -78,7 +78,7 @@ class MainActivity : ComponentActivity() {
     private var fullscreenCallback: WebChromeClient.CustomViewCallback? = null
     // Opcional: mantém WebViews ativas para reprodução HTML5 após trocar de aba.
     // Não contorna restrições de sites nem garante execução após o Android suspender o app.
-    private var backgroundAudioEnabled = true
+    private var backgroundAudioEnabled = false
 
     // O Android devolve aqui o arquivo escolhido em formulários <input type="file">.
     private val filePicker = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
@@ -116,7 +116,12 @@ class MainActivity : ComponentActivity() {
         Attention.init(this)
         store = BrowserData(this)
         backgroundAudioEnabled = getSharedPreferences("media_options", MODE_PRIVATE)
-            .getBoolean("background_audio", true)
+            .getBoolean("background_audio", false)
+        if (backgroundAudioEnabled) {
+            // Reestabelece a proteção do processo após recriação normal da Activity.
+            runCatching { androidx.core.content.ContextCompat.startForegroundService(
+                this, Intent(this, BackgroundAudioService::class.java)) }
+        }
         extensionManager = ExtensionManager(this).also { it.seedFromAssets() }
         extensionList = extensionManager!!.loadEnabled()
         blockerList = extensionList.flatMap { e -> e.blockRegexes.map { Blocker(e.name, Regex(it)) } }
@@ -525,8 +530,22 @@ class MainActivity : ComponentActivity() {
         webHost.requestLayout()
     }
 
+    /** O serviço inicia por ação explícita do usuário, enquanto a Activity está visível. */
     private fun toggleBackgroundAudio() {
-        backgroundAudioEnabled = !backgroundAudioEnabled
+        val enable = !backgroundAudioEnabled
+        if (enable) {
+            try {
+                androidx.core.content.ContextCompat.startForegroundService(
+                    this, Intent(this, BackgroundAudioService::class.java)
+                )
+            } catch (e: Exception) {
+                Toast.makeText(this, "Falha ao ativar áudio: ${e.message}", Toast.LENGTH_LONG).show()
+                return
+            }
+        } else {
+            stopService(Intent(this, BackgroundAudioService::class.java))
+        }
+        backgroundAudioEnabled = enable
         getSharedPreferences("media_options", MODE_PRIVATE).edit()
             .putBoolean("background_audio", backgroundAudioEnabled).apply()
         tabs.forEachIndexed { index, tab ->
@@ -534,8 +553,8 @@ class MainActivity : ComponentActivity() {
             else tab.view.onPause()
         }
         Toast.makeText(this,
-            if (backgroundAudioEnabled) "Áudio entre abas habilitado (dependente do site)"
-            else "Áudio das abas inativas pausado",
+            if (enable) "Suporte a áudio em segundo plano ativado"
+            else "Suporte a áudio em segundo plano desativado",
             Toast.LENGTH_LONG).show()
     }
     private fun showSavedPages(favorites: Boolean) {
@@ -642,6 +661,8 @@ class MainActivity : ComponentActivity() {
 
     override fun onResume() {
         super.onResume()
+        backgroundAudioEnabled = getSharedPreferences("media_options", MODE_PRIVATE)
+            .getBoolean("background_audio", false)
         // Retoma a renderização sem recriar páginas ou reiniciar players.
         tabs.forEachIndexed { index, tab ->
             if (backgroundAudioEnabled || index == activeIndex) tab.view.onResume()
