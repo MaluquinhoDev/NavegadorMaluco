@@ -84,7 +84,9 @@ class Media3PlaybackService : MediaSessionService() {
                         httpStatus = cause.responseCode
                         failedUri = cause.dataSpec.uri
                         responseHeaderNames = cause.headerFields.keys
-                            .filter { it.isNotBlank() }.map { it.lowercase(Locale.ROOT) }.toSet()
+                            .mapNotNull { key ->
+                                key?.takeIf { it.isNotBlank() }?.lowercase(Locale.ROOT)
+                            }.toSet()
                     } else if (cause is HttpDataSource.HttpDataSourceException && failedUri == null) {
                         failedUri = cause.dataSpec.uri
                     }
