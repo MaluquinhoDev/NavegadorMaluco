@@ -535,7 +535,7 @@ class MainActivity : ComponentActivity() {
         val originalPage = view.url
         val js = """(function() {
             const found = new Set();
-            const accepted = /\\.(mp3|m4a|aac|ogg|oga|opus|wav|flac|mp4|m4v|webm|m3u8|mpd)(?:[?#]|$)/i;
+            const accepted = /\.(mp3|m4a|aac|ogg|oga|opus|wav|flac|mp4|m4v|webm|m3u8|mpd)(?:[?#]|$)/i;
             function record(raw, base) {
                 if (!raw || found.size >= 60) return;
                 try {
