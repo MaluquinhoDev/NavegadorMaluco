@@ -698,10 +698,10 @@ class MainActivity : ComponentActivity() {
                 "Fontes blob: ${result.optInt("blob")}\n" +
                 "Fontes HTTP(S) em elementos: ${result.optInt("http")}\n" +
                 "Iframes inacessíveis: ${result.optInt("inaccessible")}\n\n" +
-                matchingText + "\\n\\nDomínios dos iframes: $frameHosts" +
-                "\\nDomínios das fontes: $mediaHosts" +
-                "\\nDomínios coincidentes: ${shared.joinToString(", ").ifEmpty { "nenhum" }}" +
-                "\\n\\nA coincidência de domínio não prova qual player solicitou a mídia."
+                matchingText + "\n\nDomínios dos iframes: $frameHosts" +
+                "\nDomínios das fontes: $mediaHosts" +
+                "\nDomínios coincidentes: ${shared.joinToString(", ").ifEmpty { "nenhum" }}" +
+                "\n\nA coincidência de domínio não prova qual player solicitou a mídia."
             android.util.Log.i("NavegadorMedia3",
                 "ComparacaoDOM: elementos=${result.optInt("elements")}; " +
                 "tocando=${result.optInt("playing")}; blob=${result.optInt("blob")}; " +
