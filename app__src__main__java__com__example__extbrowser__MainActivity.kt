@@ -528,10 +528,39 @@ class MainActivity : ComponentActivity() {
     private fun updateFavorite() {
         favoriteButton.text = if (tabs.isNotEmpty() && store.isFavorite(webView.url ?: "")) "★" else "☆"
     }
+    /** Atalho de mídia: escolhe automaticamente somente quando há uma fonte inequívoca. */
+    private fun playPageMediaDirectly() {
+        val current = webView
+        scanDeclaredMedia(current) {
+            if (tabs.none { it.view === current }) return@scanDeclaredMedia
+            val detected = synchronized(mediaCandidateLock) {
+                mediaCandidates[current]?.toList().orEmpty().reversed()
+            }
+            val sources = detected.filter { detectedMediaKind(it) != "Áudio" }
+                .ifEmpty { detected }
+                .distinct()
+            when (sources.size) {
+                0 -> Toast.makeText(this,
+                    "Nenhuma mídia detectada nesta página. Abra o vídeo na página e tente novamente.",
+                    Toast.LENGTH_LONG).show()
+                1 -> startMedia3(sources.single())
+                else -> {
+                    // Múltiplas fontes podem corresponder a qualidades ou vídeos diferentes.
+                    val labels = sources.take(20).map { url ->
+                        "${detectedMediaKind(url)} · ${Uri.parse(url).host ?: "desconhecido"}"
+                    }.toTypedArray()
+                    AlertDialog.Builder(this).setTitle("Escolha a mídia para reproduzir")
+                        .setItems(labels) { _, index -> startMedia3(sources[index]) }
+                        .setNegativeButton("Cancelar", null).show()
+                }
+            }
+        }
+    }
+
     private fun showLibrary() {
         val audioLabel = "Áudio em segundo plano: " + (if (backgroundAudioEnabled) "ligado" else "desligado")
         AlertDialog.Builder(this).setTitle("Biblioteca")
-            .setItems(arrayOf("Favoritos", "Histórico", audioLabel, "Vídeo em janela flutuante (PiP)", "Player nativo: abrir URL de mídia", "Player nativo: tentar mídia da página", "Vídeos detectados", "Media3: retomar na página", "Player nativo: abrir vídeo")) { _, which ->
+            .setItems(arrayOf("Favoritos", "Histórico", audioLabel, "Vídeo em janela flutuante (PiP)", "Player nativo: abrir URL de mídia", "Player nativo: tentar mídia da página", "Vídeos detectados", "Media3: retomar na página", "Player nativo: abrir vídeo", "▶ Reproduzir mídia desta página")) { _, which ->
                 when (which) {
                     0 -> showSavedPages(true)
                     1 -> showSavedPages(false)
@@ -542,6 +571,7 @@ class MainActivity : ComponentActivity() {
                     6 -> showRequestMediaCandidates()
                     7 -> returnMedia3ToPage()
                     8 -> showNativeVideoPlayer()
+                    9 -> playPageMediaDirectly()
                 }
             }.show()
     }
