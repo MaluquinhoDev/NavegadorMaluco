@@ -5,6 +5,7 @@ import android.app.AlertDialog
 import android.content.Intent
 import android.app.DownloadManager
 import android.content.Context
+import android.content.res.Configuration
 import android.os.Environment
 import android.webkit.CookieManager
 import android.webkit.URLUtil
@@ -464,6 +465,22 @@ class MainActivity : ComponentActivity() {
         statusView.setTextColor(if (lastMinute) 0xFFC62828.toInt() else statusDefaultColor)
         statusView.visibility = View.VISIBLE
     }
+    /** Mantém as mesmas instâncias de WebView e abas durante a rotação.
+     * O Android recalcula o layout, sem chamar onDestroy/onCreate.
+     */
+    override fun onConfigurationChanged(newConfig: Configuration) {
+        super.onConfigurationChanged(newConfig)
+        // A hierarquia usa MATCH_PARENT e pesos, então adapta-se automaticamente.
+        // Solicita novo cálculo da área útil (barras do sistema/teclado) e desenho.
+        ViewCompat.requestApplyInsets(window.decorView)
+        webHost.requestLayout()
+        if (tabs.isNotEmpty()) {
+            webView.requestLayout()
+            webView.invalidate()
+        }
+        fullscreenView?.let { it.requestLayout(); it.invalidate() }
+    }
+
     override fun onResume() { super.onResume(); handler.removeCallbacks(ticker); handler.post(ticker) }
     override fun onPause() { handler.removeCallbacks(ticker); Attention.pause(); persistTabs(); super.onPause() }
     override fun onDestroy() {
