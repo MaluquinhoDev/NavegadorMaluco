@@ -91,6 +91,23 @@ class MainActivity : ComponentActivity() {
     private val mediaExtension = Regex("(?i)\\.(mp3|m4a|aac|ogg|oga|opus|wav|flac|mp4|m4v|webm|m3u8|mpd)(?:[?#]|$)")
 
 
+    // Esta classificação é apenas indicativa: detecção não confirma acesso à fonte.
+    private fun detectedMediaKind(url: String): String {
+        val path = Uri.parse(url).path?.lowercase(java.util.Locale.ROOT).orEmpty()
+        return when {
+            path.endsWith(".m3u8") -> "HLS · playlist"
+            path.endsWith(".mpd") -> "DASH · manifesto"
+            path.endsWith(".mp4") || path.endsWith(".m4v") || path.endsWith(".webm") -> "Vídeo direto"
+            else -> "Áudio"
+        }
+    }
+    private fun detectedMediaRank(url: String): Int = when (detectedMediaKind(url)) {
+        "Vídeo direto" -> 0
+        "HLS · playlist" -> 1
+        "DASH · manifesto" -> 2
+        else -> 3
+    }
+
     // O Android devolve aqui o arquivo escolhido em formulários <input type="file">.
     private val filePicker = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
         val selected = if (result.resultCode == RESULT_OK)
@@ -508,28 +525,36 @@ class MainActivity : ComponentActivity() {
             }.show()
     }
 
-    /** A lista é limitada por aba; nenhuma reprodução inicia sem escolha explícita. */
+    /** Fontes observadas pela WebView; nenhuma foi previamente validada. */
     private fun showRequestMediaCandidates() {
         val found = synchronized(mediaCandidateLock) {
             mediaCandidates[webView]?.toList().orEmpty().reversed()
         }
         if (found.isEmpty()) {
             AlertDialog.Builder(this).setTitle("Detector Media3")
-                .setMessage("Nenhuma requisição de mídia HTTP(S) com extensão reconhecida foi observada nesta aba. Inicie o vídeo e tente novamente. Players blob:, DRM e URLs sem extensão podem não aparecer.")
+                .setMessage("Nenhuma fonte com extensão de mídia foi observada nesta aba. Alguns sites só carregam a fonte após interagir com o player. URLs blob:, DRM e fontes sem extensão podem não aparecer.")
                 .setPositiveButton("OK", null).show()
             return
         }
-        val entries = found.take(40)
+        // Prefere vídeo direto, depois playlists HLS/DASH e áudio.
+        // Dentro de cada grupo, preserva a ordem de detecção mais recente primeiro.
+        val entries = found.withIndex()
+            .sortedWith(compareBy<IndexedValue<String>> { detectedMediaRank(it.value) }
+                .thenBy { it.index })
+            .map { it.value }
+            .take(40)
         val labels = entries.map { url ->
             val u = Uri.parse(url)
-            (u.host ?: "mídia") + " · " + (u.pathSegments.lastOrNull() ?: "arquivo").take(65)
+            "${detectedMediaKind(url)} · ${u.host ?: "origem desconhecida"}"
         }.toTypedArray()
-        AlertDialog.Builder(this).setTitle("Media3 · ${entries.size} fonte(s) detectada(s)")
+        AlertDialog.Builder(this).setTitle("Media3 · ${entries.size} fonte(s) observada(s)")
+            .setMessage("Estas URLs ainda não foram validadas. O servidor pode responder HTTP 403 ou exigir reprodução no player do site.")
             .setItems(labels) { _, index ->
                 val candidate = entries[index]
-                AlertDialog.Builder(this).setTitle("Reproduzir fora da WebView?")
-                    .setMessage("Fonte: ${Uri.parse(candidate).host}\n\nO navegador tentará iniciar na posição atual e pausar o player da página quando o Media3 estiver tocando. Se a fonte não corresponder ao vídeo, a sincronização não será possível.")
-                    .setPositiveButton("Reproduzir no Media3") { _, _ -> startMedia3(candidate) }
+                val parsed = Uri.parse(candidate)
+                AlertDialog.Builder(this).setTitle("Testar no Media3?")
+                    .setMessage("Tipo: ${detectedMediaKind(candidate)}\nServidor: ${parsed.host ?: "desconhecido"}\n\nO Media3 tentará tocar independentemente. O player da página só será pausado se a reprodução nativa começar e a fonte corresponder.")
+                    .setPositiveButton("Testar reprodução") { _, _ -> startMedia3(candidate) }
                     .setNegativeButton("Cancelar", null).show()
             }
             .setNeutralButton("Limpar lista") { _, _ ->
