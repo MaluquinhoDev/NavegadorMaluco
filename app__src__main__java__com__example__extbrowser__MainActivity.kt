@@ -518,19 +518,66 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun tryNativeMediaFromPage() {
-        // Apenas um elemento HTML5 já carregado. O valor não passa por bridge de extensão.
-        val script = """(function(){const m=Array.from(document.querySelectorAll('audio,video'))
-          .find(x=>x.currentSrc && /^https?:/i.test(x.currentSrc));
-          return m ? m.currentSrc : '';})()"""
+        // A WebView so permite examinar o documento e iframes da mesma origem.
+        // URLs blob:, MSE, DRM e players isolados nao podem ser transferidos.
+        val script = """(function() {
+            const medias = [];
+            let crossOriginFrames = 0;
+            const seen = new Set();
+            function scan(doc) {
+                if (!doc || seen.has(doc)) return;
+                seen.add(doc);
+                try {
+                    for (const m of doc.querySelectorAll('audio,video')) {
+                        let u = m.currentSrc || m.src || '';
+                        if (!u) {
+                            const source = m.querySelector('source[src]');
+                            if (source) u = source.src;
+                        }
+                        medias.push({url: u, playing: !m.paused && !m.ended,
+                            kind: m.tagName.toLowerCase()});
+                    }
+                    for (const iframe of doc.querySelectorAll('iframe')) {
+                        try { scan(iframe.contentDocument); }
+                        catch (_) { crossOriginFrames++; }
+                        if (!iframe.contentDocument) crossOriginFrames++;
+                    }
+                } catch (_) { crossOriginFrames++; }
+            }
+            scan(document);
+            medias.sort((a,b) => Number(b.playing) - Number(a.playing));
+            const direct = medias.find(m => /^https?:\/\//i.test(m.url));
+            const blobs = medias.filter(m => /^blob:/i.test(m.url)).length;
+            return JSON.stringify({url: direct ? direct.url : '',
+                found: medias.length, blobs: blobs, frames: crossOriginFrames,
+                playing: direct ? direct.playing : false});
+        })()"""
         webView.evaluateJavascript(script) { result ->
-            val url = runCatching { JSONArray("[$result]").getString(0) }.getOrDefault("")
-            if (url.isBlank()) {
-                Toast.makeText(this, "Esta página não expõe uma URL direta de mídia compatível", Toast.LENGTH_LONG).show()
-            } else {
-                AlertDialog.Builder(this).setTitle("Transferir mídia para player nativo?")
-                    .setMessage("O player nativo tentará abrir a mídia. Pause o player da página para evitar áudio duplicado.")
-                    .setPositiveButton("Reproduzir") { _, _ -> startNativeMedia(url) }
+            val data = runCatching {
+                val encoded = JSONArray("[$result]").getString(0)
+                org.json.JSONObject(encoded)
+            }.getOrNull()
+            val url = data?.optString("url").orEmpty()
+            if (url.isNotBlank()) {
+                AlertDialog.Builder(this)
+                    .setTitle("Mídia direta identificada")
+                    .setMessage("A URL foi identificada. O player nativo tentará abrir o arquivo, mas pode falhar se precisar de sessão, cookies ou formato especial. O vídeo da página não é transferido automaticamente.")
+                    .setPositiveButton("Tentar reproduzir") { _, _ -> startNativeMedia(url) }
                     .setNegativeButton("Cancelar", null).show()
+            } else {
+                val count = data?.optInt("found", 0) ?: 0
+                val blobs = data?.optInt("blobs", 0) ?: 0
+                val frames = data?.optInt("frames", 0) ?: 0
+                val diagnosis = when {
+                    data == null -> "Falha ao consultar os elementos HTML5 da página."
+                    blobs > 0 -> "O player usa URL blob: (fluxo de mídia interno), que o player nativo não consegue abrir."
+                    frames > 0 -> "O vídeo pode estar em iframe de outra origem; o Android não permite ler o conteúdo desse iframe a partir da página."
+                    count > 0 -> "Foram encontrados elementos de mídia, mas sem endereço HTTP(S) direto."
+                    else -> "Nenhum elemento de áudio/vídeo acessível foi encontrado na página."
+                }
+                AlertDialog.Builder(this).setTitle("Diagnóstico do player")
+                    .setMessage(diagnosis + "\n\nPara testar a reprodução em segundo plano, use uma URL direta de áudio MP3 no menu Player nativo. O áudio da aba comum continua sujeito à suspensão da WebView.")
+                    .setPositiveButton("Entendi", null).show()
             }
         }
     }
