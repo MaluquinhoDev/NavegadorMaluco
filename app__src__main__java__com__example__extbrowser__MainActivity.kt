@@ -49,6 +49,11 @@ import androidx.webkit.WebMessageCompat
 import androidx.webkit.WebViewCompat
 import androidx.webkit.WebViewFeature
 import java.io.ByteArrayInputStream
+import java.util.WeakHashMap
+import android.content.ComponentName
+import androidx.media3.common.MediaItem
+import androidx.media3.session.MediaController
+import androidx.media3.session.SessionToken
 
 class MainActivity : ComponentActivity() {
     private class Blocker(val name: String, val regex: Regex)
@@ -80,6 +85,11 @@ class MainActivity : ComponentActivity() {
     // Opcional: mantém WebViews ativas para reprodução HTML5 após trocar de aba.
     // Não contorna restrições de sites nem garante execução após o Android suspender o app.
     private var backgroundAudioEnabled = false
+    // Apenas metadados de requisições. Nunca intercepta conteúdo, tokens nem corpos HTTP.
+    private val mediaCandidates = WeakHashMap<WebView, LinkedHashSet<String>>()
+    private val mediaCandidateLock = Any()
+    private val mediaExtension = Regex("(?i)\\.(mp3|m4a|aac|ogg|oga|opus|wav|flac|mp4|m4v|webm|m3u8|mpd)(?:[?#]|$)")
+
 
     // O Android devolve aqui o arquivo escolhido em formulários <input type="file">.
     private val filePicker = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
@@ -231,6 +241,17 @@ class MainActivity : ComponentActivity() {
             }
             override fun shouldInterceptRequest(v: WebView, request: WebResourceRequest): WebResourceResponse? {
                 val url = request.url.toString()
+                // Chamado em thread auxiliar. Observa apenas URLs aparentes de mídia,
+                // mantendo o mecanismo de rede e bloqueio existentes inalterados.
+                if (!request.isForMainFrame &&
+                    (request.url.scheme == "https" || request.url.scheme == "http") &&
+                    mediaExtension.containsMatchIn(url)) {
+                    synchronized(mediaCandidateLock) {
+                        val found = mediaCandidates.getOrPut(v) { LinkedHashSet() }
+                        if (found.size >= 60) found.remove(found.first())
+                        found.add(url)
+                    }
+                }
                 val hit = blockerList.firstOrNull { it.regex.matches(url) }
                 if (hit != null) return if (request.isForMainFrame)
                     htmlResponse(BlockPage.html("Bloqueado", hit.name, ""))
@@ -440,6 +461,7 @@ class MainActivity : ComponentActivity() {
         val tab = tabs.removeAt(index)
         if (webHost.childCount > 0 && webHost.getChildAt(0) === tab.view) webHost.removeView(tab.view)
         pendingPopups.remove(tab.view)
+        synchronized(mediaCandidateLock) { mediaCandidates.remove(tab.view) }
         tab.view.stopLoading()
         tab.view.destroy()
         if (tabs.isEmpty()) { tabs.add(Tab(createWebView())) ; activeIndex = 0 }
@@ -472,7 +494,7 @@ class MainActivity : ComponentActivity() {
     private fun showLibrary() {
         val audioLabel = "Áudio em segundo plano: " + (if (backgroundAudioEnabled) "ligado" else "desligado")
         AlertDialog.Builder(this).setTitle("Biblioteca")
-            .setItems(arrayOf("Favoritos", "Histórico", audioLabel, "Vídeo em janela flutuante (PiP)", "Player nativo: abrir URL de mídia", "Player nativo: tentar mídia da página")) { _, which ->
+            .setItems(arrayOf("Favoritos", "Histórico", audioLabel, "Vídeo em janela flutuante (PiP)", "Player nativo: abrir URL de mídia", "Player nativo: tentar mídia da página", "Media3: mídias detectadas nas requisições")) { _, which ->
                 when (which) {
                     0 -> showSavedPages(true)
                     1 -> showSavedPages(false)
@@ -480,8 +502,61 @@ class MainActivity : ComponentActivity() {
                     3 -> enterPip()
                     4 -> promptNativeMediaUrl()
                     5 -> tryNativeMediaFromPage()
+                    6 -> showRequestMediaCandidates()
                 }
             }.show()
+    }
+
+    /** A lista é limitada por aba; nenhuma reprodução inicia sem escolha explícita. */
+    private fun showRequestMediaCandidates() {
+        val found = synchronized(mediaCandidateLock) {
+            mediaCandidates[webView]?.toList().orEmpty().reversed()
+        }
+        if (found.isEmpty()) {
+            AlertDialog.Builder(this).setTitle("Detector Media3")
+                .setMessage("Nenhuma requisição de mídia HTTP(S) com extensão reconhecida foi observada nesta aba. Inicie o vídeo e tente novamente. Players blob:, DRM e URLs sem extensão podem não aparecer.")
+                .setPositiveButton("OK", null).show()
+            return
+        }
+        val entries = found.take(40)
+        val labels = entries.map { url ->
+            val u = Uri.parse(url)
+            (u.host ?: "mídia") + " · " + (u.pathSegments.lastOrNull() ?: "arquivo").take(65)
+        }.toTypedArray()
+        AlertDialog.Builder(this).setTitle("Media3 · ${entries.size} fonte(s) detectada(s)")
+            .setItems(labels) { _, index ->
+                val candidate = entries[index]
+                AlertDialog.Builder(this).setTitle("Reproduzir fora da WebView?")
+                    .setMessage("Fonte: ${Uri.parse(candidate).host}\n\nURLs temporárias ou autenticadas podem falhar. A transmissão será iniciada desde o começo. Ao confirmar, o áudio do player da página deve ser pausado manualmente para evitar duplicação.")
+                    .setPositiveButton("Reproduzir no Media3") { _, _ -> startMedia3(candidate) }
+                    .setNegativeButton("Cancelar", null).show()
+            }
+            .setNeutralButton("Limpar lista") { _, _ ->
+                synchronized(mediaCandidateLock) { mediaCandidates.remove(webView) }
+            }.setNegativeButton("Cancelar", null).show()
+    }
+
+    private fun startMedia3(url: String) {
+        val u = Uri.parse(url)
+        if (u.scheme !in listOf("http", "https") || u.host.isNullOrBlank()) return
+        // MediaController inicia/conecta ao MediaSessionService corretamente,
+        // evitando iniciar um foreground service antes de haver reprodução real.
+        val token = SessionToken(this, ComponentName(this, Media3PlaybackService::class.java))
+        val future = MediaController.Builder(this, token).buildAsync()
+        future.addListener({
+            try {
+                val controller = future.get()
+                controller.setMediaItem(MediaItem.fromUri(u))
+                controller.prepare()
+                controller.play()
+                // O controle continua disponível pelo Android MediaSession.
+                Toast.makeText(this, "Fonte enviada ao Media3", Toast.LENGTH_SHORT).show()
+            } catch (e: Exception) {
+                Toast.makeText(this, "Media3 não conseguiu iniciar: ${e.message}", Toast.LENGTH_LONG).show()
+            } finally {
+                MediaController.releaseFuture(future)
+            }
+        }, androidx.core.content.ContextCompat.getMainExecutor(this))
     }
 
     /** O player nativo reproduz URLs diretas; não extrai fluxos protegidos ou blob:. */
