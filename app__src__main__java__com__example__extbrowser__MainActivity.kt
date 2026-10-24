@@ -812,13 +812,27 @@ class MainActivity : ComponentActivity() {
                         }
                     }
                     controller.addListener(listener)
-                    // Envia apenas a ORIGEM da página; não expõe caminho, query ou tokens.
+                    // Prioriza a origem observada no Referer da própria requisição.
+                    // Nunca envia cookies, URL integral, query ou tokens ao serviço.
+                    // Aceita somente domínio HTTPS relacionado ao host da mídia.
+                    val observedHost = synchronized(mediaCandidateLock) {
+                        mediaRequestOrigins[sourceView]?.get(url)
+                    }
+                    val mediaHost = u.host?.lowercase(java.util.Locale.ROOT).orEmpty()
+                    val refHost = observedHost?.lowercase(java.util.Locale.ROOT).orEmpty()
+                    val related = refHost.isNotBlank() && refHost != "não informado" &&
+                        (mediaHost == refHost || mediaHost.endsWith(".$refHost"))
                     val pageUri = Uri.parse(sourceView.url ?: "")
-                    val pageOrigin = if (pageUri.scheme == "https" && !pageUri.host.isNullOrBlank())
+                    val fallbackOrigin = if (pageUri.scheme == "https" && !pageUri.host.isNullOrBlank())
                         "https://${pageUri.host}${if (pageUri.port > 0) ":${pageUri.port}" else ""}/"
                         else ""
+                    val selectedOrigin = if (u.scheme == "https" && related)
+                        "https://$refHost/" else fallbackOrigin
+                    android.util.Log.i("NavegadorMedia3",
+                        "OrigemRefererSelecionada: ${if (related) "observada" else "pagina"}; " +
+                        "hostReferer=${if (related) refHost else "indisponivel"}; hostMidia=$mediaHost")
                     val mediaInfo = android.os.Bundle().apply {
-                        putString("nm_page_origin", pageOrigin)
+                        putString("nm_page_origin", selectedOrigin)
                     }
                     val item = MediaItem.Builder().setUri(u)
                         .setMediaMetadata(androidx.media3.common.MediaMetadata.Builder()
