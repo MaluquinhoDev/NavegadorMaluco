@@ -5,9 +5,12 @@ import android.content.Intent
 import android.graphics.Bitmap
 import android.net.Uri
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
+import android.os.SystemClock
 import android.text.InputType
-import android.text.TextUtils
 import android.util.Log
+import android.view.View
 import android.view.ViewGroup.LayoutParams.MATCH_PARENT
 import android.view.ViewGroup.LayoutParams.WRAP_CONTENT
 import android.view.inputmethod.EditorInfo
@@ -18,6 +21,7 @@ import android.webkit.WebViewClient
 import android.widget.Button
 import android.widget.EditText
 import android.widget.LinearLayout
+import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.OnBackPressedCallback
@@ -35,10 +39,27 @@ class MainActivity : ComponentActivity() {
 
     private lateinit var webView: WebView
     private lateinit var urlBar: EditText
+    private lateinit var statusView: TextView
 
     /** Regras de bloqueio das extensões (campo block_requests). Lidas em thread de rede. */
     @Volatile
     private var blockers: List<Blocker> = emptyList()
+
+    /** Instante do último bloqueio exibido; evita mostrar a mesma página de bloqueio duas vezes seguidas. */
+    @Volatile
+    private var lastBlockMs = 0L
+
+    private val handler = Handler(Looper.getMainLooper())
+
+    /** A cada 5 s: confere a página atual, conta o tempo e aplica os limites do controle de atenção. */
+    private val ticker = object : Runnable {
+        override fun run() {
+            val verdict = Attention.onUrl(webView.url) ?: Attention.tick()
+            if (verdict != null) showBlocked(verdict)
+            updateStatus()
+            handler.postDelayed(this, 5000)
+        }
+    }
 
     /** Ao voltar da tela de extensões com mudanças, recria a tela para aplicá-las. */
     private val extLauncher = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { r ->
@@ -48,6 +69,7 @@ class MainActivity : ComponentActivity() {
     @SuppressLint("SetJavaScriptEnabled")
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        Attention.init(this)
 
         urlBar = EditText(this).apply {
             setSingleLine()
@@ -67,10 +89,16 @@ class MainActivity : ComponentActivity() {
             addView(urlBar, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
             addView(extButton, LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT))
         }
+        statusView = TextView(this).apply {
+            textSize = 12f
+            setPadding(16, 4, 16, 4)
+            visibility = View.GONE
+        }
         webView = WebView(this)
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             addView(bar, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
+            addView(statusView, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
             addView(webView, LinearLayout.LayoutParams(MATCH_PARENT, 0, 1f))
         }
         setContentView(root)
@@ -90,24 +118,33 @@ class MainActivity : ComponentActivity() {
                 if (!urlBar.hasFocus()) urlBar.setText(url)
             }
 
+            override fun doUpdateVisitedHistory(view: WebView, url: String, isReload: Boolean) {
+                Attention.onUrl(url)?.let { showBlocked(it) }
+            }
+
             override fun shouldInterceptRequest(view: WebView, request: WebResourceRequest): WebResourceResponse? {
                 val url = request.url.toString()
-                val hit = blockers.firstOrNull { it.regex.matches(url) } ?: return null
-                return if (request.isForMainFrame) {
-                    val html = "<!doctype html><meta charset=utf-8>" +
-                        "<meta name=viewport content='width=device-width,initial-scale=1'>" +
-                        "<body style='font:18px sans-serif;padding:40px 24px;text-align:center'>" +
-                        "<h2>Bloqueado</h2><p>" + TextUtils.htmlEncode(hit.extName) + "</p></body>"
-                    WebResourceResponse(
-                        "text/html", "utf-8", 200, "OK", emptyMap(),
-                        ByteArrayInputStream(html.toByteArray(Charsets.UTF_8)),
-                    )
-                } else {
-                    WebResourceResponse(
-                        "text/plain", "utf-8", 403, "Blocked", emptyMap(),
-                        ByteArrayInputStream(ByteArray(0)),
-                    )
+
+                val hit = blockers.firstOrNull { it.regex.matches(url) }
+                if (hit != null) {
+                    return if (request.isForMainFrame) {
+                        htmlResponse(BlockPage.html("Bloqueado", hit.extName, ""))
+                    } else {
+                        WebResourceResponse(
+                            "text/plain", "utf-8", 403, "Blocked", emptyMap(),
+                            ByteArrayInputStream(ByteArray(0)),
+                        )
+                    }
                 }
+
+                if (request.isForMainFrame) {
+                    val verdict = Attention.checkNavigation(url)
+                    if (verdict != null) {
+                        lastBlockMs = SystemClock.elapsedRealtime()
+                        return htmlResponse(BlockPage.html("Acesso encerrado", verdict.site.domain, verdict.reason))
+                    }
+                }
+                return null
             }
         }
 
@@ -122,9 +159,49 @@ class MainActivity : ComponentActivity() {
         webView.loadUrl(savedInstanceState?.getString("url") ?: "https://www.wikipedia.org")
     }
 
+    override fun onResume() {
+        super.onResume()
+        handler.post(ticker)
+    }
+
+    override fun onPause() {
+        handler.removeCallbacks(ticker)
+        Attention.pause()
+        super.onPause()
+    }
+
     override fun onSaveInstanceState(outState: Bundle) {
         super.onSaveInstanceState(outState)
         webView.url?.let { outState.putString("url", it) }
+    }
+
+    private fun htmlResponse(html: String) = WebResourceResponse(
+        "text/html", "utf-8", 200, "OK", emptyMap(),
+        ByteArrayInputStream(html.toByteArray(Charsets.UTF_8)),
+    )
+
+    private fun showBlocked(v: AttentionVerdict) {
+        val now = SystemClock.elapsedRealtime()
+        if (now - lastBlockMs < 3000) return
+        lastBlockMs = now
+        webView.loadDataWithBaseURL(
+            null,
+            BlockPage.html("Acesso encerrado", v.site.domain, v.reason),
+            "text/html", "utf-8", null,
+        )
+    }
+
+    private fun updateStatus() {
+        val st = Attention.status(webView.url)
+        if (st == null) {
+            statusView.visibility = View.GONE
+            return
+        }
+        val s = st.site
+        val used = AttentionLogic.formatTime(st.usedSeconds)
+        val today = if (s.dailyMinutes > 0) "$used de ${s.dailyMinutes} min" else "$used (sem limite)"
+        statusView.text = "⏳ ${s.domain} · hoje $today · sessão ${AttentionLogic.formatTime(st.sessionSeconds)}"
+        statusView.visibility = View.VISIBLE
     }
 
     private fun setupExtensions() {
@@ -175,6 +252,7 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onDestroy() {
+        handler.removeCallbacks(ticker)
         webView.destroy()
         super.onDestroy()
     }

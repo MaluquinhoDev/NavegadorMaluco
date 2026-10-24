@@ -1,6 +1,7 @@
 package com.example.extbrowser
 
 import android.app.AlertDialog
+import android.content.Intent
 import android.graphics.Color
 import android.os.Bundle
 import android.view.Gravity
@@ -54,6 +55,10 @@ class ExtensionsActivity : ComponentActivity() {
             addView(btnZip, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
             addView(btnDir, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
         }
+        val btnAttention = Button(this).apply {
+            text = "Controle de atenção"
+            setOnClickListener { startActivity(Intent(this@ExtensionsActivity, AttentionActivity::class.java)) }
+        }
         val hint = TextView(this).apply {
             text = "Ao voltar para o navegador, a página recarrega para aplicar as mudanças."
             textSize = 13f
@@ -66,6 +71,7 @@ class ExtensionsActivity : ComponentActivity() {
             orientation = LinearLayout.VERTICAL
             addView(title)
             addView(buttons)
+            addView(btnAttention)
             addView(hint)
             addView(scroll, LinearLayout.LayoutParams(MATCH_PARENT, 0, 1f))
         }
