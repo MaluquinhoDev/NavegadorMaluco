@@ -158,7 +158,11 @@ class AttentionActivity : ComponentActivity() {
         }
         for (s in sites) {
             val daily = if (s.dailyMinutes > 0) "${s.dailyMinutes} min/dia" else "sem limite diário"
-            val session = if (s.sessionMinutes > 0) "${s.sessionMinutes} min/sessão" else "sem limite de sessão"
+            val session = if (s.sessionMinutes > 0) {
+                "${s.sessionMinutes} min/sessão (pausa de ${AttentionLogic.breakMinutes(s.sessionMinutes)} min)"
+            } else {
+                "sem limite de sessão"
+            }
             val hours = if (s.start.isNotEmpty()) "${s.start}–${s.end}" else "qualquer horário"
             val used = AttentionLogic.formatTime(Attention.usedTodaySeconds(s.id))
 

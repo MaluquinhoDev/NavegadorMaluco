@@ -52,6 +52,21 @@ object AttentionLogic {
         }
     }
 
+    /**
+     * Duração da pausa obrigatória depois de uma sessão: 1/3 da sessão, no mínimo 5 e no máximo 30 minutos.
+     * Sem limite de sessão (0) não há pausa.
+     */
+    fun breakMinutes(sessionMinutes: Int): Int =
+        if (sessionMinutes <= 0) 0 else (sessionMinutes / 3).coerceIn(5, 30)
+
+    /** Horário local "HH:mm" de um instante (epoch em ms). */
+    fun clockOf(epochMs: Long): String {
+        val c = java.util.Calendar.getInstance()
+        c.timeInMillis = epochMs
+        return c.get(java.util.Calendar.HOUR_OF_DAY).toString().padStart(2, '0') + ":" +
+            c.get(java.util.Calendar.MINUTE).toString().padStart(2, '0')
+    }
+
     /** 125 -> "02:05" */
     fun formatTime(seconds: Long): String {
         val s = if (seconds < 0) 0L else seconds

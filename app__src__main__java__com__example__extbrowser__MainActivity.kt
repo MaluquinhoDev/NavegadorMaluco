@@ -40,6 +40,7 @@ class MainActivity : ComponentActivity() {
     private lateinit var webView: WebView
     private lateinit var urlBar: EditText
     private lateinit var statusView: TextView
+    private var statusDefaultColor = 0
 
     /** Regras de bloqueio das extensões (campo block_requests). Lidas em thread de rede. */
     @Volatile
@@ -49,13 +50,21 @@ class MainActivity : ComponentActivity() {
     @Volatile
     private var lastBlockMs = 0L
 
+    /** URL cuja página de bloqueio já foi entregue pela interceptação (para não recarregá-la sem necessidade). */
+    @Volatile
+    private var servedBlockUrl: String? = null
+
     private val handler = Handler(Looper.getMainLooper())
 
     /** A cada 5 s: confere a página atual, conta o tempo e aplica os limites do controle de atenção. */
     private val ticker = object : Runnable {
         override fun run() {
             val verdict = Attention.onUrl(webView.url) ?: Attention.tick()
-            if (verdict != null) showBlocked(verdict)
+            if (verdict == null) {
+                servedBlockUrl = null
+            } else if (webView.url != servedBlockUrl) {
+                showBlocked(verdict)
+            }
             updateStatus()
             handler.postDelayed(this, 5000)
         }
@@ -94,6 +103,7 @@ class MainActivity : ComponentActivity() {
             setPadding(16, 4, 16, 4)
             visibility = View.GONE
         }
+        statusDefaultColor = statusView.currentTextColor
         webView = WebView(this)
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -122,6 +132,14 @@ class MainActivity : ComponentActivity() {
                 Attention.onUrl(url)?.let { showBlocked(it) }
             }
 
+            /** Links da página de pausa: extbrowser://dispensar/ID e extbrowser://confirmar/ID. */
+            override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
+                val u = request.url
+                if (u.scheme != "extbrowser") return false
+                handleBreakAction(u)
+                return true
+            }
+
             override fun shouldInterceptRequest(view: WebView, request: WebResourceRequest): WebResourceResponse? {
                 val url = request.url.toString()
 
@@ -141,7 +159,8 @@ class MainActivity : ComponentActivity() {
                     val verdict = Attention.checkNavigation(url)
                     if (verdict != null) {
                         lastBlockMs = SystemClock.elapsedRealtime()
-                        return htmlResponse(BlockPage.html("Acesso encerrado", verdict.site.domain, verdict.reason))
+                        servedBlockUrl = url
+                        return htmlResponse(blockHtmlFor(verdict))
                     }
                 }
                 return null
@@ -180,15 +199,42 @@ class MainActivity : ComponentActivity() {
         ByteArrayInputStream(html.toByteArray(Charsets.UTF_8)),
     )
 
+    /** Pausa obrigatória tem página própria (com contagem e "Dispensar"); os demais bloqueios, a página simples. */
+    private fun blockHtmlFor(v: AttentionVerdict): String =
+        if (v.untilMs > 0L) {
+            BlockPage.breakHtml(v, Attention.dismissWaitLeft(v.site.id))
+        } else {
+            BlockPage.html("Acesso encerrado", v.site.domain, v.reason)
+        }
+
+    private fun loadBlock(v: AttentionVerdict) {
+        servedBlockUrl = null
+        lastBlockMs = SystemClock.elapsedRealtime()
+        webView.loadDataWithBaseURL(null, blockHtmlFor(v), "text/html", "utf-8", null)
+    }
+
     private fun showBlocked(v: AttentionVerdict) {
-        val now = SystemClock.elapsedRealtime()
-        if (now - lastBlockMs < 3000) return
-        lastBlockMs = now
-        webView.loadDataWithBaseURL(
-            null,
-            BlockPage.html("Acesso encerrado", v.site.domain, v.reason),
-            "text/html", "utf-8", null,
-        )
+        if (SystemClock.elapsedRealtime() - lastBlockMs < 3000) return
+        loadBlock(v)
+    }
+
+    /** Toques em "Dispensar pausa" e "Confirmar e continuar" da página de pausa. */
+    private fun handleBreakAction(u: Uri) {
+        val id = u.pathSegments.firstOrNull() ?: return
+        val site = Attention.sites().firstOrNull { it.id == id } ?: return
+        when (u.host) {
+            "dispensar" -> {
+                Attention.requestDismiss(id)
+                Attention.verdictForSite(id)?.let { loadBlock(it) } ?: webView.loadUrl("https://" + site.domain + "/")
+            }
+            "confirmar" -> {
+                if (Attention.confirmDismiss(id)) {
+                    webView.loadUrl("https://" + site.domain + "/")
+                } else {
+                    Attention.verdictForSite(id)?.let { loadBlock(it) } ?: webView.loadUrl("https://" + site.domain + "/")
+                }
+            }
+        }
     }
 
     private fun updateStatus() {
@@ -200,7 +246,17 @@ class MainActivity : ComponentActivity() {
         val s = st.site
         val used = AttentionLogic.formatTime(st.usedSeconds)
         val today = if (s.dailyMinutes > 0) "$used de ${s.dailyMinutes} min" else "$used (sem limite)"
-        statusView.text = "⏳ ${s.domain} · hoje $today · sessão ${AttentionLogic.formatTime(st.sessionSeconds)}"
+        val session = AttentionLogic.formatTime(st.sessionSeconds) +
+            (if (st.sessionLimitSeconds > 0) " de ${s.sessionMinutes} min" else "")
+        var text = "⏳ ${s.domain} · hoje $today · sessão $session"
+
+        val remaining = st.sessionLimitSeconds - st.sessionSeconds
+        val lastMinute = st.sessionLimitSeconds > 0 && remaining <= 60
+        if (lastMinute) {
+            text += " · falta ${AttentionLogic.formatTime(remaining)}, depois pausa de ${st.breakMinutes} min"
+        }
+        statusView.text = text
+        statusView.setTextColor(if (lastMinute) 0xFFC62828.toInt() else statusDefaultColor)
         statusView.visibility = View.VISIBLE
     }
 

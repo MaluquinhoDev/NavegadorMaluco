@@ -19,18 +19,26 @@ data class AttentionSite(
     val end: String,
 )
 
-/** Decisão de bloquear: qual site e o motivo mostrado ao usuário. */
-class AttentionVerdict(val site: AttentionSite, val reason: String)
+/**
+ * Decisão de bloquear: qual site e o motivo mostrado ao usuário.
+ * untilMs > 0 indica uma pausa obrigatória que termina nesse instante (epoch em ms).
+ */
+class AttentionVerdict(val site: AttentionSite, val reason: String, val untilMs: Long = 0L)
 
 class AttentionStatus(
     val site: AttentionSite,
     val usedSeconds: Long,
     val sessionSeconds: Long,
+    val sessionLimitSeconds: Long,
+    val breakMinutes: Int,
     val allowedNow: Boolean,
 )
 
-/** Página de bloqueio usada pelo app (extensões e controle de atenção). */
+/** Páginas de bloqueio usadas pelo app (extensões e controle de atenção). */
 object BlockPage {
+    private const val LINK =
+        "display:inline-block;padding:12px 20px;border-radius:8px;background:#eee;color:#111;text-decoration:none"
+
     fun html(heading: String, line1: String, line2: String): String =
         "<!doctype html><meta charset=utf-8>" +
             "<meta name=viewport content='width=device-width,initial-scale=1'>" +
@@ -42,15 +50,74 @@ object BlockPage {
             "<p style='font-size:18px'>" + TextUtils.htmlEncode(line1) + "</p>" +
             "<p style='font-size:18px'>" + TextUtils.htmlEncode(line2) + "</p>" +
             "</main></body>"
+
+    /**
+     * Página da pausa obrigatória, com contagem regressiva e o botão "Dispensar pausa".
+     * dismissWaitSec == null: ainda não pediu para dispensar. Caso contrário, é quanto falta esperar.
+     */
+    fun breakHtml(v: AttentionVerdict, dismissWaitSec: Int?): String {
+        val leftSec = (maxOf(0L, v.untilMs - Attention.wallNow()) + 999L) / 1000L
+        val id = TextUtils.htmlEncode(v.site.id)
+        val domain = TextUtils.htmlEncode(v.site.domain)
+        val waiting = dismissWaitSec != null
+        val wait = dismissWaitSec ?: 0
+
+        val dismissArea = if (!waiting) {
+            "<p id=ask><a href='extbrowser://dispensar/" + id + "' style='" + LINK + "'>Dispensar pausa</a></p>" +
+                "<p id=hint style='color:#999'>Dispensar exige esperar " + Attention.DISMISS_WAIT_SECONDS + " s.</p>"
+        } else {
+            "<p id=w style='color:#999'>Aguarde <b id=wt>" + wait + "</b> s para confirmar.</p>" +
+                "<p id=c style='display:none'><a href='extbrowser://confirmar/" + id + "' style='" + LINK +
+                "'>Confirmar e continuar</a></p>"
+        }
+
+        val script =
+            "var left=" + leftSec + ",wl=" + (if (waiting) wait else -1) + ";" +
+                "function f(s){var m=Math.floor(s/60),x=s%60;return (m<10?'0':'')+m+':'+(x<10?'0':'')+x}" +
+                "function el(i){return document.getElementById(i)}" +
+                "function show(i,on){var e=el(i);if(e)e.style.display=on?'block':'none'}" +
+                "function upd(){" +
+                "el('t').textContent=f(left);" +
+                "if(left<=0){show('end',true);show('ask',false);show('hint',false);show('w',false);show('c',false);return}" +
+                "if(wl==0){show('w',false);show('c',true)}" +
+                "else if(wl>0){var b=el('wt');if(b)b.textContent=wl}" +
+                "}" +
+                "upd();" +
+                "setInterval(function(){if(left>0)left--;if(wl>0)wl--;upd()},1000);"
+
+        return "<!doctype html><meta charset=utf-8>" +
+            "<meta name=viewport content='width=device-width,initial-scale=1'>" +
+            "<body style='margin:0;min-height:100vh;display:flex;align-items:center;" +
+            "justify-content:center;padding:24px;box-sizing:border-box;background:#111;" +
+            "color:#eee;font-family:sans-serif;text-align:center'>" +
+            "<main><div style='font-size:64px'>&#9203;</div>" +
+            "<h1>Hora de uma pausa</h1>" +
+            "<p style='font-size:18px'>" + domain + "</p>" +
+            "<p style='font-size:18px'>" + TextUtils.htmlEncode(v.reason) + "</p>" +
+            "<p style='font-size:18px'>Volta às " + AttentionLogic.clockOf(v.untilMs) +
+            " (faltam <b id=t>--:--</b>)</p>" +
+            dismissArea +
+            "<p id=end style='display:none'>Pausa concluída.<br><br><a href='https://" + domain +
+            "/' style='" + LINK + "'>Voltar ao site</a></p>" +
+            "</main><script>" + script + "</script></body>"
+    }
 }
 
 /**
- * Controle de atenção nativo: limite diário, limite por sessão e horário permitido por site.
- * O tempo só corre enquanto o app está em primeiro plano e com uma página monitorada aberta.
+ * Controle de atenção nativo: limite diário, limite por sessão, horário permitido e pausa
+ * obrigatória entre sessões, por site. O tempo só corre enquanto o app está em primeiro plano
+ * com uma página monitorada aberta.
  */
 object Attention {
+    const val DISMISS_WAIT_SECONDS = 30
+
     private const val MAX_TICK_MS = 15_000L
     private const val KEEP_DAYS = 35
+    private const val SESSION_GAP_MS = 5 * 60_000L
+    private const val DISMISS_WAIT_MS = DISMISS_WAIT_SECONDS * 1000L
+
+    /** Relógio de parede (usado nas pausas); substituível nos testes. */
+    internal var wallNow: () -> Long = { System.currentTimeMillis() }
 
     private var prefs: SharedPreferences? = null
     private var sites: List<AttentionSite> = emptyList()
@@ -58,9 +125,20 @@ object Attention {
     /** dia ("2026-10-23") -> id do site -> milissegundos usados */
     private val usage = HashMap<String, HashMap<String, Long>>()
 
+    /** id do site -> fim da pausa obrigatória (epoch em ms) */
+    private val breaks = HashMap<String, Long>()
+
+    /** id do site -> instante (elapsedRealtime) em que o usuário pediu para dispensar a pausa */
+    private val dismissAsked = HashMap<String, Long>()
+
     private var currentId: String? = null
     private var sessionMs = 0L
     private var lastTickMs = 0L
+
+    /** Última sessão encerrada, para continuar se o usuário voltar em até 5 minutos. */
+    private class SavedSession(val id: String, val ms: Long, val endedAt: Long)
+
+    private var saved: SavedSession? = null
 
     @Synchronized
     fun init(context: Context) {
@@ -87,9 +165,18 @@ object Attention {
                 for (id in d.keys()) m[id] = d.getLong(id)
                 usage[day] = m
             }
+            val b = JSONObject(p.getString("breaks", "{}") ?: "{}")
+            for (id in b.keys()) breaks[id] = b.getLong(id)
+            val s = p.getString("session", null)
+            if (s != null) {
+                val o = JSONObject(s)
+                saved = SavedSession(o.getString("id"), o.getLong("ms"), o.getLong("at"))
+            }
         } catch (e: Exception) {
             sites = emptyList()
             usage.clear()
+            breaks.clear()
+            saved = null
         }
     }
 
@@ -119,10 +206,14 @@ object Attention {
     @Synchronized
     fun removeSite(id: String) {
         if (currentId == id) endSession()
+        forgetSession(id)
         sites = sites.filter { it.id != id }
         for (day in usage.values) day.remove(id)
+        breaks.remove(id)
+        dismissAsked.remove(id)
         saveSites()
         saveUsage()
+        saveBreaks()
     }
 
     // ---------- Consulta ----------
@@ -144,12 +235,29 @@ object Attention {
 
     private fun usedMs(id: String): Long = usage[todayKey()]?.get(id) ?: 0L
 
-    private fun navigationReason(site: AttentionSite): String? {
+    /**
+     * Quanto falta da pausa obrigatória. Se o relógio do aparelho foi atrasado, a pausa nunca
+     * passa da duração prevista para o site.
+     */
+    private fun breakLeftMs(site: AttentionSite): Long {
+        val until = breaks[site.id] ?: return 0L
+        val remaining = until - wallNow()
+        if (remaining <= 0L) return 0L
+        val cap = AttentionLogic.breakMinutes(site.sessionMinutes) * 60_000L
+        return if (cap <= 0L) 0L else minOf(remaining, cap)
+    }
+
+    /** O site pode ser aberto agora? Devolve o bloqueio (horário, limite diário ou pausa) ou null. */
+    private fun navigationBlock(site: AttentionSite): AttentionVerdict? {
         if (!AttentionLogic.withinTime(site.start, site.end, nowMinutes())) {
-            return "Este site está fora do horário permitido."
+            return AttentionVerdict(site, "Este site está fora do horário permitido.")
         }
         if (site.dailyMinutes > 0 && usedMs(site.id) >= site.dailyMinutes * 60_000L) {
-            return "O limite diário foi atingido."
+            return AttentionVerdict(site, "O limite diário foi atingido.")
+        }
+        val left = breakLeftMs(site)
+        if (left > 0L) {
+            return AttentionVerdict(site, "Pausa entre sessões em andamento.", wallNow() + left)
         }
         return null
     }
@@ -159,8 +267,14 @@ object Attention {
     fun checkNavigation(url: String): AttentionVerdict? {
         val host = AttentionLogic.hostOf(url) ?: return null
         val site = findSite(host) ?: return null
-        val reason = navigationReason(site) ?: return null
-        return AttentionVerdict(site, reason)
+        return navigationBlock(site)
+    }
+
+    /** Bloqueio atual de um site pelo id (para redesenhar a página de pausa). */
+    @Synchronized
+    fun verdictForSite(id: String): AttentionVerdict? {
+        val site = sites.firstOrNull { it.id == id } ?: return null
+        return navigationBlock(site)
     }
 
     @Synchronized
@@ -169,17 +283,51 @@ object Attention {
         val site = findSite(host) ?: return null
         val session = if (currentId == site.id) sessionMs / 1000 else 0L
         val allowed = AttentionLogic.withinTime(site.start, site.end, nowMinutes())
-        return AttentionStatus(site, usedMs(site.id) / 1000, session, allowed)
+        return AttentionStatus(
+            site, usedMs(site.id) / 1000, session, site.sessionMinutes * 60L,
+            AttentionLogic.breakMinutes(site.sessionMinutes), allowed,
+        )
     }
 
     @Synchronized
     fun usedTodaySeconds(id: String): Long = usedMs(id) / 1000
 
+    // ---------- Dispensar a pausa (com espera) ----------
+
+    /** O usuário tocou em "Dispensar pausa": começa a espera de 30 s. */
+    @Synchronized
+    fun requestDismiss(id: String) {
+        val site = sites.firstOrNull { it.id == id } ?: return
+        if (breakLeftMs(site) > 0L) dismissAsked[id] = SystemClock.elapsedRealtime()
+    }
+
+    /** Segundos que ainda faltam para poder confirmar; null se não pediu para dispensar. */
+    @Synchronized
+    fun dismissWaitLeft(id: String): Int? {
+        val at = dismissAsked[id] ?: return null
+        val left = DISMISS_WAIT_MS - (SystemClock.elapsedRealtime() - at)
+        return if (left <= 0L) 0 else ((left + 999L) / 1000L).toInt()
+    }
+
+    /** Confirma a dispensa; só vale se os 30 s de espera já passaram. */
+    @Synchronized
+    fun confirmDismiss(id: String): Boolean {
+        val at = dismissAsked[id] ?: return false
+        if (SystemClock.elapsedRealtime() - at < DISMISS_WAIT_MS) return false
+        dismissAsked.remove(id)
+        breaks.remove(id)
+        saveBreaks()
+        forgetSession(id)
+        Log.i("Attention", "pausa dispensada: " + id)
+        return true
+    }
+
     // ---------- Sessão ----------
 
     /**
-     * Informa a página atual. Inicia ou encerra a sessão conforme o site.
-     * Devolve um AttentionVerdict se a página atual não deveria estar aberta (horário ou limite diário).
+     * Informa a página atual. Inicia ou encerra a sessão conforme o site; uma sessão interrompida
+     * por até 5 minutos continua de onde parou.
+     * Devolve um bloqueio se a página atual não deveria estar aberta (horário, limite diário ou pausa).
      */
     @Synchronized
     fun onUrl(url: String?): AttentionVerdict? {
@@ -189,18 +337,21 @@ object Attention {
             endSession()
             return null
         }
-        val reason = navigationReason(site)
-        if (reason != null) {
+        val block = navigationBlock(site)
+        if (block != null) {
             endSession()
-            Log.i("Attention", "página bloqueada: " + site.domain + " - " + reason)
-            return AttentionVerdict(site, reason)
+            forgetSession(site.id)
+            Log.i("Attention", "página bloqueada: " + site.domain + " - " + block.reason)
+            return block
         }
         if (currentId != site.id) {
             endSession()
+            val s = saved
+            val gap = wallNow() - (s?.endedAt ?: 0L)
+            sessionMs = if (s != null && s.id == site.id && gap >= 0L && gap <= SESSION_GAP_MS) s.ms else 0L
             currentId = site.id
-            sessionMs = 0L
             lastTickMs = SystemClock.elapsedRealtime()
-            Log.i("Attention", "sessão iniciada: " + site.domain)
+            Log.i("Attention", "sessão iniciada: " + site.domain + " (já em " + sessionMs / 1000 + " s)")
         }
         return null
     }
@@ -220,33 +371,55 @@ object Attention {
         addUsage(id, delta)
         sessionMs += delta
 
-        val reason = when {
-            !AttentionLogic.withinTime(site.start, site.end, nowMinutes()) ->
-                "Este site está fora do horário permitido."
-            site.dailyMinutes > 0 && usedMs(id) >= site.dailyMinutes * 60_000L ->
-                "O limite diário foi atingido."
-            site.sessionMinutes > 0 && sessionMs >= site.sessionMinutes * 60_000L ->
-                "A duração máxima desta sessão foi atingida."
-            else -> null
+        if (!AttentionLogic.withinTime(site.start, site.end, nowMinutes())) {
+            return stopWith(site, "Este site está fora do horário permitido.")
         }
-        if (reason != null) {
-            endSession()
-            Log.i("Attention", "sessão encerrada por limite: " + site.domain + " - " + reason)
-            return AttentionVerdict(site, reason)
+        if (site.dailyMinutes > 0 && usedMs(id) >= site.dailyMinutes * 60_000L) {
+            return stopWith(site, "O limite diário foi atingido.")
+        }
+        if (site.sessionMinutes > 0 && sessionMs >= site.sessionMinutes * 60_000L) {
+            val pauseMs = AttentionLogic.breakMinutes(site.sessionMinutes) * 60_000L
+            val until = wallNow() + pauseMs
+            breaks[id] = until
+            saveBreaks()
+            val v = stopWith(site, "A duração máxima desta sessão foi atingida.", until)
+            Log.i("Attention", "pausa de " + pauseMs / 60_000L + " min até " + AttentionLogic.clockOf(until))
+            return v
         }
         return null
     }
 
-    /** O app saiu da tela: conta o último trecho e encerra a sessão. */
+    private fun stopWith(site: AttentionSite, reason: String, untilMs: Long = 0L): AttentionVerdict {
+        endSession()
+        forgetSession(site.id)
+        Log.i("Attention", "sessão encerrada por limite: " + site.domain + " - " + reason)
+        return AttentionVerdict(site, reason, untilMs)
+    }
+
+    /** O app saiu da tela: conta o último trecho e guarda a sessão (continua se voltar logo). */
     @Synchronized
     fun pause() {
         tick()
         endSession()
     }
 
+    /** Encerra o acompanhamento e guarda a sessão para uma possível volta rápida. */
     private fun endSession() {
+        val id = currentId
+        if (id != null && sessionMs > 0L) {
+            saved = SavedSession(id, sessionMs, wallNow())
+            saveSession()
+        }
         currentId = null
         sessionMs = 0L
+    }
+
+    /** Esquece a sessão guardada do site (limite atingido, pausa dispensada ou site removido). */
+    private fun forgetSession(id: String) {
+        if (saved?.id == id) {
+            saved = null
+            saveSession()
+        }
     }
 
     // ---------- Persistência ----------
@@ -285,5 +458,17 @@ object Attention {
             o.put(day, d)
         }
         prefs?.edit()?.putString("usage", o.toString())?.apply()
+    }
+
+    private fun saveBreaks() {
+        val o = JSONObject()
+        for ((id, until) in breaks) o.put(id, until)
+        prefs?.edit()?.putString("breaks", o.toString())?.apply()
+    }
+
+    private fun saveSession() {
+        val s = saved
+        val text = if (s == null) null else JSONObject().put("id", s.id).put("ms", s.ms).put("at", s.endedAt).toString()
+        prefs?.edit()?.putString("session", text)?.apply()
     }
 }
