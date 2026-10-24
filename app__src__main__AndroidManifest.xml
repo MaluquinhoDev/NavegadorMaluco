@@ -29,6 +29,10 @@
             android:exported="false"
             android:windowSoftInputMode="adjustResize" />
         <service
+            android:name=".NativeMediaService"
+            android:exported="false"
+            android:foregroundServiceType="mediaPlayback" />
+        <service
             android:name=".BackgroundAudioService"
             android:exported="false"
             android:foregroundServiceType="mediaPlayback" />

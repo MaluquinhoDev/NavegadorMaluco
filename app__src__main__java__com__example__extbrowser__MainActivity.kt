@@ -6,6 +6,7 @@ import android.app.PictureInPictureParams
 import android.content.pm.PackageManager
 import android.util.Rational
 import android.content.Intent
+import org.json.JSONArray
 import android.app.DownloadManager
 import android.content.Context
 import android.content.res.Configuration
@@ -471,14 +472,67 @@ class MainActivity : ComponentActivity() {
     private fun showLibrary() {
         val audioLabel = "Áudio em segundo plano: " + (if (backgroundAudioEnabled) "ligado" else "desligado")
         AlertDialog.Builder(this).setTitle("Biblioteca")
-            .setItems(arrayOf("Favoritos", "Histórico", audioLabel, "Vídeo em janela flutuante (PiP)")) { _, which ->
+            .setItems(arrayOf("Favoritos", "Histórico", audioLabel, "Vídeo em janela flutuante (PiP)", "Player nativo: abrir URL de mídia", "Player nativo: tentar mídia da página")) { _, which ->
                 when (which) {
                     0 -> showSavedPages(true)
                     1 -> showSavedPages(false)
                     2 -> toggleBackgroundAudio()
                     3 -> enterPip()
+                    4 -> promptNativeMediaUrl()
+                    5 -> tryNativeMediaFromPage()
                 }
             }.show()
+    }
+
+    /** O player nativo reproduz URLs diretas; não extrai fluxos protegidos ou blob:. */
+    private fun startNativeMedia(raw: String) {
+        val url = raw.trim()
+        val uri = Uri.parse(url)
+        if ((uri.scheme != "https" && uri.scheme != "http") || uri.host.isNullOrBlank()) {
+            Toast.makeText(this, "Informe uma URL HTTP(S) direta de áudio/vídeo", Toast.LENGTH_LONG).show()
+            return
+        }
+        try {
+            androidx.core.content.ContextCompat.startForegroundService(this,
+                Intent(this, NativeMediaService::class.java).apply {
+                    action = NativeMediaService.ACTION_PLAY
+                    putExtra(NativeMediaService.EXTRA_URL, url)
+                })
+            Toast.makeText(this, "Abrindo mídia no player nativo", Toast.LENGTH_SHORT).show()
+        } catch (e: Exception) {
+            Toast.makeText(this, "Falha ao abrir player: ${e.message}", Toast.LENGTH_LONG).show()
+        }
+    }
+
+    private fun promptNativeMediaUrl() {
+        val field = EditText(this).apply {
+            hint = "https://exemplo.com/audio.mp3"
+            setSingleLine()
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_URI
+        }
+        AlertDialog.Builder(this).setTitle("Reproduzir mídia diretamente")
+            .setMessage("Cole uma URL direta de mídia. Links de páginas e players protegidos não funcionam.")
+            .setView(field)
+            .setPositiveButton("Reproduzir") { _, _ -> startNativeMedia(field.text.toString()) }
+            .setNegativeButton("Cancelar", null).show()
+    }
+
+    private fun tryNativeMediaFromPage() {
+        // Apenas um elemento HTML5 já carregado. O valor não passa por bridge de extensão.
+        val script = """(function(){const m=Array.from(document.querySelectorAll('audio,video'))
+          .find(x=>x.currentSrc && /^https?:/i.test(x.currentSrc));
+          return m ? m.currentSrc : '';})()"""
+        webView.evaluateJavascript(script) { result ->
+            val url = runCatching { JSONArray("[$result]").getString(0) }.getOrDefault("")
+            if (url.isBlank()) {
+                Toast.makeText(this, "Esta página não expõe uma URL direta de mídia compatível", Toast.LENGTH_LONG).show()
+            } else {
+                AlertDialog.Builder(this).setTitle("Transferir mídia para player nativo?")
+                    .setMessage("O player nativo tentará abrir a mídia. Pause o player da página para evitar áudio duplicado.")
+                    .setPositiveButton("Reproduzir") { _, _ -> startNativeMedia(url) }
+                    .setNegativeButton("Cancelar", null).show()
+            }
+        }
     }
 
     /** PiP mantém a própria Activity visível numa janela flutuante.
