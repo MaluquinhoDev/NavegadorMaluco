@@ -610,15 +610,15 @@ class MainActivity : ComponentActivity() {
             .take(40)
         val labels = entries.map { url ->
             val u = Uri.parse(url)
-            "${detectedMediaKind(url)} · ${u.host ?: "origem desconhecida"}"
+            val file = u.lastPathSegment?.takeLast(34).orEmpty()
+            "${detectedMediaKind(url)} · ${u.host ?: "origem desconhecida"}${if (file.isNotBlank()) " · $file" else ""}"
         }.toTypedArray()
         AlertDialog.Builder(this).setTitle("Vídeos detectados · ${entries.size} fonte(s)")
-            .setMessage("Estas URLs ainda não foram validadas. O servidor pode responder HTTP 403 ou exigir reprodução no player do site.")
             .setItems(labels) { _, index ->
                 val candidate = entries[index]
                 val parsed = Uri.parse(candidate)
                 AlertDialog.Builder(this).setTitle("Reproduzir no player nativo?")
-                    .setMessage("Tipo: ${detectedMediaKind(candidate)}\nServidor: ${parsed.host ?: "desconhecido"}\n\nO Media3 tentará tocar independentemente. O player da página só será pausado se a reprodução nativa começar e a fonte corresponder.")
+                    .setMessage("Tipo: ${detectedMediaKind(candidate)}\nServidor: ${parsed.host ?: "desconhecido"}\n\nFonte ainda não validada: pode retornar HTTP 403.\n\nO Media3 tentará tocar independentemente. O player da página só será pausado se a reprodução nativa começar e a fonte corresponder.")
                     .setPositiveButton("Reproduzir no player nativo") { _, _ -> startMedia3(candidate) }
                     .setNegativeButton("Cancelar", null).show()
             }
