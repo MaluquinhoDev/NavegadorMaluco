@@ -511,7 +511,7 @@ class MainActivity : ComponentActivity() {
     private fun showLibrary() {
         val audioLabel = "Áudio em segundo plano: " + (if (backgroundAudioEnabled) "ligado" else "desligado")
         AlertDialog.Builder(this).setTitle("Biblioteca")
-            .setItems(arrayOf("Favoritos", "Histórico", audioLabel, "Vídeo em janela flutuante (PiP)", "Player nativo: abrir URL de mídia", "Player nativo: tentar mídia da página", "Media3: mídias detectadas nas requisições", "Media3: retomar na página")) { _, which ->
+            .setItems(arrayOf("Favoritos", "Histórico", audioLabel, "Vídeo em janela flutuante (PiP)", "Player nativo: abrir URL de mídia", "Player nativo: tentar mídia da página", "Vídeos detectados", "Media3: retomar na página")) { _, which ->
                 when (which) {
                     0 -> showSavedPages(true)
                     1 -> showSavedPages(false)
@@ -531,7 +531,7 @@ class MainActivity : ComponentActivity() {
             mediaCandidates[webView]?.toList().orEmpty().reversed()
         }
         if (found.isEmpty()) {
-            AlertDialog.Builder(this).setTitle("Detector Media3")
+            AlertDialog.Builder(this).setTitle("Vídeos detectados")
                 .setMessage("Nenhuma fonte com extensão de mídia foi observada nesta aba. Alguns sites só carregam a fonte após interagir com o player. URLs blob:, DRM e fontes sem extensão podem não aparecer.")
                 .setPositiveButton("OK", null).show()
             return
@@ -547,14 +547,14 @@ class MainActivity : ComponentActivity() {
             val u = Uri.parse(url)
             "${detectedMediaKind(url)} · ${u.host ?: "origem desconhecida"}"
         }.toTypedArray()
-        AlertDialog.Builder(this).setTitle("Media3 · ${entries.size} fonte(s) observada(s)")
+        AlertDialog.Builder(this).setTitle("Vídeos detectados · ${entries.size} fonte(s)")
             .setMessage("Estas URLs ainda não foram validadas. O servidor pode responder HTTP 403 ou exigir reprodução no player do site.")
             .setItems(labels) { _, index ->
                 val candidate = entries[index]
                 val parsed = Uri.parse(candidate)
-                AlertDialog.Builder(this).setTitle("Testar no Media3?")
+                AlertDialog.Builder(this).setTitle("Reproduzir no player nativo?")
                     .setMessage("Tipo: ${detectedMediaKind(candidate)}\nServidor: ${parsed.host ?: "desconhecido"}\n\nO Media3 tentará tocar independentemente. O player da página só será pausado se a reprodução nativa começar e a fonte corresponder.")
-                    .setPositiveButton("Testar reprodução") { _, _ -> startMedia3(candidate) }
+                    .setPositiveButton("Reproduzir no player nativo") { _, _ -> startMedia3(candidate) }
                     .setNegativeButton("Cancelar", null).show()
             }
             .setNeutralButton("Limpar lista") { _, _ ->
