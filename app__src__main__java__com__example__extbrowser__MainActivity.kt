@@ -494,7 +494,7 @@ class MainActivity : ComponentActivity() {
     private fun showLibrary() {
         val audioLabel = "Áudio em segundo plano: " + (if (backgroundAudioEnabled) "ligado" else "desligado")
         AlertDialog.Builder(this).setTitle("Biblioteca")
-            .setItems(arrayOf("Favoritos", "Histórico", audioLabel, "Vídeo em janela flutuante (PiP)", "Player nativo: abrir URL de mídia", "Player nativo: tentar mídia da página", "Media3: mídias detectadas nas requisições")) { _, which ->
+            .setItems(arrayOf("Favoritos", "Histórico", audioLabel, "Vídeo em janela flutuante (PiP)", "Player nativo: abrir URL de mídia", "Player nativo: tentar mídia da página", "Media3: mídias detectadas nas requisições", "Media3: retomar na página")) { _, which ->
                 when (which) {
                     0 -> showSavedPages(true)
                     1 -> showSavedPages(false)
@@ -503,6 +503,7 @@ class MainActivity : ComponentActivity() {
                     4 -> promptNativeMediaUrl()
                     5 -> tryNativeMediaFromPage()
                     6 -> showRequestMediaCandidates()
+                    7 -> returnMedia3ToPage()
                 }
             }.show()
     }
@@ -527,7 +528,7 @@ class MainActivity : ComponentActivity() {
             .setItems(labels) { _, index ->
                 val candidate = entries[index]
                 AlertDialog.Builder(this).setTitle("Reproduzir fora da WebView?")
-                    .setMessage("Fonte: ${Uri.parse(candidate).host}\n\nURLs temporárias ou autenticadas podem falhar. A transmissão será iniciada desde o começo. Ao confirmar, o áudio do player da página deve ser pausado manualmente para evitar duplicação.")
+                    .setMessage("Fonte: ${Uri.parse(candidate).host}\n\nO navegador tentará iniciar na posição atual e pausar o player da página quando o Media3 estiver tocando. Se a fonte não corresponder ao vídeo, a sincronização não será possível.")
                     .setPositiveButton("Reproduzir no Media3") { _, _ -> startMedia3(candidate) }
                     .setNegativeButton("Cancelar", null).show()
             }
@@ -536,24 +537,139 @@ class MainActivity : ComponentActivity() {
             }.setNegativeButton("Cancelar", null).show()
     }
 
+    /** Uma transferência explícita de reprodução. Não é uma sincronização contínua
+     * com vídeos de outros sites, nem tenta acessar iframes de outra origem.
+     */
+    private var media3OriginView: WebView? = null
+    private var media3OriginUrl: String? = null
+
     private fun startMedia3(url: String) {
         val u = Uri.parse(url)
         if (u.scheme !in listOf("http", "https") || u.host.isNullOrBlank()) return
-        // MediaController inicia/conecta ao MediaSessionService corretamente,
-        // evitando iniciar um foreground service antes de haver reprodução real.
+        val sourceView = webView
+        val quotedUrl = org.json.JSONObject.quote(url)
+        val probe = """(function(){
+            const target = $quotedUrl;
+            function collect(doc) {
+                let out = [...doc.querySelectorAll('audio,video')];
+                for(const frame of doc.querySelectorAll('iframe')) {
+                    try { if(frame.contentDocument) out = out.concat(collect(frame.contentDocument)); } catch(e) {}
+                }
+                return out;
+            }
+            const matches = collect(document).filter(m => m.currentSrc === target || m.src === target);
+            const m = matches.find(x => !x.paused && !x.ended) || matches[0];
+            return JSON.stringify({matched:!!m, seconds:m && Number.isFinite(m.currentTime) ? m.currentTime : 0});
+        })()"""
+        sourceView.evaluateJavascript(probe) { result ->
+            val state = runCatching {
+                org.json.JSONObject(JSONArray("[$result]").getString(0))
+            }.getOrNull()
+            val matched = state?.optBoolean("matched", false) == true
+            val position = if (matched) (state?.optDouble("seconds", 0.0) ?: 0.0)
+                .coerceAtLeast(0.0).times(1000).toLong() else 0L
+            val token = SessionToken(this, ComponentName(this, Media3PlaybackService::class.java))
+            val future = MediaController.Builder(this, token).buildAsync()
+            future.addListener({
+                try {
+                    val controller = future.get()
+                    media3OriginView = if (matched) sourceView else null
+                    media3OriginUrl = if (matched) url else null
+                    var transferred = false
+                    val listener = object : androidx.media3.common.Player.Listener {
+                        override fun onIsPlayingChanged(isPlaying: Boolean) {
+                            if (!isPlaying || transferred) return
+                            transferred = true
+                            if (matched) {
+                                // Pausa o player original somente após o Media3 tocar.
+                                sourceView.evaluateJavascript("""(function(){
+                                    const target=$quotedUrl;
+                                    const visited=new Set();
+                                    function pause(doc){
+                                        if(!doc || visited.has(doc)) return;
+                                        visited.add(doc);
+                                        for(const m of doc.querySelectorAll('audio,video')) {
+                                            if(m.currentSrc===target || m.src===target) m.pause();
+                                        }
+                                        for(const f of doc.querySelectorAll('iframe')) {
+                                            try { pause(f.contentDocument); } catch(e) {}
+                                        }
+                                    }
+                                    pause(document);
+                                })()""", null)
+                            }
+                            Toast.makeText(this@MainActivity,
+                                if (matched) "Media3 reproduzindo na posição do vídeo" else
+                                    "Media3 reproduzindo (fonte sem vínculo com player da página)",
+                                Toast.LENGTH_LONG).show()
+                        }
+                        override fun onPlayerError(error: androidx.media3.common.PlaybackException) {
+                            Toast.makeText(this@MainActivity,
+                                "Erro Media3: ${error.errorCodeName}", Toast.LENGTH_LONG).show()
+                        }
+                    }
+                    controller.addListener(listener)
+                    controller.setMediaItem(MediaItem.fromUri(u))
+                    controller.prepare()
+                    if (position > 0L) controller.seekTo(position)
+                    controller.play()
+                    handler.postDelayed({
+                        controller.removeListener(listener)
+                        MediaController.releaseFuture(future)
+                    }, 12000L)
+                    if (!matched) Toast.makeText(this,
+                        "Fonte não corresponde ao elemento de vídeo acessível; iniciando do começo",
+                        Toast.LENGTH_LONG).show()
+                } catch (e: Exception) {
+                    Toast.makeText(this, "Media3 não iniciou: ${e.message}", Toast.LENGTH_LONG).show()
+                    MediaController.releaseFuture(future)
+                }
+            }, androidx.core.content.ContextCompat.getMainExecutor(this))
+        }
+    }
+
+    private fun returnMedia3ToPage() {
+        val sourceView = media3OriginView
+        val sourceUrl = media3OriginUrl
+        if (sourceView == null || sourceUrl == null || tabs.none { it.view === sourceView }) {
+            Toast.makeText(this, "Nenhum vídeo da página vinculado ao Media3", Toast.LENGTH_LONG).show()
+            return
+        }
         val token = SessionToken(this, ComponentName(this, Media3PlaybackService::class.java))
         val future = MediaController.Builder(this, token).buildAsync()
         future.addListener({
             try {
                 val controller = future.get()
-                controller.setMediaItem(MediaItem.fromUri(u))
-                controller.prepare()
-                controller.play()
-                // O controle continua disponível pelo Android MediaSession.
-                Toast.makeText(this, "Fonte enviada ao Media3", Toast.LENGTH_SHORT).show()
+                val time = (controller.currentPosition.coerceAtLeast(0L) / 1000.0)
+                val target = org.json.JSONObject.quote(sourceUrl)
+                val script = """(function(){
+                    const target=$target, seconds=$time;
+                    const visited=new Set(); let changed=false;
+                    function resume(doc){
+                        if(!doc || visited.has(doc)) return; visited.add(doc);
+                        for(const m of doc.querySelectorAll('audio,video')) {
+                            if(m.currentSrc===target || m.src===target) {
+                                try { if(Number.isFinite(m.duration)) m.currentTime=Math.min(seconds,Math.max(0,m.duration-0.2)); else m.currentTime=seconds; } catch(e) {}
+                                m.play().catch(()=>{}); changed=true;
+                            }
+                        }
+                        for(const f of doc.querySelectorAll('iframe')) {
+                            try {resume(f.contentDocument);}catch(e){}
+                        }
+                    }
+                    resume(document); return changed;
+                })()"""
+                val tabIndex = tabs.indexOfFirst { it.view === sourceView }
+                if (tabIndex >= 0) { activeIndex = tabIndex; showActive() }
+                sourceView.evaluateJavascript(script) { ok ->
+                    if (ok == "true") {
+                        controller.pause()
+                        Toast.makeText(this, "Posição enviada ao player da página", Toast.LENGTH_SHORT).show()
+                    } else Toast.makeText(this, "A página não permitiu retomar este vídeo", Toast.LENGTH_LONG).show()
+                    MediaController.releaseFuture(future)
+                }
             } catch (e: Exception) {
-                Toast.makeText(this, "Media3 não conseguiu iniciar: ${e.message}", Toast.LENGTH_LONG).show()
-            } finally {
+                Toast.makeText(this, "Falha na retomada: ${e.message}", Toast.LENGTH_LONG).show()
                 MediaController.releaseFuture(future)
             }
         }, androidx.core.content.ContextCompat.getMainExecutor(this))
