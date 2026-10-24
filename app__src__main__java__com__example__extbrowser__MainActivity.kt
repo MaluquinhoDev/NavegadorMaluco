@@ -609,7 +609,19 @@ class MainActivity : ComponentActivity() {
                         }
                     }
                     controller.addListener(listener)
-                    controller.setMediaItem(MediaItem.fromUri(u))
+                    // Envia apenas a ORIGEM da página; não expõe caminho, query ou tokens.
+                    val pageUri = Uri.parse(sourceView.url ?: "")
+                    val pageOrigin = if (pageUri.scheme == "https" && !pageUri.host.isNullOrBlank())
+                        "https://${pageUri.host}${if (pageUri.port > 0) ":${pageUri.port}" else ""}/"
+                        else ""
+                    val mediaInfo = android.os.Bundle().apply {
+                        putString("nm_page_origin", pageOrigin)
+                    }
+                    val item = MediaItem.Builder().setUri(u)
+                        .setMediaMetadata(androidx.media3.common.MediaMetadata.Builder()
+                            .setExtras(mediaInfo).build())
+                        .build()
+                    controller.setMediaItem(item)
                     controller.prepare()
                     if (position > 0L) controller.seekTo(position)
                     controller.play()
