@@ -2,6 +2,7 @@ package com.example.extbrowser
 
 import android.net.Uri
 import android.util.Log
+import android.webkit.CookieManager
 import android.webkit.WebSettings
 import androidx.media3.common.MediaItem
 import androidx.media3.common.PlaybackException
@@ -51,13 +52,31 @@ class Media3PlaybackService : MediaSessionService() {
                 val origin = item?.mediaMetadata?.extras?.getString("nm_page_origin") ?: ""
                 val mediaUri = item?.localConfiguration?.uri
                 val page = runCatching { Uri.parse(origin) }.getOrNull()
-                // Preserva a política anterior: Referer somente com origem HTTPS.
+                // Mantém o comportamento anterior: apenas a origem HTTPS como Referer.
                 val headers = if (page?.scheme == "https" && !page.host.isNullOrBlank() &&
                     mediaUri?.scheme == "https") mapOf("Referer" to origin) else emptyMap()
                 http.setDefaultRequestProperties(headers)
                 Log.i(TAG, "Fonte inicial: host=${safeHost(mediaUri)}; tipo=${mediaKind(mediaUri)}; " +
                     "referer=${headers.containsKey("Referer")}; userAgent=true; " +
                     "urlComParametros=${mediaUri?.query != null}")
+
+                // Apenas examina se a WebView possui cookies aplicáveis a esta URL.
+                // Não imprime nem encaminha cookies, tokens ou URLs completas.
+                val cookieState = if (mediaUri?.scheme == "https" && mediaUri.host != null) {
+                    runCatching {
+                        if (CookieManager.getInstance().getCookie(mediaUri.toString()).isNullOrEmpty())
+                            "ausentes" else "presentes"
+                    }.getOrElse { "indisponivel" }
+                } else "nao_aplicavel"
+                val pageHost = page?.host
+                val mediaHost = mediaUri?.host
+                val sameHost = pageHost != null && mediaHost != null &&
+                    pageHost.equals(mediaHost, ignoreCase = true)
+                Log.i(TAG, "DiagnosticoContexto: hostPagina=${safeHost(page)}; " +
+                    "hostMidia=${safeHost(mediaUri)}; mesmaOrigemDeHost=$sameHost; " +
+                    "cookiesDaMidia=$cookieState; " +
+                    "refererConfigurado=${headers.containsKey("Referer")}; " +
+                    "cookiesEnviadosPeloMedia3=false")
             }
 
             override fun onPlaybackStateChanged(playbackState: Int) {
@@ -76,8 +95,6 @@ class Media3PlaybackService : MediaSessionService() {
                 var httpStatus: Int? = null
                 var failedUri: Uri? = null
                 var responseHeaderNames: Set<String> = emptySet()
-                // Navega por causas conhecidas, sem incluir exception.message:
-                // mensagens e URLs podem conter tokens temporários.
                 val seen = HashSet<Throwable>()
                 while (cause != null && seen.add(cause)) {
                     if (cause is HttpDataSource.InvalidResponseCodeException) {
@@ -99,7 +116,6 @@ class Media3PlaybackService : MediaSessionService() {
                     "hostInicial=${safeHost(source)}; tipoInicial=${mediaKind(source)}; " +
                     "redirecionamentoEntreHosts=${failedUri?.host != null && source?.host != null && failedUri.host != source.host}; " +
                     "respostaHeaderNames=${responseHeaderNames.sorted().joinToString(",")}")
-                // Não reproduz mensagens completas do ExoPlayer, que podem conter URLs privadas.
             }
         })
         player = exo
