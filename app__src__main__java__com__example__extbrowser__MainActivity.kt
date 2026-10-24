@@ -1008,6 +1008,8 @@ class MainActivity : ComponentActivity() {
                     controller.prepare()
                     if (position > 0L) controller.seekTo(position)
                     controller.play()
+                    // A seleção da fonte abre o vídeo; não exige voltar à Biblioteca.
+                    showNativeVideoPlayer()
                     handler.postDelayed({
                         controller.removeListener(listener)
                         MediaController.releaseFuture(future)
