@@ -771,9 +771,10 @@ class MainActivity : ComponentActivity() {
         val play = Button(this).apply { text = "Play/Pause" }
         val forward = Button(this).apply { text = "+10 s" }
         val rotate = Button(this).apply { text = "Girar" }
+        val fullscreenButton = Button(this).apply { text = "Tela cheia" }
         val pipButton = Button(this).apply { text = "PiP" }
         val close = Button(this).apply { text = "Fechar" }
-        listOf(back, play, forward, rotate, pipButton, close).forEach { controls.addView(it,
+        listOf(back, play, forward, rotate, fullscreenButton, pipButton, close).forEach { controls.addView(it,
             LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f)) }
         outer.addView(controls, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
         dialog.setContentView(outer)
@@ -786,6 +787,22 @@ class MainActivity : ComponentActivity() {
         var player: MediaController? = null
         var seeking = false
         var closed = false
+        var videoFullscreen = false
+        fun setVideoFullscreen(enabled: Boolean) {
+            videoFullscreen = enabled
+            val visibility = if (enabled) View.GONE else View.VISIBLE
+            info.visibility = visibility
+            progress.visibility = visibility
+            controls.visibility = visibility
+            dialog.window?.decorView?.systemUiVisibility = if (enabled)
+                (View.SYSTEM_UI_FLAG_FULLSCREEN or View.SYSTEM_UI_FLAG_HIDE_NAVIGATION or
+                    View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY or View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN or
+                    View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION or View.SYSTEM_UI_FLAG_LAYOUT_STABLE)
+                else 0
+            fullscreenButton.text = if (enabled) "Sair tela cheia" else "Tela cheia"
+        }
+        surface.setOnClickListener { if (videoFullscreen) setVideoFullscreen(false) }
+
         val update = object : Runnable {
             override fun run() {
                 val c = player
@@ -838,6 +855,7 @@ class MainActivity : ComponentActivity() {
                 android.content.pm.ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
             else android.content.pm.ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
         }
+        fullscreenButton.setOnClickListener { setVideoFullscreen(!videoFullscreen) }
         pipButton.setOnClickListener {
             if (player == null) Toast.makeText(this, "Player ainda conectando", Toast.LENGTH_SHORT).show()
             else enterPip()
@@ -845,6 +863,7 @@ class MainActivity : ComponentActivity() {
         close.setOnClickListener { dialog.dismiss() }
         dialog.setOnDismissListener {
             closed = true
+            dialog.window?.decorView?.systemUiVisibility = 0
             if (nativeVideoDialog === dialog) {
                 nativeVideoDialog = null
                 nativeVideoControls = null
