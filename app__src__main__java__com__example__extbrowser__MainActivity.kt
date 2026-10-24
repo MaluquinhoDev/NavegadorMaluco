@@ -102,13 +102,19 @@ class MainActivity : ComponentActivity() {
         tabsButton = Button(this).apply { text = "Abas"; setOnClickListener { showTabs() } }
         favoriteButton = Button(this).apply { text = "☆"; setOnClickListener { toggleFavorite() } }
         val savedButton = Button(this).apply { text = "☰"; setOnClickListener { showLibrary() } }
-        val bar = LinearLayout(this).apply {
+        // Duas linhas: a barra de URL ocupa toda a largura disponível.
+        // Os botões ficam separados para não comprimir a digitação no celular.
+        val actions = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
-            addView(urlBar, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
-            addView(favoriteButton)
-            addView(tabsButton)
-            addView(savedButton)
-            addView(extButton)
+            addView(favoriteButton, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
+            addView(tabsButton, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
+            addView(savedButton, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
+            addView(extButton, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
+        }
+        val bar = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            addView(urlBar, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
+            addView(actions, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
         }
         statusView = TextView(this).apply { textSize = 12f; visibility = View.GONE; setPadding(16, 4, 16, 4) }
         statusDefaultColor = statusView.currentTextColor
