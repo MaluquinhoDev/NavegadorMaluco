@@ -2,6 +2,9 @@ package com.example.extbrowser
 
 import android.annotation.SuppressLint
 import android.app.AlertDialog
+import android.app.PictureInPictureParams
+import android.content.pm.PackageManager
+import android.util.Rational
 import android.content.Intent
 import android.app.DownloadManager
 import android.content.Context
@@ -56,6 +59,7 @@ class MainActivity : ComponentActivity() {
     private var activeIndex = 0
     private val webView get() = tabs[activeIndex].view
     private lateinit var webHost: LinearLayout
+    private lateinit var browserBar: LinearLayout
     private lateinit var urlBar: EditText
     private lateinit var statusView: TextView
     private lateinit var tabsButton: Button
@@ -72,6 +76,9 @@ class MainActivity : ComponentActivity() {
     private var fileCallback: ValueCallback<Array<Uri>>? = null
     private var fullscreenView: View? = null
     private var fullscreenCallback: WebChromeClient.CustomViewCallback? = null
+    // Opcional: mantém WebViews ativas para reprodução HTML5 após trocar de aba.
+    // Não contorna restrições de sites nem garante execução após o Android suspender o app.
+    private var backgroundAudioEnabled = true
 
     // O Android devolve aqui o arquivo escolhido em formulários <input type="file">.
     private val filePicker = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
@@ -108,6 +115,8 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         Attention.init(this)
         store = BrowserData(this)
+        backgroundAudioEnabled = getSharedPreferences("media_options", MODE_PRIVATE)
+            .getBoolean("background_audio", true)
         extensionManager = ExtensionManager(this).also { it.seedFromAssets() }
         extensionList = extensionManager!!.loadEnabled()
         blockerList = extensionList.flatMap { e -> e.blockRegexes.map { Blocker(e.name, Regex(it)) } }
@@ -137,7 +146,7 @@ class MainActivity : ComponentActivity() {
             addView(savedButton, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
             addView(extButton, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
         }
-        val bar = LinearLayout(this).apply {
+        browserBar = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             addView(urlBar, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
             addView(actions, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
@@ -147,11 +156,12 @@ class MainActivity : ComponentActivity() {
         webHost = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            addView(bar, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
+            addView(browserBar, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
             addView(statusView, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
             addView(webHost, LinearLayout.LayoutParams(MATCH_PARENT, 0, 1f))
         }
         setContentView(root)
+        updatePipAutoEnter(false)
         ViewCompat.setOnApplyWindowInsetsListener(root) { v, insets ->
             val b = insets.getInsets(WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.ime())
             v.setPadding(b.left, b.top, b.right, b.bottom)
@@ -283,6 +293,7 @@ class MainActivity : ComponentActivity() {
                 }
                 fullscreenView = customView
                 fullscreenCallback = callback
+                updatePipAutoEnter(true)
                 val decor = window.decorView as FrameLayout
                 decor.addView(customView, FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT))
                 customView.systemUiVisibility = View.SYSTEM_UI_FLAG_FULLSCREEN or View.SYSTEM_UI_FLAG_HIDE_NAVIGATION or View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
@@ -303,6 +314,7 @@ class MainActivity : ComponentActivity() {
         v.systemUiVisibility = 0
         fullscreenCallback?.onCustomViewHidden()
         fullscreenCallback = null
+        updatePipAutoEnter(false)
     }
 
     // Usa o gerenciador de downloads do Android, sem solicitar acesso irrestrito ao armazenamento.
@@ -387,7 +399,8 @@ class MainActivity : ComponentActivity() {
         val newView = webView
         if (webHost.childCount > 0) {
             val old = webHost.getChildAt(0) as WebView
-            old.onPause()
+            // Evita suspender áudio/vídeo HTML5 ao trocar de aba quando habilitado.
+            if (!backgroundAudioEnabled) old.onPause()
             webHost.removeView(old)
         }
         (newView.parent as? android.view.ViewGroup)?.removeView(newView)
@@ -448,9 +461,82 @@ class MainActivity : ComponentActivity() {
         favoriteButton.text = if (tabs.isNotEmpty() && store.isFavorite(webView.url ?: "")) "★" else "☆"
     }
     private fun showLibrary() {
+        val audioLabel = "Áudio em segundo plano: " + (if (backgroundAudioEnabled) "ligado" else "desligado")
         AlertDialog.Builder(this).setTitle("Biblioteca")
-            .setItems(arrayOf("Favoritos", "Histórico")) { _, which -> showSavedPages(which == 0) }
-            .show()
+            .setItems(arrayOf("Favoritos", "Histórico", audioLabel, "Vídeo em janela flutuante (PiP)")) { _, which ->
+                when (which) {
+                    0 -> showSavedPages(true)
+                    1 -> showSavedPages(false)
+                    2 -> toggleBackgroundAudio()
+                    3 -> enterPip()
+                }
+            }.show()
+    }
+
+    /** PiP mantém a própria Activity visível numa janela flutuante.
+     * Não cria um player independente nem mantém o áudio após encerrar o processo.
+     */
+    private fun pipAvailable(): Boolean =
+        packageManager.hasSystemFeature(PackageManager.FEATURE_PICTURE_IN_PICTURE)
+
+    private fun pipParams(autoEnter: Boolean): PictureInPictureParams {
+        val builder = PictureInPictureParams.Builder().setAspectRatio(Rational(16, 9))
+        if (android.os.Build.VERSION.SDK_INT >= 31) {
+            builder.setAutoEnterEnabled(autoEnter)
+            builder.setSeamlessResizeEnabled(true)
+        }
+        return builder.build()
+    }
+
+    private fun updatePipAutoEnter(enabled: Boolean) {
+        if (!pipAvailable()) return
+        runCatching { setPictureInPictureParams(pipParams(enabled)) }
+    }
+
+    private fun enterPip() {
+        if (!pipAvailable()) {
+            Toast.makeText(this, "Este Android não oferece Picture-in-Picture", Toast.LENGTH_LONG).show()
+            return
+        }
+        try {
+            if (!isInPictureInPictureMode) {
+                val entered = enterPictureInPictureMode(pipParams(false))
+                if (!entered) Toast.makeText(this, "PiP não autorizado nas configurações do Android", Toast.LENGTH_LONG).show()
+            }
+        } catch (e: Exception) {
+            Toast.makeText(this, "PiP indisponível: ${e.message}", Toast.LENGTH_LONG).show()
+        }
+    }
+
+    override fun onUserLeaveHint() {
+        super.onUserLeaveHint()
+        // Android 12+ usa transição automática somente durante vídeo em tela cheia.
+        // Em Android 14+ (minSdk 34), o mecanismo automático é sempre disponível.
+        // O botão manual PiP é oferecido pelo menu Biblioteca.
+    }
+
+    override fun onPictureInPictureModeChanged(isInPictureInPictureMode: Boolean, newConfig: Configuration) {
+        super.onPictureInPictureModeChanged(isInPictureInPictureMode, newConfig)
+        // Preserva as mesmas WebViews e só esconde os controles do navegador.
+        browserBar.visibility = if (isInPictureInPictureMode) View.GONE else View.VISIBLE
+        statusView.visibility = if (isInPictureInPictureMode) View.GONE else
+            if (tabs.isNotEmpty() && Attention.status(webView.url) != null) View.VISIBLE else View.GONE
+        if (!isInPictureInPictureMode) updateStatus()
+        webHost.requestLayout()
+    }
+
+    private fun toggleBackgroundAudio() {
+        backgroundAudioEnabled = !backgroundAudioEnabled
+        getSharedPreferences("media_options", MODE_PRIVATE).edit()
+            .putBoolean("background_audio", backgroundAudioEnabled).apply()
+        tabs.forEachIndexed { index, tab ->
+            if (backgroundAudioEnabled || index == activeIndex) tab.view.onResume()
+            else tab.view.onPause()
+        }
+        Toast.makeText(this,
+            if (backgroundAudioEnabled) "Áudio entre abas habilitado (dependente do site)"
+            else "Áudio das abas inativas pausado",
+            Toast.LENGTH_LONG).show()
     }
     private fun showSavedPages(favorites: Boolean) {
         val pages = if (favorites) store.favorites() else store.history()
@@ -521,6 +607,7 @@ class MainActivity : ComponentActivity() {
         }
     }
     private fun updateStatus() {
+        if (isInPictureInPictureMode) { statusView.visibility = View.GONE; return }
         if (tabs.isEmpty()) return
         val st = Attention.status(webView.url)
         if (st == null) { statusView.visibility = View.GONE; return }
@@ -553,8 +640,24 @@ class MainActivity : ComponentActivity() {
         fullscreenView?.let { it.requestLayout(); it.invalidate() }
     }
 
-    override fun onResume() { super.onResume(); handler.removeCallbacks(ticker); handler.post(ticker) }
-    override fun onPause() { handler.removeCallbacks(ticker); Attention.pause(); persistTabs(); super.onPause() }
+    override fun onResume() {
+        super.onResume()
+        // Retoma a renderização sem recriar páginas ou reiniciar players.
+        tabs.forEachIndexed { index, tab ->
+            if (backgroundAudioEnabled || index == activeIndex) tab.view.onResume()
+        }
+        handler.removeCallbacks(ticker)
+        handler.post(ticker)
+    }
+    override fun onPause() {
+        handler.removeCallbacks(ticker)
+        Attention.pause()
+        persistTabs()
+        // O controle de atenção para de contar fora do app. A opção de áudio
+        // mantém o WebView vivo como melhor esforço, sem serviço de mídia.
+        if (!backgroundAudioEnabled) tabs.forEach { it.view.onPause() }
+        super.onPause()
+    }
     override fun onDestroy() {
         fileCallback?.onReceiveValue(null)
         fileCallback = null
