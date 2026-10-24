@@ -205,7 +205,8 @@ class MainActivity : ComponentActivity() {
             addView(statusView, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
             addView(webHost, LinearLayout.LayoutParams(MATCH_PARENT, 0, 1f))
         }
-        setContentView(root)
+        playerLayer = FrameLayout(this).apply { addView(root, FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT)) }
+        setContentView(playerLayer)
         updatePipAutoEnter(false)
         ViewCompat.setOnApplyWindowInsetsListener(root) { v, insets ->
             val b = insets.getInsets(WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.ime())
@@ -224,7 +225,8 @@ class MainActivity : ComponentActivity() {
 
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
             override fun handleOnBackPressed() {
-                if (fullscreenView != null) exitFullscreen()
+                if (playerPanel != null) closeNativePlayer()
+                else if (fullscreenView != null) exitFullscreen()
                 else if (webView.canGoBack()) webView.goBack()
                 else { isEnabled = false; onBackPressedDispatcher.onBackPressed() }
             }
@@ -741,20 +743,23 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    private var nativeVideoDialog: android.app.Dialog? = null
-    private var nativeVideoControls: View? = null
-    private var nativeVideoInfo: View? = null
-    private var nativeVideoProgress: View? = null
+    private lateinit var playerLayer: FrameLayout
+    private var playerPanel: FrameLayout? = null
+    private var nativePlayerClose: (() -> Unit)? = null
+    private var playerControls: View? = null
+    private var playerIsImmersive = false
+    private fun closeNativePlayer() { nativePlayerClose?.invoke() }
 
     /** Interface de vídeo vinculada à sessão que já toca áudio em segundo plano. */
     private fun showNativeVideoPlayer() {
-        val dialog = android.app.Dialog(this)
+        if (playerPanel != null) { playerControls?.visibility = View.VISIBLE; return }
+        val panel = FrameLayout(this).apply { setBackgroundColor(android.graphics.Color.BLACK) }
         val outer = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setBackgroundColor(android.graphics.Color.BLACK)
+            setBackgroundColor(0x55000000)
         }
         val surface = android.view.SurfaceView(this)
-        outer.addView(surface, LinearLayout.LayoutParams(MATCH_PARENT, 0, 1f))
+        panel.addView(surface, FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT))
         val info = TextView(this).apply {
             text = "Conectando ao player..."
             setTextColor(android.graphics.Color.WHITE)
@@ -762,7 +767,6 @@ class MainActivity : ComponentActivity() {
         }
         outer.addView(info, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
         val progress = android.widget.SeekBar(this)
-        outer.addView(progress, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
         val controls = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = android.view.Gravity.CENTER
@@ -774,34 +778,41 @@ class MainActivity : ComponentActivity() {
         val fullscreenButton = Button(this).apply { text = "Tela cheia" }
         val pipButton = Button(this).apply { text = "PiP" }
         val close = Button(this).apply { text = "Fechar" }
-        listOf(back, play, forward, rotate, fullscreenButton, pipButton, close).forEach { controls.addView(it,
+        val navControls = LinearLayout(this)
+        listOf(close, rotate, fullscreenButton, pipButton).forEach { navControls.addView(it,
+            LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f)) }
+        outer.addView(navControls)
+        outer.addView(View(this), LinearLayout.LayoutParams(1, 0, 1f))
+        listOf(back, play, forward).forEach { controls.addView(it,
             LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f)) }
         outer.addView(controls, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
-        dialog.setContentView(outer)
-        nativeVideoDialog = dialog
-        nativeVideoControls = controls
-        nativeVideoInfo = info
-        nativeVideoProgress = progress
+        outer.addView(progress, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
+        panel.addView(outer, FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT))
+        playerLayer.addView(panel, FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT))
+        playerPanel = panel
+        playerControls = outer
+        browserBar.visibility = View.GONE
+        statusView.visibility = View.GONE
         val token = SessionToken(this, ComponentName(this, Media3PlaybackService::class.java))
         val future = MediaController.Builder(this, token).buildAsync()
         var player: MediaController? = null
         var seeking = false
         var closed = false
         var videoFullscreen = false
+        val originalOrientation = requestedOrientation
         fun setVideoFullscreen(enabled: Boolean) {
             videoFullscreen = enabled
             val visibility = if (enabled) View.GONE else View.VISIBLE
-            info.visibility = visibility
-            progress.visibility = visibility
-            controls.visibility = visibility
-            dialog.window?.decorView?.systemUiVisibility = if (enabled)
+            outer.visibility = visibility
+            playerIsImmersive = enabled
+            window.decorView.systemUiVisibility = if (enabled)
                 (View.SYSTEM_UI_FLAG_FULLSCREEN or View.SYSTEM_UI_FLAG_HIDE_NAVIGATION or
                     View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY or View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN or
                     View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION or View.SYSTEM_UI_FLAG_LAYOUT_STABLE)
                 else 0
             fullscreenButton.text = if (enabled) "Sair tela cheia" else "Tela cheia"
         }
-        surface.setOnClickListener { if (videoFullscreen) setVideoFullscreen(false) }
+        surface.setOnClickListener { if (videoFullscreen) setVideoFullscreen(false) else outer.visibility = View.VISIBLE }
 
         val update = object : Runnable {
             override fun run() {
@@ -860,30 +871,24 @@ class MainActivity : ComponentActivity() {
             if (player == null) Toast.makeText(this, "Player ainda conectando", Toast.LENGTH_SHORT).show()
             else enterPip()
         }
-        close.setOnClickListener { dialog.dismiss() }
-        dialog.setOnDismissListener {
-            closed = true
-            dialog.window?.decorView?.systemUiVisibility = 0
-            if (nativeVideoDialog === dialog) {
-                nativeVideoDialog = null
-                nativeVideoControls = null
-                nativeVideoInfo = null
-                nativeVideoProgress = null
+        close.setOnClickListener { closeNativePlayer() }
+        nativePlayerClose = {
+            if (!closed) {
+                closed = true
+                handler.removeCallbacks(update)
+                player?.let { c -> runCatching { c.clearVideoSurfaceView(surface) } }
+                MediaController.releaseFuture(future)
+                playerLayer.removeView(panel)
+                playerPanel = null
+                playerControls = null
+                nativePlayerClose = null
+                playerIsImmersive = false
+                window.decorView.systemUiVisibility = 0
+                requestedOrientation = originalOrientation
+                browserBar.visibility = View.VISIBLE
+                updateStatus()
             }
-            if (!isInPictureInPictureMode)
-                requestedOrientation = android.content.pm.ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
-            handler.removeCallbacks(update)
-            player?.let { c ->
-                runCatching { c.clearVideoSurfaceView(surface) }
-            }
-            MediaController.releaseFuture(future)
         }
-        dialog.show()
-        dialog.window?.setLayout(MATCH_PARENT, MATCH_PARENT)
-        dialog.window?.setFlags(
-            android.view.WindowManager.LayoutParams.FLAG_FULLSCREEN,
-            android.view.WindowManager.LayoutParams.FLAG_FULLSCREEN
-        )
         future.addListener({
             if (closed || isFinishing || isDestroyed) {
                 MediaController.releaseFuture(future)
@@ -1210,14 +1215,9 @@ class MainActivity : ComponentActivity() {
     override fun onPictureInPictureModeChanged(isInPictureInPictureMode: Boolean, newConfig: Configuration) {
         super.onPictureInPictureModeChanged(isInPictureInPictureMode, newConfig)
         // No PiP, mostra somente a superfície nativa; fora dele, devolve os controles.
-        if (nativeVideoDialog?.isShowing == true) {
-            val visibility = if (isInPictureInPictureMode) View.GONE else View.VISIBLE
-            nativeVideoControls?.visibility = visibility
-            nativeVideoInfo?.visibility = visibility
-            nativeVideoProgress?.visibility = visibility
-        }
+        playerControls?.visibility = if (isInPictureInPictureMode || playerIsImmersive) View.GONE else View.VISIBLE
         // Preserva as mesmas WebViews e só esconde os controles do navegador.
-        browserBar.visibility = if (isInPictureInPictureMode) View.GONE else View.VISIBLE
+        browserBar.visibility = if (isInPictureInPictureMode || playerPanel != null) View.GONE else View.VISIBLE
         statusView.visibility = if (isInPictureInPictureMode) View.GONE else
             if (tabs.isNotEmpty() && Attention.status(webView.url) != null) View.VISIBLE else View.GONE
         if (!isInPictureInPictureMode) updateStatus()
@@ -1388,6 +1388,7 @@ class MainActivity : ComponentActivity() {
     override fun onDestroy() {
         fileCallback?.onReceiveValue(null)
         fileCallback = null
+        closeNativePlayer()
         exitFullscreen()
         handler.removeCallbacks(ticker)
         tabs.forEach { (it.view.parent as? android.view.ViewGroup)?.removeView(it.view); it.view.destroy() }
