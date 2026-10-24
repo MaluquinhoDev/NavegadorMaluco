@@ -298,10 +298,13 @@ class MainActivity : ComponentActivity() {
                 }
                 fullscreenView = customView
                 fullscreenCallback = callback
-                updatePipAutoEnter(true)
                 val decor = window.decorView as FrameLayout
                 decor.addView(customView, FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT))
                 customView.systemUiVisibility = View.SYSTEM_UI_FLAG_FULLSCREEN or View.SYSTEM_UI_FLAG_HIDE_NAVIGATION or View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
+                // Só habilita a transição automática após anexar o player à janela.
+                customView.post {
+                    if (fullscreenView === customView) updatePipAutoEnter(true)
+                }
             }
             override fun onHideCustomView() { exitFullscreen() }
         }
@@ -488,7 +491,9 @@ class MainActivity : ComponentActivity() {
         val builder = PictureInPictureParams.Builder().setAspectRatio(Rational(16, 9))
         if (android.os.Build.VERSION.SDK_INT >= 31) {
             builder.setAutoEnterEnabled(autoEnter)
-            builder.setSeamlessResizeEnabled(true)
+            // Surfaces de vídeo da WebView podem apresentar tela preta durante
+            // redimensionamento contínuo para a janela PiP.
+            builder.setSeamlessResizeEnabled(false)
         }
         return builder.build()
     }
@@ -528,6 +533,17 @@ class MainActivity : ComponentActivity() {
             if (tabs.isNotEmpty() && Attention.status(webView.url) != null) View.VISIBLE else View.GONE
         if (!isInPictureInPictureMode) updateStatus()
         webHost.requestLayout()
+        // O WebChromeClient pode ter anexado o player fullscreen ao decorView,
+        // fora de webHost. Recalcular somente webHost não o atualiza.
+        fullscreenView?.let { player ->
+            player.visibility = View.VISIBLE
+            player.requestLayout()
+            player.invalidate()
+        }
+        if (tabs.isNotEmpty()) {
+            webView.requestLayout()
+            webView.invalidate()
+        }
     }
 
     /** O serviço inicia por ação explícita do usuário, enquanto a Activity está visível. */
@@ -676,7 +692,8 @@ class MainActivity : ComponentActivity() {
         persistTabs()
         // O controle de atenção para de contar fora do app. A opção de áudio
         // mantém o WebView vivo como melhor esforço, sem serviço de mídia.
-        if (!backgroundAudioEnabled) tabs.forEach { it.view.onPause() }
+        if (!backgroundAudioEnabled && !isInPictureInPictureMode && fullscreenView == null)
+            tabs.forEach { it.view.onPause() }
         super.onPause()
     }
     override fun onDestroy() {
