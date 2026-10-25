@@ -57,7 +57,11 @@ class ExtensionsActivity : ComponentActivity() {
         }
         val btnAttention = Button(this).apply {
             text = "Controle de atenção"
-            setOnClickListener { startActivity(Intent(this@ExtensionsActivity, AttentionActivity::class.java)) }
+            setOnClickListener {
+                startActivity(Intent(this@ExtensionsActivity, AttentionActivity::class.java).apply {
+                    putExtra("attention_current_page", intent.getStringExtra("attention_current_page"))
+                })
+            }
         }
         val hint = TextView(this).apply {
             text = "Ao voltar para o navegador, a página recarrega para aplicar as mudanças."
