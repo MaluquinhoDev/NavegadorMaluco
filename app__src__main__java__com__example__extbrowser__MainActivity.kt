@@ -28,6 +28,7 @@ import android.os.Message
 import android.os.SystemClock
 import android.text.InputType
 import android.view.View
+import android.view.WindowManager
 import android.view.MotionEvent
 import android.view.inputmethod.InputMethodManager
 import android.media.AudioManager
@@ -71,6 +72,15 @@ class MainActivity : ComponentActivity() {
     private var lastSeuImpostoImeOpenAt = 0L
     private fun isSeuImposto(url: String?): Boolean = websiteHost(url) == "seuimposto.com" ||
         websiteHost(url) == "www.seuimposto.com"
+    private fun seuImpostoPanEnabled(): Boolean =
+        getSharedPreferences("seuimposto_diagnostic", MODE_PRIVATE)
+            .getBoolean("keyboard_pan", true)
+    private fun updateKeyboardWindowMode(url: String?) {
+        val pan = isSeuImposto(url) && seuImpostoPanEnabled()
+        window.setSoftInputMode(if (pan) WindowManager.LayoutParams.SOFT_INPUT_ADJUST_PAN
+            else WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE)
+        findViewById<View>(android.R.id.content)?.let { ViewCompat.requestApplyInsets(it) }
+    }
     private fun safeDiagnosticPath(uri: Uri): String {
         // Nunca registra query, fragmento ou segmentos identificadores da sessão.
         return "/" + uri.pathSegments.take(4).joinToString("/") { segment ->
@@ -554,7 +564,10 @@ class MainActivity : ComponentActivity() {
             // do teclado, mantendo apenas a proteção das barras do sistema.
             val compat = currentSite && getSharedPreferences("seuimposto_diagnostic", MODE_PRIVATE)
                 .getBoolean("keyboard_compat", false)
-            val bottom = if (compat) bars.bottom else maxOf(bars.bottom, ime.bottom)
+            // Em adjustPan o Android desloca a janela sem alterar o tamanho do DOM;
+            // aplicar também o inset do IME na raiz anularia essa proteção.
+            val pan = currentSite && seuImpostoPanEnabled()
+            val bottom = if (compat || pan) bars.bottom else maxOf(bars.bottom, ime.bottom)
             v.setPadding(bars.left, bars.top, bars.right, bottom)
             insets
         }
@@ -598,6 +611,7 @@ class MainActivity : ComponentActivity() {
         WebView.setWebContentsDebuggingEnabled((applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) != 0)
         view.webViewClient = object : WebViewClient() {
             override fun onPageStarted(v: WebView, url: String, favicon: Bitmap?) {
+                if (tabs.getOrNull(activeIndex)?.view === v) updateKeyboardWindowMode(url)
                 synchronized(siteDiagnostics) {
                     if (isSeuImposto(url)) siteDiagnostics[v] = mutableListOf("Navegação iniciada")
                     else siteDiagnostics.remove(v)
@@ -1157,6 +1171,7 @@ class MainActivity : ComponentActivity() {
     private fun showActive() {
         Attention.pause()
         val newView = webView
+        updateKeyboardWindowMode(newView.url ?: tabs[activeIndex].url)
         if (newView.url == null) configureSiteDisplay(newView, tabs[activeIndex].url)
         if (webHost.childCount > 0) {
             val old = webHost.getChildAt(0) as WebView
@@ -1405,7 +1420,8 @@ class MainActivity : ComponentActivity() {
             .setItems(arrayOf("Extensões", "Opções avançadas de mídia",
                 "Aparência · claro/escuro", "Modo de exibição do site",
                 "Diagnóstico · Seu Imposto", "Teste de teclado · Seu Imposto",
-                "Recuperação de foco · Seu Imposto", "Teclado · teste HTML isolado")) { _, which ->
+                "Recuperação de foco · Seu Imposto", "Teclado · teste HTML isolado",
+                "Teclado sem redimensionamento · Seu Imposto")) { _, which ->
                 when (which) {
                     0 -> extLauncher.launch(Intent(this, ExtensionsActivity::class.java).apply {
                         putExtra("attention_current_page", webView.url ?: tabs[activeIndex].url)
@@ -1417,6 +1433,7 @@ class MainActivity : ComponentActivity() {
                     5 -> toggleSeuImpostoKeyboardCompat()
                     6 -> toggleSeuImpostoFocusRecovery()
                     7 -> openIsolatedKeyboardTest()
+                    8 -> toggleSeuImpostoKeyboardPan()
                 }
             }.show()
     }
@@ -1470,6 +1487,23 @@ class MainActivity : ComponentActivity() {
         Toast.makeText(this,
             if (enabled) "Recuperação de foco ativada para Seu Imposto"
             else "Recuperação de foco desativada",
+            Toast.LENGTH_LONG).show()
+    }
+
+    private fun toggleSeuImpostoKeyboardPan() {
+        if (!isSeuImposto(webView.url)) {
+            Toast.makeText(this, "Abra seuimposto.com antes deste ajuste", Toast.LENGTH_LONG).show()
+            return
+        }
+        val prefs = getSharedPreferences("seuimposto_diagnostic", MODE_PRIVATE)
+        val enabled = !seuImpostoPanEnabled()
+        prefs.edit().putBoolean("keyboard_pan", enabled).apply()
+        updateKeyboardWindowMode(webView.url)
+        recordSiteDiagnostic(webView, "Ajuste de teclado " +
+            if (enabled) "sem redimensionamento (pan)" else "padrão (resize)")
+        Toast.makeText(this,
+            if (enabled) "Modo sem redimensionamento ligado para Seu Imposto"
+            else "Redimensionamento padrão restaurado para Seu Imposto",
             Toast.LENGTH_LONG).show()
     }
 
@@ -1553,6 +1587,7 @@ class MainActivity : ComponentActivity() {
                 appendLine("Recuperação de foco: " +
                     getSharedPreferences("seuimposto_diagnostic", MODE_PRIVATE)
                         .getBoolean("focus_recovery", false))
+                appendLine("Teclado sem redimensionamento (pan): ${seuImpostoPanEnabled()}")
                 appendLine("Eventos de foco/teclado:")
                 val keyboardEvents = data?.optJSONArray("keyboardEvents")
                 for (i in 0 until (keyboardEvents?.length() ?: 0)) {
