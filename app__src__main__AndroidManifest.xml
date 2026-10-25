@@ -22,6 +22,12 @@
             </intent-filter>
         </activity>
         <activity
+            android:name=".VideoPipActivity"
+            android:exported="false"
+            android:supportsPictureInPicture="true"
+            android:resizeableActivity="true"
+            android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout|uiMode" />
+        <activity
             android:name=".ExtensionsActivity"
             android:exported="false" />
         <activity
