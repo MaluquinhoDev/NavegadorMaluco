@@ -255,6 +255,34 @@ object Attention {
         return navigationBlock(site)
     }
 
+    /**
+     * Contagem para vídeo HTML5 em aba não selecionada. A fonte é o domínio da
+     * aba, nunca o endereço CDN. Usa o mesmo limite diário e de sessão.
+     * O chamador só informa tempo quando detectou reprodução efetiva.
+     */
+    private val backgroundSessions = HashMap<String, Long>()
+
+    @Synchronized
+    fun backgroundTabPlaybackTick(pageUrl: String?, elapsedMs: Long): AttentionVerdict? {
+        val host = pageUrl?.let { AttentionLogic.hostOf(it) } ?: return null
+        val site = findSite(host) ?: return null
+        navigationBlock(site)?.let { return it }
+        val delta = elapsedMs.coerceIn(0L, MAX_TICK_MS)
+        if (delta > 0L) {
+            addUsage(site.id, delta)
+            val session = (backgroundSessions[site.id] ?: 0L) + delta
+            backgroundSessions[site.id] = session
+            if (site.sessionMinutes > 0 && session >= site.sessionMinutes * 60_000L) {
+                val until = wallNow() + AttentionLogic.breakMinutes(site.sessionMinutes) * 60_000L
+                breaks[site.id] = until
+                saveBreaks()
+                backgroundSessions.remove(site.id)
+                return AttentionVerdict(site, "A duração máxima desta sessão foi atingida.", until)
+            }
+        }
+        return navigationBlock(site)
+    }
+
     @Synchronized
     fun mediaPlaybackReset() {
         mediaSiteId = null
