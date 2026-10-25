@@ -1772,8 +1772,8 @@ class MainActivity : ComponentActivity() {
             }
         }
         val experimentalAudioButton = Button(this).apply {
-            text = "Ativar áudio · teste"
-            contentDescription = "Desmutar vídeo em reprodução, sem abrir janelas sobre o feed"
+            text = "🔊 Ligar / silenciar"
+            contentDescription = "Alternar som do vídeo visível sem iniciar ou pausar reprodução"
             setOnClickListener {
                 val currentUrl = webView.url
                 val host = websiteHost(currentUrl)
@@ -1784,32 +1784,35 @@ class MainActivity : ComponentActivity() {
                         Toast.LENGTH_SHORT).show()
                     return@setOnClickListener
                 }
-                // No feed, abrir AlertDialog pode tirar foco e provocar pausa.
-                // Selecionar somente mídia já reproduzindo; não chamar play().
+                // Primeiro conserva a seleção original de vídeos em reprodução.
+                // Para um vídeo pausado, reutiliza o vídeo ativo ou escolhe o maior
+                // vídeo visível. O controle não dispara play() nem pause().
                 val page = webView
                 page.evaluateJavascript("""(function(){
                     const candidates=[...document.querySelectorAll('video')]
-                        .filter(v=>!v.paused&&!v.ended)
+                        .filter(v=>!v.ended)
                         .map(v=>{
                             const r=v.getBoundingClientRect();
                             const w=Math.max(0,Math.min(r.right,innerWidth)-Math.max(0,r.left));
                             const h=Math.max(0,Math.min(r.bottom,innerHeight)-Math.max(0,r.top));
                             return {v,area:w*h};
                         }).filter(x=>x.area>0).sort((a,b)=>b.area-a.area);
-                    if(!candidates.length)return JSON.stringify({status:'no_playing'});
-                    const v=candidates[0].v;
-                    // Apenas compartilha a identidade; o algoritmo de áudio permanece intacto.
+                    if(!candidates.length)return JSON.stringify({status:'missing'});
+                    const playing=candidates.find(x=>!x.v.paused);
+                    const shared=candidates.find(x=>x.v===window.__nmInstagramActiveVideo);
+                    const v=(shared||playing||candidates[0]).v;
                     window.__nmInstagramActiveVideo=v;
-                    if(v.muted)v.muted=false;
-                    window.__nmAudioProbe={video:v,expected:false};
-                    return JSON.stringify({status:'attempted',muted:v.muted});
+                    const expected=!v.muted;
+                    v.muted=expected;
+                    window.__nmAudioProbe={video:v,expected};
+                    return JSON.stringify({status:'attempted',muted:v.muted,paused:v.paused});
                 })()""") { raw ->
                     val result = runCatching {
                         org.json.JSONObject(org.json.JSONArray("[$raw]").getString(0))
                     }.getOrNull()
                     if (result?.optString("status") != "attempted") {
                         Toast.makeText(this@MainActivity,
-                            "Vídeo pausado: reproduza pelo botão Play/Pause e tente novamente",
+                            "Nenhum vídeo visível encontrado",
                             Toast.LENGTH_LONG).show()
                         return@evaluateJavascript
                     }
@@ -1818,13 +1821,13 @@ class MainActivity : ComponentActivity() {
                         page.evaluateJavascript("""(function(){
                             const p=window.__nmAudioProbe;
                             if(!p||!p.video.isConnected)return 'changed';
-                            if(p.video.paused)return 'paused';
-                            return p.video.muted?'muted':'sound';
+                            return p.video.muted===p.expected?
+                                (p.video.muted?'muted':'sound'):'reverted';
                         })()""") { observed ->
                             val message = when (observed?.trim('"')) {
-                                "sound" -> "Som HTML5 ativado no vídeo"
-                                "paused" -> "Instagram pausou o vídeo; tente Play/Pause"
-                                "muted" -> "Instagram manteve o vídeo silenciado"
+                                "sound" -> "Som ativado no vídeo (não altera Play/Pause)"
+                                "muted" -> "Som silenciado no vídeo (não altera Play/Pause)"
+                                "reverted" -> "Instagram reverteu a alteração de som"
                                 else -> "Vídeo foi substituído pelo Instagram"
                             }
                             Toast.makeText(this@MainActivity, message,
