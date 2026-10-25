@@ -1386,6 +1386,11 @@ class MainActivity : ComponentActivity() {
         var player: MediaController? = null
         var playbackIssue: String? = null
         var lastAttentionPage: String? = null
+        var attentionReminderShown = false
+        var lastAttentionReminderPage: String? = null
+        val hideAttentionReminder = Runnable {
+            if (playerPanel === panel && !closed) attentionBanner.visibility = View.GONE
+        }
         var seeking = false
         var closed = false
         var videoFullscreen = false
@@ -1408,6 +1413,29 @@ class MainActivity : ComponentActivity() {
                 surface.layoutParams = FrameLayout.LayoutParams(w, h, android.view.Gravity.CENTER)
         }
         panel.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ -> updateVideoAspect() }
+        val attentionButton = Button(this).apply {
+            text = "Tempo"
+            contentDescription = "Consultar tempo do Controle de Atenção"
+            setOnClickListener {
+                val page = player?.currentMediaItem?.mediaMetadata?.extras
+                    ?.getString("nm_attention_page") ?: lastAttentionPage
+                val status = Attention.status(page)
+                val remaining = Attention.mediaRemainingSeconds(page)
+                val message = if (status == null) "Esta mídia não possui limite de atenção configurado."
+                else {
+                    val daily = if (status.site.dailyMinutes > 0)
+                        "${AttentionLogic.formatTime(status.usedSeconds)} de ${status.site.dailyMinutes} min hoje"
+                    else "Sem limite diário"
+                    val left = if (remaining != null)
+                        "Tempo disponível: ${AttentionLogic.formatTime(remaining)}"
+                    else "Sem limite de tempo para a sessão"
+                    "${status.site.domain}\n$daily\n$left"
+                }
+                AlertDialog.Builder(this@MainActivity).setTitle("Controle de Atenção")
+                    .setMessage(message).setPositiveButton("OK", null).show()
+            }
+        }
+        navControls.addView(attentionButton, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
         val aspectButton = Button(this).apply { text = "Ajustar" }
         navControls.addView(aspectButton, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
         aspectButton.setOnClickListener {
@@ -1454,17 +1482,33 @@ class MainActivity : ComponentActivity() {
                     val attentionPage = currentAttentionPage ?: lastAttentionPage
                     val attentionStatus = Attention.status(attentionPage)
                     val secondsLeft = Attention.mediaRemainingSeconds(attentionPage)
-                    // Modo Tranquilo: um aviso discreto somente nos cinco minutos finais,
-                    // sem números que diminuem nem cor de urgência.
+                    // Aviso único e temporário enquanto há tempo;
+                    // ao atingir o limite, mantém a mensagem de bloqueio.
                     val nearEnd = secondsLeft != null && secondsLeft in 1L..300L
-                    val ended = secondsLeft == 0L
-                    attentionBanner.visibility = if (attentionStatus != null &&
-                        (nearEnd && c.currentMediaItem != null || ended))
-                        View.VISIBLE else View.GONE
-                    if (attentionStatus != null && (nearEnd || ended)) {
-                        attentionBanner.text = if (ended)
+                    val ended = secondsLeft == 0L && attentionStatus != null
+                    if (attentionPage != lastAttentionReminderPage) {
+                        lastAttentionReminderPage = attentionPage
+                        attentionReminderShown = false
+                        handler.removeCallbacks(hideAttentionReminder)
+                        attentionBanner.visibility = View.GONE
+                    }
+                    if (ended) {
+                        handler.removeCallbacks(hideAttentionReminder)
+                        attentionBanner.text =
                             "☕ Controle de Atenção · limite atingido. Reprodução indisponível até o fim da pausa."
-                        else "☕ Sua pausa está se aproximando. Aproveite para concluir o vídeo."
+                        attentionBanner.visibility = View.VISIBLE
+                    } else if (nearEnd && !attentionReminderShown &&
+                        c.currentMediaItem != null && c.isPlaying) {
+                        attentionReminderShown = true
+                        attentionBanner.text =
+                            "☕ Sua pausa está se aproximando. Aproveite para concluir o vídeo."
+                        attentionBanner.visibility = View.VISIBLE
+                        handler.removeCallbacks(hideAttentionReminder)
+                        handler.postDelayed(hideAttentionReminder, 5000L)
+                    } else if (!nearEnd) {
+                        handler.removeCallbacks(hideAttentionReminder)
+                        attentionBanner.visibility = View.GONE
+                        attentionReminderShown = false
                     }
                     val duration = c.duration
                     val pos = c.currentPosition.coerceAtLeast(0L)
@@ -1544,6 +1588,7 @@ class MainActivity : ComponentActivity() {
                 closed = true
                 handler.removeCallbacks(update)
                 handler.removeCallbacks(hideControls)
+                handler.removeCallbacks(hideAttentionReminder)
                 player?.let { c -> runCatching { c.clearVideoSurfaceView(surface) } }
                 MediaController.releaseFuture(future)
                 playerLayer.removeView(panel)
