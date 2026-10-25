@@ -606,9 +606,12 @@ class MainActivity : ComponentActivity() {
             override fun onPageFinished(v: WebView, url: String) {
                 if (isSeuImposto(url)) {
                     recordSiteDiagnostic(v, "Navegação concluída")
+                    val recoverFocus = getSharedPreferences("seuimposto_diagnostic", MODE_PRIVATE)
+                        .getBoolean("focus_recovery", true)
                     v.evaluateJavascript("""(function(){
                         if(window.__nmKeyboardAudit)return;
-                        const audit={logs:[]};
+                        const audit={logs:[],attempts:[]};
+                        const recoveryEnabled=$recoverFocus;
                         window.__nmKeyboardAudit=audit;
                         const add=(kind,el)=>{
                             const entry={event:kind,tag:el&&el.tagName||'',
@@ -619,7 +622,27 @@ class MainActivity : ComponentActivity() {
                             if(audit.logs.length>40)audit.logs.shift();
                         };
                         document.addEventListener('focusin',e=>add('focusin',e.target),true);
-                        document.addEventListener('focusout',e=>add('focusout',e.target),true);
+                        document.addEventListener('focusout',e=>{
+                            const el=e.target;
+                            add('focusout',el);
+                            if(!recoveryEnabled||!el||
+                                !(el.matches&&el.matches('input,textarea,[contenteditable="true"]'))||
+                                e.relatedTarget||!window.visualViewport||
+                                visualViewport.height>innerHeight-120)return;
+                            const now=Date.now();
+                            audit.attempts=audit.attempts.filter(t=>now-t<10000);
+                            if(audit.attempts.length>=2)return;
+                            audit.attempts.push(now);
+                            setTimeout(()=>{
+                                const active=document.activeElement;
+                                if(!el.isConnected){add('input-replaced',el);return;}
+                                if(active&&active!==document.body&&active!==document.documentElement)return;
+                                if(!window.visualViewport||visualViewport.height>innerHeight-120)return;
+                                try{el.focus({preventScroll:true});
+                                    add(document.activeElement===el?'focus-restored':'focus-rejected',el);
+                                }catch(_){add('focus-rejected',el);}
+                            },0);
+                        },true);
                         if(window.visualViewport)
                             visualViewport.addEventListener('resize',()=>add('viewport-resize',document.activeElement));
                         add('monitor-start',document.activeElement);
@@ -1126,7 +1149,8 @@ class MainActivity : ComponentActivity() {
         AlertDialog.Builder(this).setTitle("Ferramentas")
             .setItems(arrayOf("Extensões", "Opções avançadas de mídia",
                 "Aparência · claro/escuro", "Modo de exibição do site",
-                "Diagnóstico · Seu Imposto", "Teste de teclado · Seu Imposto")) { _, which ->
+                "Diagnóstico · Seu Imposto", "Teste de teclado · Seu Imposto",
+                "Recuperação de foco · Seu Imposto")) { _, which ->
                 when (which) {
                     0 -> extLauncher.launch(Intent(this, ExtensionsActivity::class.java).apply {
                         putExtra("attention_current_page", webView.url ?: tabs[activeIndex].url)
@@ -1136,8 +1160,24 @@ class MainActivity : ComponentActivity() {
                     3 -> showSiteDisplayModes()
                     4 -> showSeuImpostoDiagnostic()
                     5 -> toggleSeuImpostoKeyboardCompat()
+                    6 -> toggleSeuImpostoFocusRecovery()
                 }
             }.show()
+    }
+
+    private fun toggleSeuImpostoFocusRecovery() {
+        if (!isSeuImposto(webView.url)) {
+            Toast.makeText(this, "Abra seuimposto.com antes deste ajuste", Toast.LENGTH_LONG).show()
+            return
+        }
+        val prefs = getSharedPreferences("seuimposto_diagnostic", MODE_PRIVATE)
+        val enabled = !prefs.getBoolean("focus_recovery", true)
+        prefs.edit().putBoolean("focus_recovery", enabled).apply()
+        webView.reload()
+        Toast.makeText(this,
+            if (enabled) "Recuperação de foco ativada para Seu Imposto"
+            else "Recuperação de foco desativada",
+            Toast.LENGTH_LONG).show()
     }
 
     private fun toggleSeuImpostoKeyboardCompat() {
@@ -1206,6 +1246,9 @@ class MainActivity : ComponentActivity() {
                 appendLine("Compatibilidade teclado: " +
                     getSharedPreferences("seuimposto_diagnostic", MODE_PRIVATE)
                         .getBoolean("keyboard_compat", false))
+                appendLine("Recuperação de foco: " +
+                    getSharedPreferences("seuimposto_diagnostic", MODE_PRIVATE)
+                        .getBoolean("focus_recovery", true))
                 appendLine("Eventos de foco/teclado:")
                 val keyboardEvents = data?.optJSONArray("keyboardEvents")
                 for (i in 0 until (keyboardEvents?.length() ?: 0)) {
