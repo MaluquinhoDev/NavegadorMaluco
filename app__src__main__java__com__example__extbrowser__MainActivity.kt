@@ -237,6 +237,31 @@ class MainActivity : ComponentActivity() {
             addView(browserBar, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
             addView(statusView, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
             addView(webHost, LinearLayout.LayoutParams(MATCH_PARENT, 0, 1f))
+            miniPlayerBar = LinearLayout(this@MainActivity).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = android.view.Gravity.CENTER_VERTICAL
+                visibility = View.GONE
+                setPadding(12, 4, 12, 4)
+                setBackgroundColor(0xFF202B3A.toInt())
+            }
+            val title = TextView(this@MainActivity).apply {
+                text = "▶ Mídia em reprodução"
+                setTextColor(android.graphics.Color.WHITE)
+                setOnClickListener { showNativeVideoPlayer() }
+            }
+            miniPlayerBar.addView(title, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
+            miniPlayButton = Button(this@MainActivity).apply {
+                text = "Pausar"
+                setOnClickListener {
+                    miniController?.let { if (it.isPlaying) it.pause() else it.play() }
+                }
+            }
+            miniPlayerBar.addView(miniPlayButton)
+            miniPlayerBar.addView(Button(this@MainActivity).apply {
+                text = "Abrir vídeo"
+                setOnClickListener { showNativeVideoPlayer() }
+            })
+            addView(miniPlayerBar, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
         }
         playerLayer = FrameLayout(this).apply { addView(root, FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT)) }
         setContentView(playerLayer)
@@ -255,6 +280,7 @@ class MainActivity : ComponentActivity() {
         showActive()
         initial.forEachIndexed { index, url -> if (index == activeIndex) tabs[index].view.loadUrl(url) }
         loaded = true
+        connectMiniPlayer()
         openPlayerFromMediaNotification(intent)
 
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
@@ -807,6 +833,36 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    private lateinit var miniPlayerBar: LinearLayout
+    private var miniController: MediaController? = null
+    private var miniControllerFuture: com.google.common.util.concurrent.ListenableFuture<MediaController>? = null
+    private val miniRefresh = object : Runnable {
+        override fun run() {
+            val c = miniController
+            if (c != null && ::miniPlayerBar.isInitialized) {
+                val active = c.currentMediaItem != null &&
+                    c.playbackState != androidx.media3.common.Player.STATE_IDLE &&
+                    c.playbackState != androidx.media3.common.Player.STATE_ENDED
+                miniPlayerBar.visibility = if (active && playerPanel == null &&
+                    !isInPictureInPictureMode) View.VISIBLE else View.GONE
+                miniPlayButton.text = if (c.isPlaying) "Pausar" else "Play"
+            }
+            handler.postDelayed(this, 1000L)
+        }
+    }
+    private lateinit var miniPlayButton: Button
+    private fun connectMiniPlayer() {
+        if (miniControllerFuture != null) return
+        val future = MediaController.Builder(this,
+            SessionToken(this, ComponentName(this, Media3PlaybackService::class.java))
+        ).buildAsync()
+        miniControllerFuture = future
+        future.addListener({
+            if (isFinishing || isDestroyed) { MediaController.releaseFuture(future); return@addListener }
+            runCatching { miniController = future.get() }
+                .onFailure { android.util.Log.w("NavegadorMedia3", "Mini-player indisponível", it) }
+        }, androidx.core.content.ContextCompat.getMainExecutor(this))
+    }
     private lateinit var playerLayer: FrameLayout
     private var playerPanel: FrameLayout? = null
     private var nativePlayerClose: (() -> Unit)? = null
@@ -854,6 +910,7 @@ class MainActivity : ComponentActivity() {
         panel.addView(outer, FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT))
         playerLayer.addView(panel, FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT))
         playerPanel = panel
+        miniPlayerBar.visibility = View.GONE
         playerControls = outer
         browserBar.visibility = View.GONE
         statusView.visibility = View.GONE
@@ -996,6 +1053,7 @@ class MainActivity : ComponentActivity() {
                 window.decorView.systemUiVisibility = 0
                 requestedOrientation = originalOrientation
                 browserBar.visibility = View.VISIBLE
+                miniPlayerBar.visibility = if (miniController?.currentMediaItem != null) View.VISIBLE else View.GONE
                 updateStatus()
             }
         }
@@ -1502,8 +1560,11 @@ class MainActivity : ComponentActivity() {
         }
         handler.removeCallbacks(ticker)
         handler.post(ticker)
+        handler.removeCallbacks(miniRefresh)
+        handler.post(miniRefresh)
     }
     override fun onPause() {
+        handler.removeCallbacks(miniRefresh)
         handler.removeCallbacks(ticker)
         Attention.pause()
         persistTabs()
@@ -1518,6 +1579,10 @@ class MainActivity : ComponentActivity() {
         fileCallback = null
         closeNativePlayer()
         exitFullscreen()
+        handler.removeCallbacks(miniRefresh)
+        miniControllerFuture?.let { MediaController.releaseFuture(it) }
+        miniControllerFuture = null
+        miniController = null
         handler.removeCallbacks(ticker)
         tabs.forEach { (it.view.parent as? android.view.ViewGroup)?.removeView(it.view); it.view.destroy() }
         store.close()
