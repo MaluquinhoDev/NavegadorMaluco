@@ -102,7 +102,24 @@ class MainActivity : ComponentActivity() {
             path.endsWith(".m3u8") -> "HLS: extensão m3u8"
             path.endsWith(".m4s") -> "Segmento: m4s"
             path.endsWith(".ts") -> "Segmento: ts"
-            path.contains("videoplayback") -> "Entrega de mídia: videoplayback (formato não identificado)"
+            path.contains("videoplayback") -> {
+                // Somente categorias derivadas de parâmetros conhecidos; nunca logar valores.
+                // "mime" é indício declarado pela URL, não confirmação do conteúdo HTTP.
+                val mime = runCatching { uri.getQueryParameter("mime")?.lowercase(java.util.Locale.ROOT) }
+                    .getOrNull().orEmpty()
+                val mediaType = when {
+                    mime.startsWith("video/") -> "vídeo declarado"
+                    mime.startsWith("audio/") -> "áudio declarado"
+                    else -> "tipo não declarado"
+                }
+                val adaptive = runCatching { uri.getQueryParameterNames().contains("range") }
+                    .getOrDefault(false)
+                val hasItag = runCatching { uri.getQueryParameterNames().contains("itag") }
+                    .getOrDefault(false)
+                "videoplayback: $mediaType" +
+                    (if (adaptive) " · range indicado" else "") +
+                    (if (hasItag) " · itag presente" else "")
+            }
             else -> null
         }
     }
@@ -805,6 +822,7 @@ class MainActivity : ComponentActivity() {
                 signals.entries.joinToString("; ") { "${it.key}=${it.value}" }))
         AlertDialog.Builder(this).setTitle("Diagnóstico de vídeo YouTube")
             .setMessage("Página de vídeo reconhecida. Requisições observadas:\n\n$summary\n\n" +
+                "Tipos são inferidos de parâmetros declarados, não do conteúdo da resposta. " +
                 "Isso não prova a existência de um manifesto utilizável pelo Media3. " +
                 "A WebView pode não expor todos os fluxos da página.")
             .setPositiveButton("Voltar ao vídeo") { _, _ -> webView.requestFocus() }
