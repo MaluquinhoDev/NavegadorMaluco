@@ -1491,6 +1491,69 @@ class MainActivity : ComponentActivity() {
                 slider.progress = 0
             }
         }
+        val diagnosticButton = Button(this).apply {
+            text = "Diagnóstico"
+            contentDescription = "Diagnosticar som do vídeo do Instagram sem alterar reprodução"
+            setOnClickListener {
+                val url = webView.url
+                val host = websiteHost(url)
+                if ((host != "instagram.com" && host?.endsWith(".instagram.com") != true) ||
+                    siteDisplayMode(url) != "hybrid") {
+                    Toast.makeText(this@MainActivity, "Abra o Instagram em modo híbrido",
+                        Toast.LENGTH_SHORT).show()
+                    return@setOnClickListener
+                }
+                val systemMax = audio.getStreamMaxVolume(AudioManager.STREAM_MUSIC).coerceAtLeast(1)
+                val systemLevel = audio.getStreamVolume(AudioManager.STREAM_MUSIC) * 100 / systemMax
+                webView.evaluateJavascript("""(function(){
+                    const videos=[...document.querySelectorAll('video')];
+                    const visible=videos.map(v=>{
+                        const r=v.getBoundingClientRect();
+                        const w=Math.max(0,Math.min(innerWidth,r.right)-Math.max(0,r.left));
+                        const h=Math.max(0,Math.min(innerHeight,r.bottom)-Math.max(0,r.top));
+                        return {v,area:w*h};
+                    }).filter(x=>x.area>0).sort((a,b)=>b.area-a.area);
+                    const v=visible.length?visible[0].v:null;
+                    return JSON.stringify({total:videos.length,visible:visible.length,
+                        paused:v?v.paused:null,muted:v?v.muted:null,
+                        defaultMuted:v?v.defaultMuted:null,
+                        volume:v?Math.round(v.volume*100):null,
+                        readyState:v?v.readyState:null,
+                        frameCount:document.querySelectorAll('iframe').length});
+                })()""") { raw ->
+                    val details = runCatching {
+                        org.json.JSONArray("[$raw]").getString(0)
+                    }.getOrNull()
+                    val state = runCatching {
+                        org.json.JSONObject(details ?: "{}")
+                    }.getOrNull()
+                    val report = buildString {
+                        append("Volume Android: $systemLevel%\\n")
+                        append("Vídeos HTML5 detectados: ${state?.optInt("total", 0) ?: 0}\\n")
+                        append("Vídeos visíveis: ${state?.optInt("visible", 0) ?: 0}\\n")
+                        if ((state?.optInt("visible", 0) ?: 0) > 0) {
+                            append("Pausado: ${state?.optString("paused")}\\n")
+                            append("Silenciado pelo site: ${state?.optString("muted")}\\n")
+                            append("Silenciado por padrão: ${state?.optString("defaultMuted")}\\n")
+                            append("Volume HTML5: ${state?.optInt("volume")}%\\n")
+                            append("Estado da mídia: ${state?.optInt("readyState")}\\n")
+                        } else append("O vídeo pode estar em um iframe ou camada não acessível.\\n")
+                        append("Iframes detectados: ${state?.optInt("frameCount", 0) ?: 0}")
+                    }
+                    AlertDialog.Builder(this@MainActivity).setTitle("Diagnóstico · Instagram")
+                        .setMessage(report)
+                        .setPositiveButton("Fechar", null)
+                        .setNeutralButton("Copiar") { _, _ ->
+                            android.content.ClipboardManager::class.java.let {
+                                val clipboard = getSystemService(Context.CLIPBOARD_SERVICE)
+                                    as android.content.ClipboardManager
+                                clipboard.setPrimaryClip(android.content.ClipData.newPlainText(
+                                    "Diagnóstico Instagram", report))
+                            }
+                        }.show()
+                }
+            }
+        }
         val sideButton = Button(this).apply {
             text = "↔"
             contentDescription = "Mover controles para a outra lateral"
@@ -1542,6 +1605,7 @@ class MainActivity : ComponentActivity() {
         detail.addView(slider, LinearLayout.LayoutParams(MATCH_PARENT, dp(48)))
         detail.addView(muteButton, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
         detail.addView(sideButton, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
+        detail.addView(diagnosticButton, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
         val stepHeight = dp(160).toFloat()
         var startY = 0f
         var initial = 0
