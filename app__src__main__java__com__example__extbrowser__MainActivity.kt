@@ -632,7 +632,7 @@ class MainActivity : ComponentActivity() {
                     v.evaluateJavascript("""(function(){
                         if(window.__nmKeyboardAudit)return;
                         const audit={logs:[],attempts:[],lastFocused:null,lastBlurAt:0,
-                            detachLogged:false};
+                            detachLogged:false,structureEvents:[]};
                         const recoveryEnabled=$recoverFocus;
                         window.__nmKeyboardAudit=audit;
                         const add=(kind,el,details={})=>{
@@ -656,6 +656,27 @@ class MainActivity : ComponentActivity() {
                                 documentFocus:document.hasFocus(),
                                 activeTag:document.activeElement&&document.activeElement.tagName||''};
                         };
+                        // Indicadores estruturais, sem IDs, classes, atributos livres ou texto.
+                        const ancestry=el=>{
+                            const tags=[];
+                            for(let n=el,i=0;n&&i<5;n=n.parentElement,i++)
+                                tags.push(n.tagName||'?');
+                            return tags.join('>');
+                        };
+                        const layoutState=()=>({
+                            width:innerWidth,
+                            compactHeight:matchMedia('(max-height: 400px)').matches,
+                            mediumHeight:matchMedia('(max-height: 600px)').matches,
+                            narrowWidth:matchMedia('(max-width: 600px)').matches
+                        });
+                        let lastLayout=JSON.stringify(layoutState());
+                        const checkLayout=()=>{
+                            const current=JSON.stringify(layoutState());
+                            if(current!==lastLayout){
+                                add('layout-breakpoint-change',document.activeElement,layoutState());
+                                lastLayout=current;
+                            }
+                        };
                         const inputStates=new WeakMap();
                         const scanInputs=()=>{
                             document.querySelectorAll('input,textarea,[contenteditable="true"]')
@@ -675,7 +696,7 @@ class MainActivity : ComponentActivity() {
                         document.addEventListener('focusin',e=>{
                             audit.lastFocused=e.target;
                             audit.detachLogged=false;
-                            add('focusin',e.target);
+                            add('focusin',e.target,{tree:ancestry(e.target),...layoutState()});
                         },true);
                         document.addEventListener('focusout',e=>{
                             const el=e.target;
@@ -779,6 +800,22 @@ class MainActivity : ComponentActivity() {
                                 audit.detachLogged=true;
                                 add('dom-focused-element-removed',audit.lastFocused);
                             }
+                            for(const change of changes){
+                                if(change.type!=='childList'||!change.removedNodes.length)continue;
+                                const removesFocus=[...change.removedNodes].some(node=>
+                                    node===audit.lastFocused||
+                                    (node.contains&&node.contains(audit.lastFocused)));
+                                if(!removesFocus)continue;
+                                // Diferencia remoção isolada do INPUT de remontagem de contêiner.
+                                add('focused-node-removal',audit.lastFocused,{
+                                    removedTree:ancestry(change.target),
+                                    removedTag:[...change.removedNodes]
+                                        .find(node=>node===audit.lastFocused||
+                                            (node.contains&&node.contains(audit.lastFocused)))?.nodeName||'?',
+                                    addedSiblings:change.addedNodes.length,
+                                    ...layoutState()});
+                                break;
+                            }
                             if(!changes.some(change=>change.addedNodes.length))return;
                             let addedInput=null;
                             for(const change of changes){
@@ -794,13 +831,18 @@ class MainActivity : ComponentActivity() {
                             }
                             if(addedInput)add('dom-new-editable-field',addedInput,
                                 {...focusState(addedInput),
+                                tree:ancestry(addedInput),...layoutState(),
                                 ariaDisabled:addedInput.getAttribute('aria-disabled')==='true'});
                         });
                         monitor.observe(document.documentElement,{childList:true,subtree:true,
                             attributes:true,attributeFilter:['disabled','readonly','aria-disabled','inert']});
                         if(window.visualViewport)
-                            visualViewport.addEventListener('resize',()=>add('viewport-resize',document.activeElement));
-                        window.addEventListener('resize',()=>add('window-resize',document.activeElement));
+                            visualViewport.addEventListener('resize',()=>{
+                                add('viewport-resize',document.activeElement);checkLayout();
+                            });
+                        window.addEventListener('resize',()=>{
+                            add('window-resize',document.activeElement);checkLayout();
+                        });
                         add('monitor-start',document.activeElement);
                     })()""", null)
                 }
@@ -1531,6 +1573,16 @@ class MainActivity : ComponentActivity() {
                     if (e.has("ariaDisabled") || e.has("previousDisabled"))
                         appendLine("  ariaDisabled=${e.optString("ariaDisabled", "?")}" +
                             " disabledAnterior=${e.optString("previousDisabled", "?")}")
+                    if (e.has("tree") || e.has("removedTree"))
+                        appendLine("  estrutura=${e.optString("tree", "?")}" +
+                            " removidoDe=${e.optString("removedTree", "?")}" +
+                            " nóRemovido=${e.optString("removedTag", "?")}" +
+                            " novosIrmãos=${e.optString("addedSiblings", "?")}")
+                    if (e.has("compactHeight"))
+                        appendLine("  layout largura=${e.optString("width", "?")}" +
+                            " alturaAté400=${e.optString("compactHeight", "?")}" +
+                            " alturaAté600=${e.optString("mediumHeight", "?")}" +
+                            " larguraAté600=${e.optString("narrowWidth", "?")}")
                 }
                 appendLine("Linha do tempo da API de chat (Resource Timing):")
                 val chatRequests = data?.optJSONArray("chatRequests")
