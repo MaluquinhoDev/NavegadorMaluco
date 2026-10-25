@@ -195,7 +195,7 @@ class MainActivity : ComponentActivity() {
 
     companion object {
         private const val HOME = "https://www.wikipedia.org"
-        private const val MAX_TABS = 6
+        private const val MAX_TABS = BrowserTabPolicy.MAX_TABS
         const val ACTION_OPEN_MEDIA_PLAYER = "com.example.extbrowser.OPEN_MEDIA_PLAYER"
     }
 
@@ -346,7 +346,7 @@ class MainActivity : ComponentActivity() {
         val urls = prefs.getString("urls", "")!!.split('\n').filter { it.startsWith("https://") || it.startsWith("http://") }.take(MAX_TABS)
         val initial = urls.ifEmpty { listOf(HOME) }
         for (url in initial) tabs.add(Tab(createWebView(), url = url))
-        activeIndex = prefs.getInt("active", 0).coerceIn(0, tabs.lastIndex)
+        activeIndex = BrowserTabPolicy.restoredIndex(prefs.getInt("active", 0), tabs.size)
         showActive()
         initial.forEachIndexed { index, url -> if (index == activeIndex) tabs[index].view.loadUrl(url) }
         loaded = true
@@ -619,7 +619,7 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun newTab(url: String = HOME) {
-        if (tabs.size >= MAX_TABS) {
+        if (!BrowserTabPolicy.canCreate(tabs.size)) {
             Toast.makeText(this, "Limite de $MAX_TABS abas para reduzir uso de memória", Toast.LENGTH_LONG).show()
             return
         }
@@ -637,16 +637,14 @@ class MainActivity : ComponentActivity() {
         tab.view.stopLoading()
         tab.view.destroy()
         if (tabs.isEmpty()) { tabs.add(Tab(createWebView())) ; activeIndex = 0 }
-        else activeIndex = when {
-            index < activeIndex -> activeIndex - 1
-            index == activeIndex -> activeIndex.coerceAtMost(tabs.lastIndex)
-            else -> activeIndex
-        }
+        else activeIndex = BrowserTabPolicy.indexAfterClose(activeIndex, index, tabs.size)
         showActive()
     }
 
     private fun showTabs() {
-        val names = tabs.mapIndexed { i, t -> "${i + 1}. ${t.title.take(50)}${if (i == activeIndex) " ✓" else ""}" }.toTypedArray()
+        val names = tabs.mapIndexed { i, t ->
+            BrowserTabPolicy.tabLabel(i, t.title, i == activeIndex)
+        }.toTypedArray()
         AlertDialog.Builder(this).setTitle("Abas (${tabs.size}/$MAX_TABS)")
             .setItems(names) { _, selected -> activeIndex = selected; showActive() }
             .setPositiveButton("Nova aba") { _, _ -> newTab() }
