@@ -2200,6 +2200,7 @@ class MainActivity : ComponentActivity() {
             t.contains(".") && !t.contains(" ") -> "https://$t"
             else -> "https://duckduckgo.com/?q=" + Uri.encode(t)
         }
+        configureSiteDisplay(webView, url)
         webView.loadUrl(url)
         urlBar.clearFocus()
     }
