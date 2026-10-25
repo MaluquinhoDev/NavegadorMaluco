@@ -1449,23 +1449,72 @@ class MainActivity : ComponentActivity() {
         }
         val pauseButton = Button(this).apply {
             text = "⏯"
-            contentDescription = "Pausar ou retomar vídeo do feed"
+            contentDescription = "Pausar ou retomar vídeo principal visível"
             setOnClickListener {
                 if (Attention.checkNavigation(webView.url ?: "") != null) return@setOnClickListener
-                webView.evaluateJavascript("""(function(){
-                    const visible=[...document.querySelectorAll('video')]
+                // O feed costuma manter outros vídeos tocando fora da publicação
+                // principal. Priorizar o vídeo maior, não outro que esteja tocando.
+                val page = webView
+                page.evaluateJavascript("""(function(){
+                    const videos=[...document.querySelectorAll('video')]
                         .filter(v=>!v.ended)
                         .map(v=>{
                             const r=v.getBoundingClientRect();
                             const w=Math.max(0,Math.min(r.right,innerWidth)-Math.max(r.left,0));
                             const h=Math.max(0,Math.min(r.bottom,innerHeight)-Math.max(r.top,0));
-                            return {v,area:w*h};
-                        }).filter(x=>x.area>0)
-                        .sort((a,b)=>(Number(!b.v.paused)-Number(!a.v.paused))||b.area-a.area);
-                    const v=visible.length?visible[0].v:null;
-                    if(!v)return;
-                    if(v.paused)v.play().catch(()=>{});else v.pause();
-                })()""", null)
+                            const area=w*h;
+                            const cx=(Math.max(0,r.left)+Math.min(innerWidth,r.right))/2;
+                            const cy=(Math.max(0,r.top)+Math.min(innerHeight,r.bottom))/2;
+                            const distance=Math.abs(cx-innerWidth/2)/Math.max(1,innerWidth)+
+                                Math.abs(cy-innerHeight/2)/Math.max(1,innerHeight);
+                            return {v,area,score:area/(1+distance)};
+                        }).filter(x=>x.area>0).sort((a,b)=>b.score-a.score);
+                    if(!videos.length)return JSON.stringify({status:'missing'});
+                    const v=videos[0].v;
+                    if(!v.paused){
+                        v.pause();
+                        return JSON.stringify({status:v.paused?'paused':'ignored'});
+                    }
+                    try{
+                        const p=v.play();
+                        if(p&&typeof p.catch==='function')p.catch(()=>{});
+                        return JSON.stringify({status:'requested_play'});
+                    }catch(e){
+                        return JSON.stringify({status:'denied'});
+                    }
+                })()""") { raw ->
+                    val state = runCatching {
+                        org.json.JSONObject(org.json.JSONArray("[$raw]").getString(0))
+                            .optString("status")
+                    }.getOrNull()
+                    when (state) {
+                        "missing" -> Toast.makeText(this@MainActivity,
+                            "Vídeo não localizado no feed", Toast.LENGTH_SHORT).show()
+                        "denied" -> Toast.makeText(this@MainActivity,
+                            "Instagram recusou iniciar o vídeo", Toast.LENGTH_SHORT).show()
+                        "requested_play" -> page.postDelayed({
+                            if (page !== webView) return@postDelayed
+                            page.evaluateJavascript("""(function(){
+                                const videos=[...document.querySelectorAll('video')]
+                                    .map(v=>{const r=v.getBoundingClientRect();
+                                        const w=Math.max(0,Math.min(r.right,innerWidth)-Math.max(r.left,0));
+                                        const h=Math.max(0,Math.min(r.bottom,innerHeight)-Math.max(r.top,0));
+                                        const cx=(Math.max(0,r.left)+Math.min(innerWidth,r.right))/2;
+                                        const cy=(Math.max(0,r.top)+Math.min(innerHeight,r.bottom))/2;
+                                        const distance=Math.abs(cx-innerWidth/2)/Math.max(1,innerWidth)+
+                                            Math.abs(cy-innerHeight/2)/Math.max(1,innerHeight);
+                                        return {v,score:w*h/(1+distance)};
+                                    }).filter(x=>x.score>0).sort((a,b)=>b.score-a.score);
+                                return videos.length?(videos[0].v.paused?'paused':'playing'):'missing';
+                            })()""") { observed ->
+                                if (observed?.trim('"') != "playing")
+                                    Toast.makeText(this@MainActivity,
+                                        "O Instagram não retomou a reprodução",
+                                        Toast.LENGTH_SHORT).show()
+                            }
+                        }, 400L)
+                    }
+                }
             }
         }
         val volumeButton = Button(this).apply {
