@@ -434,6 +434,13 @@ class MainActivity : ComponentActivity() {
         WebView.setWebContentsDebuggingEnabled((applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) != 0)
         view.webViewClient = object : WebViewClient() {
             override fun onPageStarted(v: WebView, url: String, favicon: Bitmap?) {
+                // Alguns fluxos de login do X usam cookies entre domínios.
+                // Restrição mantida para outras páginas e sem alterar o User-Agent.
+                val host = runCatching { Uri.parse(url).host?.lowercase() }.getOrNull()
+                val loginDomain = host == "x.com" || host?.endsWith(".x.com") == true ||
+                    host == "twitter.com" || host?.endsWith(".twitter.com") == true ||
+                    host == "accounts.google.com"
+                CookieManager.getInstance().setAcceptThirdPartyCookies(v, loginDomain)
                 val t = tabs.firstOrNull { it.view === v } ?: return
                 synchronized(mediaCandidateLock) { mediaCandidates.remove(v); mediaRequestOrigins.remove(v); mediaNetworkSignals.remove(v) }
                 t.url = url
@@ -454,32 +461,6 @@ class MainActivity : ComponentActivity() {
             }
             override fun shouldOverrideUrlLoading(v: WebView, request: WebResourceRequest): Boolean {
                 val target = request.url
-                // O Google não permite OAuth em WebViews incorporadas.
-                // Não altera User-Agent, cookies nem intercepta tokens OAuth.
-                if (request.isForMainFrame && target.scheme == "https" &&
-                    target.host.equals("accounts.google.com", ignoreCase = true) &&
-                    (target.path.orEmpty().startsWith("/o/oauth2/") ||
-                        target.path.orEmpty().startsWith("/signin/oauth"))) {
-                    AlertDialog.Builder(this@MainActivity)
-                        .setTitle("Login com Google")
-                        .setMessage("O Google não permite esta autorização dentro do navegador incorporado. " +
-                            "Abra o X no navegador do sistema e entre por lá. " +
-                            "A sessão externa não será transferida automaticamente para o NavegadorMaluco.")
-                        .setPositiveButton("Abrir X externamente") { _, _ ->
-                            runCatching {
-                                startActivity(Intent(Intent.ACTION_VIEW,
-                                    Uri.parse("https://x.com/i/flow/login")).apply {
-                                    addCategory(Intent.CATEGORY_BROWSABLE)
-                                })
-                            }.onFailure {
-                                Toast.makeText(this@MainActivity,
-                                    "Não foi possível abrir o navegador do sistema",
-                                    Toast.LENGTH_LONG).show()
-                            }
-                        }
-                        .setNegativeButton("Cancelar", null).show()
-                    return true
-                }
                 if (target.scheme == "extbrowser") {
                     if (v === webView) handleBreakAction(target)
                     return true
