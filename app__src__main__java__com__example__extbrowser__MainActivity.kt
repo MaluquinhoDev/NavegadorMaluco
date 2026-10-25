@@ -1787,24 +1787,40 @@ class MainActivity : ComponentActivity() {
             inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE or
                 InputType.TYPE_TEXT_FLAG_CAP_SENTENCES
         }
-        AlertDialog.Builder(this).setTitle("Digitar pelo Android · Seu Imposto")
+        val dialog = AlertDialog.Builder(this).setTitle("Digitar pelo Android · Seu Imposto")
             .setMessage("O texto será preenchido no formulário do site. O envio não é automático.")
             .setView(field)
-            .setPositiveButton("Preencher no chat") { _, _ ->
-                val message = field.text.toString()
-                if (message.isBlank()) return@setPositiveButton
-                if (page !== webView || !isSeuImposto(page.url)) return@setPositiveButton
-                val quoted = org.json.JSONObject.quote(message)
-                // Não registra o texto e não executa submit/click automaticamente.
+            .setPositiveButton("Preencher no chat", null)
+            .setNegativeButton("Cancelar", null)
+            .create()
+        dialog.show()
+        dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+            val message = field.text.toString()
+            if (message.isBlank()) return@setOnClickListener
+            if (page !== webView || !isSeuImposto(page.url)) {
+                dialog.setMessage("A aba do Seu Imposto não está mais ativa.")
+                return@setOnClickListener
+            }
+            // Esconde primeiro o IME nativo e aguarda o campo Web estabilizar.
+            (getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager)
+                .hideSoftInputFromWindow(field.windowToken, 0)
+            dialog.getButton(AlertDialog.BUTTON_POSITIVE).isEnabled = false
+            val quoted = org.json.JSONObject.quote(message)
+            fun tryFill(attempt: Int) {
+                if (!dialog.isShowing || page !== webView || !isSeuImposto(page.url)) return
+                // Não registra texto e jamais chama submit ou click no site.
                 page.evaluateJavascript("""(function(){
-                    const candidates=[...document.querySelectorAll('form input[type="text"],form textarea')]
-                        .filter(el=>{const rect=el.getBoundingClientRect();
-                            const style=getComputedStyle(el);
-                            return el.isConnected&&!el.disabled&&!el.readOnly&&
-                                rect.width>0&&rect.height>0&&style.display!=='none'&&
-                                style.visibility!=='hidden';});
-                    if(candidates.length!==1)return 'campos='+candidates.length;
-                    const el=candidates[0];
+                    const all=[...document.querySelectorAll('form input,form textarea')]
+                        .filter(el=>el.matches('textarea,input[type="text"],input:not([type])'));
+                    const visible=all.filter(el=>{const rect=el.getBoundingClientRect();
+                        const style=getComputedStyle(el);
+                        return el.isConnected&&rect.width>0&&rect.height>0&&
+                            style.display!=='none'&&style.visibility!=='hidden';});
+                    const ready=visible.filter(el=>!el.disabled&&!el.readOnly);
+                    if(ready.length!==1||visible.length!==1)
+                        return 'aguardar:total='+all.length+',visiveis='+visible.length+
+                            ',habilitados='+ready.length;
+                    const el=ready[0];
                     const proto=el instanceof HTMLTextAreaElement?
                         HTMLTextAreaElement.prototype:HTMLInputElement.prototype;
                     const setter=Object.getOwnPropertyDescriptor(proto,'value')?.set;
@@ -1814,19 +1830,27 @@ class MainActivity : ComponentActivity() {
                     el.dispatchEvent(new Event('change',{bubbles:true}));
                     return el.value===$quoted?'preenchido':'não-confirmado';
                 })()""") { raw ->
+                    if (!dialog.isShowing) return@evaluateJavascript
                     val status = raw.trim('"')
-                    val notification = when (status) {
-                        "preenchido" -> "Texto preenchido. O envio continua pelo site."
-                        "campos=0" -> "Campo do chat indisponível ou desabilitado"
-                        else -> "Não foi possível confirmar o preenchimento do chat"
+                    if (status == "preenchido") {
+                        dialog.dismiss()
+                        Toast.makeText(this, "Texto preenchido. Envio pelo site.",
+                            Toast.LENGTH_LONG).show()
+                    } else if (status.startsWith("aguardar:") && attempt < 24) {
+                        page.postDelayed({ tryFill(attempt + 1) }, 250)
+                    } else {
+                        dialog.getButton(AlertDialog.BUTTON_POSITIVE).isEnabled = true
+                        dialog.setMessage("O site não aceitou o preenchimento. " +
+                            "Estado: $status. O texto continua neste campo Android.")
                     }
-                    Toast.makeText(this, notification, Toast.LENGTH_LONG).show()
-                    // Nenhum conteúdo da mensagem entra no diagnóstico.
-                    recordSiteDiagnostic(page, "Entrada Android · resultado=$status")
+                    // Somente o estado do DOM é registrado, nunca a mensagem.
+                    if (status == "preenchido" || attempt >= 24 ||
+                        !status.startsWith("aguardar:"))
+                        recordSiteDiagnostic(page, "Entrada Android · resultado=$status · tentativas=${attempt + 1}")
                 }
             }
-            .setNegativeButton("Cancelar", null)
-            .show()
+            page.postDelayed({ tryFill(0) }, 350)
+        }
     }
 
     private fun toggleSeuImpostoKeyboardCompat() {
