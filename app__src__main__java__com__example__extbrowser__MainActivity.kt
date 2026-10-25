@@ -681,9 +681,13 @@ class MainActivity : ComponentActivity() {
                                 y:(oldRect.top+oldRect.bottom)/2};
                             let observer=null;
                             let timeout=null;
+                            let interval=null;
                             let finished=false;
+                            let focusTries=0;
+                            const waitingForEnabled=new WeakSet();
                             const stop=()=>{finished=true;if(observer)observer.disconnect();
-                                if(timeout)clearTimeout(timeout);};
+                                if(timeout)clearTimeout(timeout);
+                                if(interval)clearInterval(interval);};
                             const restore=()=>{
                                 if(finished)return;
                                 const active=document.activeElement;
@@ -691,8 +695,7 @@ class MainActivity : ComponentActivity() {
                                     stop();return;
                                 }
                                 if(!window.visualViewport||
-                                    (visualViewport.height>innerHeight-120&&
-                                     Date.now()-audit.lastBlurAt>350)){
+                                    Date.now()-audit.lastBlurAt>900){
                                     stop();return;
                                 }
                                 let target=el.isConnected?el:null;
@@ -709,11 +712,22 @@ class MainActivity : ComponentActivity() {
                                     })||null;
                                 }
                                 if(!target)return;
-                                stop();
                                 const stateBefore=focusState(target);
+                                if(!stateBefore.connected||stateBefore.disabled||stateBefore.readOnly||
+                                    stateBefore.inert||!stateBefore.visible||!stateBefore.documentFocus||
+                                    target.getAttribute('aria-disabled')==='true'){
+                                    if(!waitingForEnabled.has(target)){
+                                        waitingForEnabled.add(target);
+                                        add('waiting-input-enabled',target,stateBefore);
+                                    }
+                                    return;
+                                }
+                                if(focusTries>=2){stop();return;}
+                                focusTries++;
                                 add('focus-attempt',target,stateBefore);
                                 try{target.focus({preventScroll:true});
                                     if(document.activeElement===target){
+                                        stop();
                                         add(target===el?'focus-restored':'replacement-focused',
                                             target,focusState(target));
                                         if(window.__nmFocusBridge)
@@ -730,8 +744,11 @@ class MainActivity : ComponentActivity() {
                                 restore();
                                 if(finished)return;
                                 observer=new MutationObserver(restore);
-                                observer.observe(document.body,{childList:true,subtree:true});
-                                timeout=setTimeout(()=>{stop();add('recovery-timeout',el);},350);
+                                observer.observe(document.body,{childList:true,subtree:true,
+                                    attributes:true,
+                                    attributeFilter:['disabled','readonly','aria-disabled','inert']});
+                                interval=setInterval(restore,70);
+                                timeout=setTimeout(()=>{stop();add('recovery-timeout',el);},900);
                             },0);
                         },true);
                         // Observa estrutura e estados de editabilidade, nunca valores digitados.
