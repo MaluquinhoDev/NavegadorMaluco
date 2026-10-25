@@ -1282,6 +1282,7 @@ class MainActivity : ComponentActivity() {
         val token = SessionToken(this, ComponentName(this, Media3PlaybackService::class.java))
         val future = MediaController.Builder(this, token).buildAsync()
         var player: MediaController? = null
+        var playbackIssue: String? = null
         var seeking = false
         var closed = false
         var videoFullscreen = false
@@ -1355,9 +1356,13 @@ class MainActivity : ComponentActivity() {
                         val sec = ms.coerceAtLeast(0L) / 1000L
                         return "%02d:%02d".format(sec / 60, sec % 60)
                     }
-                    info.text = if (total > 0L) "${clock(pos)} / ${clock(total)}"
+                    info.text = playbackIssue ?: if (total > 0L) "${clock(pos)} / ${clock(total)}"
                         else "Áudio/vídeo nativo · ${clock(pos)}"
-                    play.text = if (c.isPlaying) "Pausar" else "Reproduzir"
+                    play.text = when {
+                        c.playerError != null -> "Tentar novamente"
+                        c.isPlaying -> "Pausar"
+                        else -> "Reproduzir"
+                    }
                     if (c.isPlaying && outer.visibility == View.VISIBLE &&
                         !handler.hasCallbacks(hideControls) && !videoFullscreen)
                         handler.postDelayed(hideControls, 3500L)
@@ -1382,7 +1387,13 @@ class MainActivity : ComponentActivity() {
             override fun onProgressChanged(seekBar: android.widget.SeekBar?, p: Int, fromUser: Boolean) {}
         })
         play.setOnClickListener {
-            player?.let { if (it.isPlaying) it.pause() else it.play() }
+            player?.let { c ->
+                if (c.playerError != null) {
+                    playbackIssue = null
+                    c.prepare()
+                    c.play()
+                } else if (c.isPlaying) c.pause() else c.play()
+            }
         }
         back.setOnClickListener { player?.let { it.seekTo((it.currentPosition - 10000L).coerceAtLeast(0L)) } }
         forward.setOnClickListener {
@@ -1431,6 +1442,21 @@ class MainActivity : ComponentActivity() {
                     player = c
                     c.setVideoSurfaceView(surface)
                     val sizeListener = object : androidx.media3.common.Player.Listener {
+                        override fun onPlayerError(error: androidx.media3.common.PlaybackException) {
+                            playbackIssue = when {
+                                error.errorCodeName.contains("NETWORK") ->
+                                    "Falha de conexão. Toque em Tentar novamente."
+                                error.errorCodeName.contains("DECOD") ->
+                                    "Formato não suportado pelo dispositivo."
+                                else -> "Falha na reprodução. Toque em Tentar novamente."
+                            }
+                            outer.visibility = View.VISIBLE
+                            handler.removeCallbacks(hideControls)
+                        }
+                        override fun onPlaybackStateChanged(state: Int) {
+                            if (state == androidx.media3.common.Player.STATE_READY)
+                                playbackIssue = null
+                        }
                         override fun onVideoSizeChanged(size: androidx.media3.common.VideoSize) {
                             if (size.width > 0 && size.height > 0) {
                                 videoWidth = (size.width * size.pixelWidthHeightRatio).toInt().coerceAtLeast(1)
