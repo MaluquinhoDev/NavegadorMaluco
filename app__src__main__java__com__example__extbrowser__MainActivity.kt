@@ -1361,6 +1361,17 @@ class MainActivity : ComponentActivity() {
         outer.addView(controls, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
         outer.addView(progress, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
         panel.addView(outer, FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT))
+        // Aviso independente dos controles que podem sumir na tela cheia.
+        val attentionBanner = TextView(this).apply {
+            setTextColor(android.graphics.Color.WHITE)
+            setBackgroundColor(0xCC9A321A.toInt())
+            gravity = android.view.Gravity.CENTER
+            textSize = 14f
+            setPadding(12, 8, 12, 8)
+            visibility = View.GONE
+        }
+        panel.addView(attentionBanner, FrameLayout.LayoutParams(
+            MATCH_PARENT, WRAP_CONTENT, android.view.Gravity.TOP))
         playerLayer.addView(panel, FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT))
         playerPanel = panel
         // Android 12+: ao ir para Home, a tela do player vira PiP automaticamente.
@@ -1373,6 +1384,7 @@ class MainActivity : ComponentActivity() {
         val token = SessionToken(this, ComponentName(this, Media3PlaybackService::class.java))
         val future = MediaController.Builder(this, token).buildAsync()
         var player: MediaController? = null
+        var lastAttentionWarning = -1
         var playbackIssue: String? = null
         var seeking = false
         var closed = false
@@ -1434,6 +1446,26 @@ class MainActivity : ComponentActivity() {
             override fun run() {
                 val c = player
                 if (!closed && c != null) {
+                    val attentionPage = c.currentMediaItem?.mediaMetadata?.extras
+                        ?.getString("nm_attention_page")
+                    val secondsLeft = Attention.mediaRemainingSeconds(attentionPage)
+                    val warning = secondsLeft != null && secondsLeft <= 300L
+                    attentionBanner.visibility = if (warning) View.VISIBLE else View.GONE
+                    if (warning) {
+                        attentionBanner.text = if (secondsLeft == 0L)
+                            "⏳ Tempo encerrado · reprodução bloqueada"
+                        else "⏳ Controle de Atenção: ${secondsLeft / 60}m ${secondsLeft % 60}s restantes"
+                        val threshold = when {
+                            secondsLeft == 0L -> 0
+                            secondsLeft <= 60L -> 1
+                            else -> 5
+                        }
+                        if (threshold != lastAttentionWarning) {
+                            lastAttentionWarning = threshold
+                            Toast.makeText(this@MainActivity,
+                                attentionBanner.text, Toast.LENGTH_LONG).show()
+                        }
+                    } else lastAttentionWarning = -1
                     val duration = c.duration
                     val pos = c.currentPosition.coerceAtLeast(0L)
                     val total = if (duration > 0L && duration != androidx.media3.common.C.TIME_UNSET)
