@@ -1186,6 +1186,12 @@ class MainActivity : ComponentActivity() {
                     }
                     val item = MediaItem.Builder().setUri(u)
                         .setMediaMetadata(androidx.media3.common.MediaMetadata.Builder()
+                            // Metadados usados pelo cartão de mídia do Android (API 34+).
+                            // Os botões Play/Pause são comandos da MediaSession, não atalhos da Activity.
+                            .setTitle(sourceView.title?.take(90)?.takeIf { it.isNotBlank() }
+                                ?: "Vídeo do NavegadorMaluco")
+                            .setArtist("NavegadorMaluco")
+                            .setIsPlayable(true)
                             .setExtras(mediaInfo).build())
                         .build()
                     controller.setMediaItem(item)
