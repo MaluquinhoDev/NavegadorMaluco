@@ -1795,9 +1795,14 @@ class MainActivity : ComponentActivity() {
 
     override fun onUserLeaveHint() {
         super.onUserLeaveHint()
-        // Android 12+ usa transição automática somente durante vídeo em tela cheia.
-        // Em Android 14+ (minSdk 34), o mecanismo automático é sempre disponível.
-        // O botão manual PiP é oferecido pelo menu Biblioteca.
+        // Ao sair pelo Início/Home enquanto o player nativo está aberto,
+        // transfere a sessão Media3 ao PiP independente. Não transforma
+        // a Activity do navegador em PiP (evita conflitos de layout).
+        // Restringimos ao player aberto para não disparar em telas internas.
+        if (playerPanel != null && miniController?.currentMediaItem != null &&
+            pipAvailable() && !VideoPipActivity.active && !isFinishing) {
+            enterPip()
+        }
     }
 
     override fun onPictureInPictureModeChanged(isInPictureInPictureMode: Boolean, newConfig: Configuration) {
