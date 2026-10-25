@@ -721,12 +721,58 @@ class MainActivity : ComponentActivity() {
             }.show()
     }
 
+    /** Extrai formatos no worker sem bloquear a WebView nem expor URLs assinadas no log. */
+    private fun showYouTubeExtractor() {
+        val current = webView
+        val page = current.url
+        if (youtubeVideoId(page) == null) {
+            Toast.makeText(this, "Abra primeiro um vídeo do YouTube.", Toast.LENGTH_LONG).show()
+            return
+        }
+        Toast.makeText(this, "Identificando formatos do YouTube...", Toast.LENGTH_SHORT).show()
+        Thread {
+            val result = runCatching { YoutubeExtractor.extract(page!!) }
+            runOnUiThread {
+                if (isFinishing || isDestroyed || current !== webView || current.url != page)
+                    return@runOnUiThread
+                result.onSuccess { sources ->
+                    if (sources.isEmpty()) {
+                        AlertDialog.Builder(this).setTitle("Extrator YouTube")
+                            .setMessage("Nenhuma fonte disponível para este vídeo.")
+                            .setPositiveButton("OK", null).show()
+                        return@onSuccess
+                    }
+                    val labels = sources.map { it.label +
+                        (if (it.playable) "" else " · exige áudio separado") }.toTypedArray()
+                    AlertDialog.Builder(this).setTitle("YouTube · ${sources.size} formato(s)")
+                        .setItems(labels) { _, i ->
+                            val selected = sources[i]
+                            if (selected.playable) startMedia3(selected.url)
+                            else AlertDialog.Builder(this).setTitle("Vídeo sem áudio")
+                                .setMessage("Este formato tem áudio separado. A reprodução conjunta " +
+                                    "ainda precisa ser integrada ao Media3.")
+                                .setPositiveButton("OK", null).show()
+                        }.setNegativeButton("Cancelar", null).show()
+                }.onFailure { err ->
+                    android.util.Log.w("NavegadorMedia3",
+                        "Falha no extrator: ${err.javaClass.simpleName}")
+                    AlertDialog.Builder(this).setTitle("Extrator YouTube")
+                        .setMessage("Não foi possível obter formatos deste vídeo: " +
+                            err.javaClass.simpleName +
+                            ". O YouTube pode alterar o protocolo ou restringir a reprodução.")
+                        .setPositiveButton("OK", null).show()
+                }
+            }
+        }.start()
+    }
+
     private fun showMediaMenu() {
         AlertDialog.Builder(this).setTitle("Mídia")
             .setItems(arrayOf(
                 "▶ Reproduzir mídia desta página",
                 "Vídeos detectados",
                 "Manifestos HLS / DASH",
+                "YouTube · extrair formatos",
                 "Abrir player nativo",
                 "Janela flutuante (PiP)",
                 "Mais opções de mídia"
@@ -735,9 +781,10 @@ class MainActivity : ComponentActivity() {
                     0 -> playPageMediaDirectly()
                     1 -> showRequestMediaCandidates()
                     2 -> showStreamingManifests()
-                    3 -> showNativeVideoPlayer()
-                    4 -> enterPip()
-                    5 -> showMediaOptions()
+                    3 -> showYouTubeExtractor()
+                    4 -> showNativeVideoPlayer()
+                    5 -> enterPip()
+                    6 -> showMediaOptions()
                 }
             }.show()
     }
