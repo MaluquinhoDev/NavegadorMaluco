@@ -1652,7 +1652,7 @@ class MainActivity : ComponentActivity() {
         }
         val experimentalAudioButton = Button(this).apply {
             text = "Ativar áudio · teste"
-            contentDescription = "Experimento manual e isolado de áudio no vídeo ativo"
+            contentDescription = "Desmutar vídeo em reprodução, sem abrir janelas sobre o feed"
             setOnClickListener {
                 val currentUrl = webView.url
                 val host = websiteHost(currentUrl)
@@ -1663,71 +1663,52 @@ class MainActivity : ComponentActivity() {
                         Toast.LENGTH_SHORT).show()
                     return@setOnClickListener
                 }
-                AlertDialog.Builder(this@MainActivity)
-                    .setTitle("Experimento de áudio · Instagram")
-                    .setMessage("Essa função é opcional e fica desligada até você confirmar. " +
-                        "Ela tenta desmutar somente o vídeo HTML5 visível, priorizando " +
-                        "o que está reproduzindo. Não inicia nem pausa vídeos. Se o som " +
-                        "continuar ausente, confira também o volume do Android.")
-                    .setNegativeButton("Cancelar", null)
-                    .setPositiveButton("Testar agora") { _, _ ->
-                        webView.evaluateJavascript("""(function(){
-                            const candidates=[...document.querySelectorAll('video')]
-                                .filter(v=>!v.ended)
-                                .map(v=>{
-                                    const r=v.getBoundingClientRect();
-                                    const w=Math.max(0,Math.min(r.right,innerWidth)-Math.max(0,r.left));
-                                    const h=Math.max(0,Math.min(r.bottom,innerHeight)-Math.max(0,r.top));
-                                    return {v,area:w*h};
-                                }).filter(x=>x.area>0)
-                                .sort((a,b)=>(Number(!b.v.paused)-Number(!a.v.paused))||b.area-a.area);
-                            if(!candidates.length)return JSON.stringify({status:'no_visible'});
-                            const v=candidates[0].v, before=v.muted;
-                            // O comando é sempre DESMUTAR, nunca alternar para silêncio.
-                            // Não invoca play() e não altera volume do Android.
-                            if(v.muted)v.muted=false;
-                            window.__nmAudioProbe={video:v,expected:false,before:before};
-                            return JSON.stringify({status:'attempted',before:before,
-                                after:v.muted,paused:v.paused});
-                        })()""") { raw ->
-                            val first = runCatching {
-                                org.json.JSONObject(org.json.JSONArray("[$raw]").getString(0))
-                            }.getOrNull()
-                            if (first?.optString("status") != "attempted") {
-                                Toast.makeText(this@MainActivity,
-                                    "Não foi encontrado vídeo visível nesta página",
-                                    Toast.LENGTH_SHORT).show()
-                                return@evaluateJavascript
+                // No feed, abrir AlertDialog pode tirar foco e provocar pausa.
+                // Selecionar somente mídia já reproduzindo; não chamar play().
+                val page = webView
+                page.evaluateJavascript("""(function(){
+                    const candidates=[...document.querySelectorAll('video')]
+                        .filter(v=>!v.paused&&!v.ended)
+                        .map(v=>{
+                            const r=v.getBoundingClientRect();
+                            const w=Math.max(0,Math.min(r.right,innerWidth)-Math.max(0,r.left));
+                            const h=Math.max(0,Math.min(r.bottom,innerHeight)-Math.max(0,r.top));
+                            return {v,area:w*h};
+                        }).filter(x=>x.area>0).sort((a,b)=>b.area-a.area);
+                    if(!candidates.length)return JSON.stringify({status:'no_playing'});
+                    const v=candidates[0].v;
+                    if(v.muted)v.muted=false;
+                    window.__nmAudioProbe={video:v,expected:false};
+                    return JSON.stringify({status:'attempted',muted:v.muted});
+                })()""") { raw ->
+                    val result = runCatching {
+                        org.json.JSONObject(org.json.JSONArray("[$raw]").getString(0))
+                    }.getOrNull()
+                    if (result?.optString("status") != "attempted") {
+                        Toast.makeText(this@MainActivity,
+                            "Vídeo pausado: reproduza pelo botão Play/Pause e tente novamente",
+                            Toast.LENGTH_LONG).show()
+                        return@evaluateJavascript
+                    }
+                    page.postDelayed({
+                        if (page !== webView || page.url != currentUrl) return@postDelayed
+                        page.evaluateJavascript("""(function(){
+                            const p=window.__nmAudioProbe;
+                            if(!p||!p.video.isConnected)return 'changed';
+                            if(p.video.paused)return 'paused';
+                            return p.video.muted?'muted':'sound';
+                        })()""") { observed ->
+                            val message = when (observed?.trim('"')) {
+                                "sound" -> "Som HTML5 ativado no vídeo"
+                                "paused" -> "Instagram pausou o vídeo; tente Play/Pause"
+                                "muted" -> "Instagram manteve o vídeo silenciado"
+                                else -> "Vídeo foi substituído pelo Instagram"
                             }
-                            webView.postDelayed({
-                                if (webView.url != currentUrl) return@postDelayed
-                                webView.evaluateJavascript("""(function(){
-                                    const p=window.__nmAudioProbe;
-                                    if(!p||!p.video.isConnected)return JSON.stringify({status:'changed_video'});
-                                    return JSON.stringify({status:'checked',before:p.before,
-                                        expected:p.expected,actual:p.video.muted,
-                                        paused:p.video.paused});
-                                })()""") { checked ->
-                                    val data = runCatching {
-                                        org.json.JSONObject(org.json.JSONArray("[$checked]").getString(0))
-                                    }.getOrNull()
-                                    val maintained = data?.optString("status") == "checked" &&
-                                        data.optBoolean("actual") == data.optBoolean("expected")
-                                    val message = if (data?.optString("status") != "checked")
-                                        "O vídeo ativo mudou antes da verificação."
-                                    else if (maintained)
-                                        "Vídeo desmutado após 500 ms. Se ainda estiver sem áudio, " +
-                                            "confira o volume do Android ou o próprio Instagram."
-                                    else
-                                        "O Instagram ou a página reverteu o estado de áudio solicitado."
-                                    AlertDialog.Builder(this@MainActivity)
-                                        .setTitle("Resultado do experimento")
-                                        .setMessage(message)
-                                        .setPositiveButton("Fechar", null).show()
-                                }
-                            }, 500L)
+                            Toast.makeText(this@MainActivity, message,
+                                Toast.LENGTH_SHORT).show()
                         }
-                    }.show()
+                    }, 500L)
+                }
             }
         }
         val debugSection = LinearLayout(this).apply {
