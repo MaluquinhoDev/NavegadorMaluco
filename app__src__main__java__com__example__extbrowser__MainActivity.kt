@@ -146,16 +146,55 @@ class MainActivity : ComponentActivity() {
                     button.type = 'button';
                     button.setAttribute('data-nm-sound-button','1');
                     button.setAttribute('aria-label','Ativar ou silenciar áudio');
-                    button.textContent = video.muted ? '🔇' : '🔊';
+                    const updateSound = function() {
+                        const level = video.muted ? 0 : Math.round(video.volume * 100);
+                        button.textContent = level === 0 ? '🔇' :
+                            level < 50 ? '🔉' : '🔊';
+                        button.setAttribute('aria-label', 'Volume ' + level + ' por cento');
+                        button.title = 'Volume ' + level + '% · deslize para cima/baixo';
+                    };
                     button.style.cssText = 'position:absolute;right:12px;bottom:12px;z-index:20;' +
                         'background:rgba(0,0,0,.65);color:white;border:0;border-radius:50%;' +
-                        'width:42px;height:42px;display:flex;align-items:center;justify-content:center;' +
-                        'font-size:19px;touch-action:manipulation;';
-                    button.addEventListener('click', function(e) {
-                        e.preventDefault();e.stopPropagation();
-                        video.muted = !video.muted;
-                        button.textContent = video.muted ? '🔇' : '🔊';
+                        'width:48px;height:48px;display:flex;align-items:center;justify-content:center;' +
+                        'font-size:19px;touch-action:none;user-select:none;';
+                    let startY = 0, startVolume = 1, dragging = false, activePointer = null;
+                    button.addEventListener('pointerdown', function(e) {
+                        if (!e.isPrimary) return;
+                        activePointer = e.pointerId;
+                        startY = e.clientY;
+                        startVolume = video.muted ? 0 : video.volume;
+                        dragging = false;
+                        button.setPointerCapture(e.pointerId);
+                        e.stopPropagation();
                     });
+                    button.addEventListener('pointermove', function(e) {
+                        if (activePointer !== e.pointerId) return;
+                        const distance = startY - e.clientY;
+                        if (Math.abs(distance) > 4) dragging = true;
+                        if (!dragging) return;
+                        e.preventDefault();
+                        e.stopPropagation();
+                        video.muted = false;
+                        video.volume = Math.max(0, Math.min(1, startVolume + distance / 140));
+                        if (video.volume < 0.01) video.muted = true;
+                        updateSound();
+                    });
+                    button.addEventListener('pointerup', function(e) {
+                        if (activePointer !== e.pointerId) return;
+                        e.stopPropagation();
+                        if (!dragging) video.muted = !video.muted;
+                        updateSound();
+                        activePointer = null;
+                    });
+                    button.addEventListener('pointercancel', function(e) {
+                        if (activePointer === e.pointerId) activePointer = null;
+                    });
+                    // Impede que o clique sintetizado abra um Reels após o gesto.
+                    button.addEventListener('click', function(e) {
+                        e.preventDefault(); e.stopImmediatePropagation();
+                    }, true);
+                    video.addEventListener('volumechange', updateSound);
+                    updateSound();
                     wrapper.appendChild(button);
                 });
             };
