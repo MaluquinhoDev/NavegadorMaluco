@@ -7,10 +7,30 @@ import org.schabi.newpipe.extractor.downloader.Request
 import org.schabi.newpipe.extractor.downloader.Response
 import java.net.HttpURLConnection
 import java.net.URL
+import java.io.ByteArrayOutputStream
+import java.io.IOException
 
 /** Extractor independente, sem cookies da WebView nem alteração da sessão Media3. */
 object YoutubeExtractor {
     data class Source(val label: String, val url: String, val playable: Boolean)
+
+    // Metadados do extrator não devem consumir memória sem limites.
+    private const val MAX_RESPONSE_BYTES = 16 * 1024 * 1024
+
+    private fun readLimited(stream: java.io.InputStream): ByteArray {
+        val out = ByteArrayOutputStream()
+        val buffer = ByteArray(8192)
+        stream.use { input ->
+            while (true) {
+                val n = input.read(buffer)
+                if (n < 0) break
+                if (out.size() + n > MAX_RESPONSE_BYTES)
+                    throw IOException("Resposta do extrator acima do limite de segurança")
+                out.write(buffer, 0, n)
+            }
+        }
+        return out.toByteArray()
+    }
 
     private class NetworkDownloader : Downloader() {
         override fun execute(request: Request): Response {
@@ -32,7 +52,7 @@ object YoutubeExtractor {
                 }
                 val status = connection.responseCode
                 val bytes = (if (status >= 400) connection.errorStream else connection.inputStream)
-                    ?.use { it.readBytes() } ?: byteArrayOf()
+                    ?.let(::readLimited) ?: byteArrayOf()
                 val headers = connection.headerFields.filterKeys { it != null }
                     .mapKeys { it.key!! }
                 return Response(status, connection.responseMessage ?: "", headers,
