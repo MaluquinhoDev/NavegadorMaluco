@@ -610,7 +610,8 @@ class MainActivity : ComponentActivity() {
                         .getBoolean("focus_recovery", true)
                     v.evaluateJavascript("""(function(){
                         if(window.__nmKeyboardAudit)return;
-                        const audit={logs:[],attempts:[]};
+                        const audit={logs:[],attempts:[],lastFocused:null,lastBlurAt:0,
+                            detachLogged:false};
                         const recoveryEnabled=$recoverFocus;
                         window.__nmKeyboardAudit=audit;
                         const add=(kind,el)=>{
@@ -619,12 +620,19 @@ class MainActivity : ComponentActivity() {
                                 viewport:window.visualViewport?Math.round(visualViewport.height):null,
                                 screen:innerHeight};
                             audit.logs.push(entry);
-                            if(audit.logs.length>40)audit.logs.shift();
+                            if(audit.logs.length>60)audit.logs.shift();
                         };
-                        document.addEventListener('focusin',e=>add('focusin',e.target),true);
+                        document.addEventListener('focusin',e=>{
+                            audit.lastFocused=e.target;
+                            audit.detachLogged=false;
+                            add('focusin',e.target);
+                        },true);
                         document.addEventListener('focusout',e=>{
                             const el=e.target;
                             add('focusout',el);
+                            audit.lastBlurAt=Date.now();
+                            add(e.relatedTarget?'focusout-to-element':'focusout-no-target',
+                                e.relatedTarget||el);
                             if(!recoveryEnabled||!el||
                                 !(el.matches&&el.matches('input,textarea,[contenteditable="true"]'))||
                                 e.relatedTarget||!window.visualViewport||
@@ -679,6 +687,29 @@ class MainActivity : ComponentActivity() {
                                 timeout=setTimeout(()=>{stop();add('recovery-timeout',el);},350);
                             },0);
                         },true);
+                        // Somente estrutura do DOM: não lê valores, mensagens ou atributos.
+                        const monitor=new MutationObserver(changes=>{
+                            if(!audit.lastFocused||Date.now()-audit.lastBlurAt>1000)return;
+                            if(!audit.lastFocused.isConnected&&!audit.detachLogged){
+                                audit.detachLogged=true;
+                                add('dom-focused-element-removed',audit.lastFocused);
+                            }
+                            if(!changes.some(change=>change.addedNodes.length))return;
+                            let addedInput=null;
+                            for(const change of changes){
+                                for(const node of change.addedNodes){
+                                    if(node.nodeType!==1)continue;
+                                    if(node.matches&&node.matches('input,textarea,[contenteditable="true"]'))
+                                        addedInput=node;
+                                    else if(node.querySelector)
+                                        addedInput=node.querySelector('input,textarea,[contenteditable="true"]');
+                                    if(addedInput)break;
+                                }
+                                if(addedInput)break;
+                            }
+                            if(addedInput)add('dom-new-editable-field',addedInput);
+                        });
+                        monitor.observe(document.documentElement,{childList:true,subtree:true});
                         if(window.visualViewport)
                             visualViewport.addEventListener('resize',()=>add('viewport-resize',document.activeElement));
                         add('monitor-start',document.activeElement);
@@ -752,10 +783,15 @@ class MainActivity : ComponentActivity() {
             }
             override fun onReceivedHttpError(v: WebView, request: WebResourceRequest,
                                              errorResponse: WebResourceResponse) {
+                val hasRetryAfter = errorResponse.responseHeaders?.keys?.any {
+                    it.equals("Retry-After", ignoreCase = true)
+                } == true
                 if (isSeuImposto(v.url)) recordSiteDiagnostic(v,
                     "HTTP ${errorResponse.statusCode} · " +
                     (if (request.isForMainFrame) "documento principal" else "subrecurso") +
-                    " · ${request.method} ${request.url.host ?: "?"}${safeDiagnosticPath(request.url)}")
+                    " · ${request.method} ${request.url.host ?: "?"}${safeDiagnosticPath(request.url)}" +
+                    " · MIME ${errorResponse.mimeType ?: "?"}" +
+                    " · Retry-After ${if (hasRetryAfter) "presente" else "ausente"}")
             }
             override fun onReceivedError(v: WebView, request: WebResourceRequest,
                                          error: WebResourceError) {
