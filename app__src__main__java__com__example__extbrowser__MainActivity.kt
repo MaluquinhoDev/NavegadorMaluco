@@ -73,6 +73,24 @@ class MainActivity : ComponentActivity() {
     private lateinit var store: BrowserData
     private var statusDefaultColor = 0
     private var loaded = false
+    private fun isDarkTheme() = getSharedPreferences("appearance", MODE_PRIVATE)
+        .getString("theme", "light") == "dark"
+
+    private fun showThemePicker() {
+        val names = arrayOf("Claro", "Escuro")
+        val current = if (isDarkTheme()) 1 else 0
+        AlertDialog.Builder(this).setTitle("Aparência do navegador")
+            .setSingleChoiceItems(names, current) { dialog, choice ->
+                dialog.dismiss()
+                if (choice != current) {
+                    persistTabs()
+                    getSharedPreferences("appearance", MODE_PRIVATE).edit()
+                        .putString("theme", if (choice == 1) "dark" else "light").apply()
+                    // Recria apenas a interface. As URLs das abas são restauradas.
+                    recreate()
+                }
+            }.setNegativeButton("Cancelar", null).show()
+    }
     private var blockerList: List<Blocker> = emptyList()
     private var extensionList: List<Extension> = emptyList()
     private var extensionManager: ExtensionManager? = null
@@ -298,6 +316,8 @@ class MainActivity : ComponentActivity() {
 
     @SuppressLint("SetJavaScriptEnabled")
     override fun onCreate(savedInstanceState: Bundle?) {
+        setTheme(if (isDarkTheme()) android.R.style.Theme_Material_NoActionBar
+            else android.R.style.Theme_Material_Light_NoActionBar)
         super.onCreate(savedInstanceState)
         Attention.init(this)
         store = BrowserData(this)
@@ -428,6 +448,12 @@ class MainActivity : ComponentActivity() {
         val view = WebView(this)
         view.settings.javaScriptEnabled = true
         view.settings.domStorageEnabled = true
+        // Preferência de cores respeitada pela WebView quando o motor oferece suporte.
+        // Sites que implementam tema próprio continuam controlando sua aparência.
+        if (WebViewFeature.isFeatureSupported(WebViewFeature.ALGORITHMIC_DARKENING)) {
+            androidx.webkit.WebSettingsCompat.setAlgorithmicDarkeningAllowed(
+                view.settings, isDarkTheme())
+        }
         view.settings.setSupportMultipleWindows(true)
         // target=_blank funciona, mas window.open automático sem gesto fica desabilitado.
         view.settings.javaScriptCanOpenWindowsAutomatically = false
@@ -909,10 +935,11 @@ class MainActivity : ComponentActivity() {
 
     private fun showToolsMenu() {
         AlertDialog.Builder(this).setTitle("Ferramentas")
-            .setItems(arrayOf("Extensões", "Opções avançadas de mídia")) { _, which ->
+            .setItems(arrayOf("Extensões", "Opções avançadas de mídia", "Aparência · claro/escuro")) { _, which ->
                 when (which) {
                     0 -> extLauncher.launch(Intent(this, ExtensionsActivity::class.java))
                     1 -> showMediaOptions()
+                    2 -> showThemePicker()
                 }
             }.show()
     }
