@@ -1064,13 +1064,28 @@ class MainActivity : ComponentActivity() {
 
     private fun setupSeuImpostoViewportOverlay(view: WebView) {
         if (!WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)) return
-        // Executa antes dos scripts da página; não altera fetch, eventos ou o formulário.
-        // A API VirtualKeyboard impede que a área visual diminua durante o IME.
+        // Execução restrita à origem. Os filtros de resize só são ativados
+        // explicitamente para um experimento; o modo normal não bloqueia eventos.
         WebViewCompat.addDocumentStartJavaScript(view, """(function(){
             try {
                 const vk=navigator.virtualKeyboard;
                 if(vk)vk.overlaysContent =
                     sessionStorage.getItem('__nmVkOverlayOff')!=='1';
+            } catch(_) {}
+            const probe={mode:'normal',blockedWindow:0,blockedVisual:0};
+            window.__nmResizeProbe=probe;
+            try {
+                const mode=sessionStorage.getItem('__nmResizeProbeMode')||'normal';
+                if(!['normal','window','visual','both'].includes(mode))return;
+                probe.mode=mode;
+                if(mode==='window'||mode==='both')
+                    window.addEventListener('resize',event=>{
+                        probe.blockedWindow++;event.stopImmediatePropagation();
+                    },true);
+                if((mode==='visual'||mode==='both')&&window.visualViewport)
+                    visualViewport.addEventListener('resize',event=>{
+                        probe.blockedVisual++;event.stopImmediatePropagation();
+                    },true);
             } catch(_) {}
         })()""", setOf("https://seuimposto.com", "https://www.seuimposto.com"))
     }
@@ -1442,7 +1457,8 @@ class MainActivity : ComponentActivity() {
                 "Diagnóstico · Seu Imposto", "Teste de teclado · Seu Imposto",
                 "Recuperação de foco · Seu Imposto", "Teclado · teste HTML isolado",
                 "Teclado sem redimensionamento · Seu Imposto",
-                "Área visual estável · Seu Imposto")) { _, which ->
+                "Área visual estável · Seu Imposto",
+                "Experimento de eventos resize · Seu Imposto")) { _, which ->
                 when (which) {
                     0 -> extLauncher.launch(Intent(this, ExtensionsActivity::class.java).apply {
                         putExtra("attention_current_page", webView.url ?: tabs[activeIndex].url)
@@ -1456,6 +1472,7 @@ class MainActivity : ComponentActivity() {
                     7 -> openIsolatedKeyboardTest()
                     8 -> toggleSeuImpostoKeyboardPan()
                     9 -> toggleSeuImpostoViewportOverlay()
+                    10 -> showSeuImpostoResizeExperiment()
                 }
             }.show()
     }
@@ -1552,6 +1569,29 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    private fun showSeuImpostoResizeExperiment() {
+        if (!isSeuImposto(webView.url)) {
+            Toast.makeText(this, "Abra seuimposto.com antes deste experimento", Toast.LENGTH_LONG).show()
+            return
+        }
+        val modes = arrayOf("normal", "window", "visual", "both")
+        val names = arrayOf("Normal · nenhum evento bloqueado",
+            "Teste A · bloquear window.resize",
+            "Teste B · bloquear visualViewport.resize",
+            "Teste C · bloquear os dois resize")
+        AlertDialog.Builder(this).setTitle("Experimento de eventos resize")
+            .setItems(names) { _, selected ->
+                val mode = modes[selected]
+                webView.evaluateJavascript("""(function(){
+                    sessionStorage.setItem('__nmResizeProbeMode','$mode');
+                    return true;
+                })()""") {
+                    // Recarrega para instalar o filtro antes dos scripts do site.
+                    webView.reload()
+                }
+            }.show()
+    }
+
     private fun toggleSeuImpostoKeyboardCompat() {
         if (!isSeuImposto(webView.url)) {
             Toast.makeText(this, "Abra seuimposto.com antes deste teste", Toast.LENGTH_LONG).show()
@@ -1580,6 +1620,7 @@ class MainActivity : ComponentActivity() {
             const body=document.body;
             const text=body?body.innerText||'':'';
             const audit=window.__nmKeyboardAudit;
+            const resizeProbe=window.__nmResizeProbe||{};
             // Resource Timing é observacional: não intercepta fetch/XHR nem lê mensagens.
             const chatRequests=performance.getEntriesByType('resource').filter(entry=>{
                 try{const u=new URL(entry.name);return u.origin===location.origin&&
@@ -1608,6 +1649,9 @@ class MainActivity : ComponentActivity() {
                 virtualKeyboardAvailable:!!navigator.virtualKeyboard,
                 overlaysContent:navigator.virtualKeyboard?
                     navigator.virtualKeyboard.overlaysContent:null,
+                resizeProbeMode:resizeProbe.mode||'indisponível',
+                resizeBlockedWindow:resizeProbe.blockedWindow||0,
+                resizeBlockedVisual:resizeProbe.blockedVisual||0,
                 activeTag:document.activeElement&&document.activeElement.tagName,
                 keyboardEvents:audit?audit.logs:[],chatRequests:chatRequests
             });
@@ -1631,7 +1675,8 @@ class MainActivity : ComponentActivity() {
                     CookieManager.getInstance().acceptThirdPartyCookies(page))
                 listOf("title", "blockedText", "scripts", "frames", "bodyCharacters",
                     "webSocket", "eventSource", "localStorage", "cryptoSubtle", "webRTC",
-                    "virtualKeyboardAvailable", "overlaysContent", "networkOnline", "activeTag")
+                    "virtualKeyboardAvailable", "overlaysContent", "networkOnline", "activeTag",
+                    "resizeProbeMode", "resizeBlockedWindow", "resizeBlockedVisual")
                     .forEach { appendLine("$it: ${data?.optString(it, "indisponível") ?: "indisponível"}") }
                 appendLine("Compatibilidade teclado: " +
                     getSharedPreferences("seuimposto_diagnostic", MODE_PRIVATE)
