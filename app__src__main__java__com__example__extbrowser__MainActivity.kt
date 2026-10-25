@@ -617,13 +617,24 @@ class MainActivity : ComponentActivity() {
                             detachLogged:false};
                         const recoveryEnabled=$recoverFocus;
                         window.__nmKeyboardAudit=audit;
-                        const add=(kind,el)=>{
+                        const add=(kind,el,details={})=>{
                             const entry={t:Date.now()%600000,event:kind,tag:el&&el.tagName||'',
                                 type:el&&el.type||'',
                                 viewport:window.visualViewport?Math.round(visualViewport.height):null,
-                                screen:innerHeight};
+                                screen:innerHeight,...details};
                             audit.logs.push(entry);
                             if(audit.logs.length>60)audit.logs.shift();
+                        };
+                        const focusState=el=>{
+                            const rect=el&&el.getBoundingClientRect?el.getBoundingClientRect():null;
+                            const style=el&&el.isConnected?getComputedStyle(el):null;
+                            return {connected:!!(el&&el.isConnected),
+                                disabled:!!(el&&el.disabled),readOnly:!!(el&&el.readOnly),
+                                inert:!!(el&&el.closest&&el.closest('[inert]')),
+                                visible:!!(rect&&rect.width>0&&rect.height>0&&style&&
+                                    style.display!=='none'&&style.visibility!=='hidden'),
+                                documentFocus:document.hasFocus(),
+                                activeTag:document.activeElement&&document.activeElement.tagName||''};
                         };
                         document.addEventListener('focusin',e=>{
                             audit.lastFocused=e.target;
@@ -632,7 +643,7 @@ class MainActivity : ComponentActivity() {
                         },true);
                         document.addEventListener('focusout',e=>{
                             const el=e.target;
-                            add('focusout',el);
+                            add('focusout',el,focusState(el));
                             audit.lastBlurAt=Date.now();
                             add(e.relatedTarget?'focusout-to-element':'focusout-no-target',
                                 e.relatedTarget||el);
@@ -679,13 +690,20 @@ class MainActivity : ComponentActivity() {
                                 }
                                 if(!target)return;
                                 stop();
+                                const stateBefore=focusState(target);
+                                add('focus-attempt',target,stateBefore);
                                 try{target.focus({preventScroll:true});
                                     if(document.activeElement===target){
-                                        add(target===el?'focus-restored':'replacement-focused',target);
+                                        add(target===el?'focus-restored':'replacement-focused',
+                                            target,focusState(target));
                                         if(window.__nmFocusBridge)
                                             window.__nmFocusBridge.postMessage('focus-restored');
-                                    }else add('focus-rejected',target);
-                                }catch(_){add('focus-rejected',target);}
+                                        setTimeout(()=>{
+                                            if(document.activeElement!==target)
+                                                add('focus-stolen-after-success',target,focusState(target));
+                                        },80);
+                                    }else add('focus-rejected',target,focusState(target));
+                                }catch(_){add('focus-exception',target,focusState(target));}
                             };
                             setTimeout(()=>{
                                 if(!el.isConnected)add('input-replaced',el);
@@ -1363,7 +1381,15 @@ class MainActivity : ComponentActivity() {
                     val e = keyboardEvents?.optJSONObject(i) ?: continue
                     appendLine("- t=${e.optString("t")} ${e.optString("event")} ${e.optString("tag")}" +
                         " tipo=${e.optString("type")} viewport=${e.optString("viewport")}" +
-                        " janela=${e.optString("screen")}")
+                        " janela=${e.optString("screen")}" +
+                        (if (e.has("connected"))
+                            " conectado=${e.optString("connected")}" +
+                            " habilitado=${!e.optBoolean("disabled")}" +
+                            " somenteLeitura=${e.optString("readOnly")}" +
+                            " inerte=${e.optString("inert")}" +
+                            " visível=${e.optString("visible")}" +
+                            " docFocado=${e.optString("documentFocus")}" +
+                            " elementoAtivo=${e.optString("activeTag")}" else ""))
                 }
                 appendLine("Eventos de carregamento (${events.size}):")
                 events.forEach { appendLine("- $it") }
