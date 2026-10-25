@@ -1388,11 +1388,11 @@ class MainActivity : ComponentActivity() {
         var lastAttentionPage: String? = null
         var attentionReminderShown = false
         var lastAttentionReminderPage: String? = null
+        var seeking = false
+        var closed = false
         val hideAttentionReminder = Runnable {
             if (playerPanel === panel && !closed) attentionBanner.visibility = View.GONE
         }
-        var seeking = false
-        var closed = false
         var videoFullscreen = false
         val originalOrientation = requestedOrientation
         var videoWidth = 0
