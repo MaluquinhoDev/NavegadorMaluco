@@ -105,6 +105,66 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    /** Controles acessíveis somente em vídeos HTML5 do Instagram híbrido.
+     * O toque direto na área do vídeo não propaga para o link de Reels;
+     * controles nativos e arrastos continuam nas mãos do Instagram.
+     */
+    private fun configureInstagramMediaGestures(view: WebView, url: String) {
+        val host = websiteHost(url)
+        if ((host != "instagram.com" && host?.endsWith(".instagram.com") != true) ||
+            siteDisplayMode(url) != "hybrid") return
+        view.evaluateJavascript("""(function() {
+            if (window.__nmInstagramMediaControls) return;
+            window.__nmInstagramMediaControls = true;
+            let downX = 0, downY = 0, moved = false;
+            document.addEventListener('pointerdown', function(e) {
+                downX = e.clientX; downY = e.clientY; moved = false;
+            }, true);
+            document.addEventListener('pointermove', function(e) {
+                if (Math.abs(e.clientX-downX)>10 || Math.abs(e.clientY-downY)>10) moved = true;
+            }, true);
+            document.addEventListener('click', function(e) {
+                if (moved || !e.isTrusted) return;
+                const target = e.target;
+                if (!(target instanceof Element) || target.tagName !== 'VIDEO') return;
+                const video = target;
+                e.preventDefault();
+                e.stopImmediatePropagation();
+                if (video.paused) video.play().catch(function(){});
+                else video.pause();
+            }, true);
+            // Botão explícito para som: não intercepta rolagem ou clique em Reels.
+            const addSoundButtons = function() {
+                document.querySelectorAll('video').forEach(function(video) {
+                    if (video.dataset.nmSoundControl) return;
+                    video.dataset.nmSoundControl = '1';
+                    const wrapper = video.parentElement;
+                    if (!wrapper || wrapper.querySelector('[data-nm-sound-button]')) return;
+                    const style = window.getComputedStyle(wrapper);
+                    if (style.position === 'static') wrapper.style.position = 'relative';
+                    const button = document.createElement('button');
+                    button.type = 'button';
+                    button.setAttribute('data-nm-sound-button','1');
+                    button.setAttribute('aria-label','Ativar ou silenciar áudio');
+                    button.textContent = video.muted ? '🔇' : '🔊';
+                    button.style.cssText = 'position:absolute;right:12px;bottom:12px;z-index:20;' +
+                        'background:rgba(0,0,0,.65);color:white;border:0;border-radius:50%;' +
+                        'width:42px;height:42px;display:flex;align-items:center;justify-content:center;' +
+                        'font-size:19px;touch-action:manipulation;';
+                    button.addEventListener('click', function(e) {
+                        e.preventDefault();e.stopPropagation();
+                        video.muted = !video.muted;
+                        button.textContent = video.muted ? '🔇' : '🔊';
+                    });
+                    wrapper.appendChild(button);
+                });
+            };
+            addSoundButtons();
+            new MutationObserver(function(){addSoundButtons()})
+                .observe(document.documentElement,{childList:true,subtree:true});
+        })()""", null)
+    }
+
     private fun showSiteDisplayModes() {
         val currentUrl = webView.url ?: tabs.getOrNull(activeIndex)?.url
         val host = websiteHost(currentUrl)
@@ -539,6 +599,7 @@ class MainActivity : ComponentActivity() {
                 t.url = url
                 if (v === webView) { updateFavorite(); persistTabs() }
                 scanDeclaredMedia(v)
+                configureInstagramMediaGestures(v, url)
             }
             override fun doUpdateVisitedHistory(v: WebView, url: String, isReload: Boolean) {
                 if (!isReload && (url.startsWith("https://") || url.startsWith("http://")))
