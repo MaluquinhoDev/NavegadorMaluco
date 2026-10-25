@@ -1420,6 +1420,7 @@ class MainActivity : ComponentActivity() {
     }
     private val playerDisplay = PlayerDisplayCoordinator()
     private var instagramOverlay: LinearLayout? = null
+    private var instagramOverlaySide = 1
     private fun updateInstagramOverlay() {
         val overlay = instagramOverlay ?: return
         val url = tabs.getOrNull(activeIndex)?.view?.url ?: tabs.getOrNull(activeIndex)?.url
@@ -1427,26 +1428,33 @@ class MainActivity : ComponentActivity() {
         val instagram = host == "instagram.com" || host?.endsWith(".instagram.com") == true
         overlay.visibility = if (instagram && siteDisplayMode(url) == "hybrid" &&
             playerPanel == null && !isInPictureInPictureMode) View.VISIBLE else View.GONE
+        (overlay.layoutParams as? FrameLayout.LayoutParams)?.let {
+            val side = getSharedPreferences("instagram_controls", MODE_PRIVATE)
+                .getString("side", "right")
+            it.gravity = (if (side == "left") android.view.Gravity.START else android.view.Gravity.END) or
+                android.view.Gravity.CENTER_VERTICAL
+            overlay.layoutParams = it
+        }
     }
 
     private fun createInstagramOverlay() {
         val audio = getSystemService(Context.AUDIO_SERVICE) as AudioManager
+        val density = resources.displayMetrics.density
+        fun dp(n: Int) = (n * density).toInt()
         val column = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(4, 4, 4, 4)
-            setBackgroundColor(0x990F1720.toInt())
-            elevation = 12f
+            setPadding(dp(4), dp(4), dp(4), dp(4))
+            setBackgroundColor(0xAA17202B.toInt())
+            elevation = dp(10).toFloat()
             visibility = View.GONE
         }
         val pauseButton = Button(this).apply {
             text = "⏯"
-            contentDescription = "Pausar ou retomar vídeo visível sem abrir Reels"
+            contentDescription = "Pausar ou retomar vídeo do feed"
             setOnClickListener {
-                val page = webView.url
-                if (Attention.checkNavigation(page ?: "") != null) return@setOnClickListener
+                if (Attention.checkNavigation(webView.url ?: "") != null) return@setOnClickListener
                 webView.evaluateJavascript("""(function(){
-                    const videos=[...document.querySelectorAll('video')];
-                    const visible=videos.map(v=>{
+                    const visible=[...document.querySelectorAll('video')].map(v=>{
                         const r=v.getBoundingClientRect();
                         const w=Math.max(0,Math.min(r.right,innerWidth)-Math.max(r.left,0));
                         const h=Math.max(0,Math.min(r.bottom,innerHeight)-Math.max(r.top,0));
@@ -1460,68 +1468,114 @@ class MainActivity : ComponentActivity() {
         }
         val volumeButton = Button(this).apply {
             text = "🔊"
-            contentDescription = "Volume: deslize para cima ou para baixo"
+            contentDescription = "Abrir ajuste de volume ou deslizar verticalmente"
         }
-        val stepHeight = 160f * resources.displayMetrics.density
-        var touchY = 0f
-        var startingVolume = 0
+        val detail = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            visibility = View.GONE
+            setPadding(dp(3), dp(4), dp(3), dp(4))
+        }
+        val percent = TextView(this).apply {
+            gravity = android.view.Gravity.CENTER
+            setTextColor(android.graphics.Color.WHITE)
+            textSize = 13f
+        }
+        val slider = android.widget.SeekBar(this).apply {
+            max = audio.getStreamMaxVolume(AudioManager.STREAM_MUSIC).coerceAtLeast(1)
+            progress = audio.getStreamVolume(AudioManager.STREAM_MUSIC)
+            contentDescription = "Nível do volume da mídia"
+        }
+        val muteButton = Button(this).apply {
+            text = "Silenciar"
+            setOnClickListener {
+                audio.setStreamVolume(AudioManager.STREAM_MUSIC, 0, 0)
+                slider.progress = 0
+            }
+        }
+        val sideButton = Button(this).apply {
+            text = "↔"
+            contentDescription = "Mover controles para a outra lateral"
+            setOnClickListener {
+                val prefs = getSharedPreferences("instagram_controls", MODE_PRIVATE)
+                val next = if (prefs.getString("side", "right") == "right") "left" else "right"
+                prefs.edit().putString("side", next).apply()
+                updateInstagramOverlay()
+            }
+        }
+        val hideDetails = Runnable { detail.visibility = View.GONE }
+        fun refreshVolume() {
+            val max = audio.getStreamMaxVolume(AudioManager.STREAM_MUSIC).coerceAtLeast(1)
+            val current = audio.getStreamVolume(AudioManager.STREAM_MUSIC)
+            slider.max = max
+            slider.progress = current
+            val value = current * 100 / max
+            percent.text = "$value%"
+            volumeButton.text = if (current == 0) "🔇" else "🔊"
+            volumeButton.contentDescription = "Volume $value por cento"
+        }
+        fun expand() {
+            refreshVolume()
+            detail.visibility = View.VISIBLE
+            handler.removeCallbacks(hideDetails)
+            handler.postDelayed(hideDetails, 3500L)
+        }
+        slider.setOnSeekBarChangeListener(object : android.widget.SeekBar.OnSeekBarChangeListener {
+            override fun onProgressChanged(bar: android.widget.SeekBar?, value: Int, fromUser: Boolean) {
+                if (fromUser) audio.setStreamVolume(AudioManager.STREAM_MUSIC, value, 0)
+                val max = audio.getStreamMaxVolume(AudioManager.STREAM_MUSIC).coerceAtLeast(1)
+                percent.text = "${value * 100 / max}%"
+            }
+            override fun onStartTrackingTouch(bar: android.widget.SeekBar?) {
+                handler.removeCallbacks(hideDetails)
+            }
+            override fun onStopTrackingTouch(bar: android.widget.SeekBar?) { expand() }
+        })
+        detail.addView(percent, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
+        detail.addView(slider, LinearLayout.LayoutParams(MATCH_PARENT, dp(48)))
+        detail.addView(muteButton, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
+        detail.addView(sideButton, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
+        val stepHeight = dp(160).toFloat()
+        var startY = 0f
+        var initial = 0
         var dragging = false
         volumeButton.setOnTouchListener { view, event ->
             when (event.actionMasked) {
                 MotionEvent.ACTION_DOWN -> {
-                    touchY = event.rawY
-                    startingVolume = audio.getStreamVolume(AudioManager.STREAM_MUSIC)
+                    startY = event.rawY
+                    initial = audio.getStreamVolume(AudioManager.STREAM_MUSIC)
                     dragging = false
                     view.parent?.requestDisallowInterceptTouchEvent(true)
                     true
                 }
                 MotionEvent.ACTION_MOVE -> {
-                    val distance = touchY - event.rawY
-                    if (kotlin.math.abs(distance) > 8f * resources.displayMetrics.density)
-                        dragging = true
+                    val delta = startY - event.rawY
+                    if (kotlin.math.abs(delta) > dp(8)) dragging = true
                     if (dragging) {
-                        // O Instagram pode iniciar vídeos silenciados: o volume
-                        // do Android só será ouvido se a mídia HTML5 estiver ativa.
-                        if (Attention.checkNavigation(webView.url ?: "") == null) {
-                            webView.evaluateJavascript("""(function(){
-                                const items=[...document.querySelectorAll('video')];
-                                const v=items.find(x=>!x.paused && x.getBoundingClientRect().height>0);
-                                if(v) v.muted=false;
-                            })()""", null)
-                        }
-                        val max = audio.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
-                        val next = (startingVolume + distance / stepHeight * max)
-                            .toInt().coerceIn(0, max)
-                        if (next != audio.getStreamVolume(AudioManager.STREAM_MUSIC))
-                            audio.setStreamVolume(AudioManager.STREAM_MUSIC, next, 0)
-                        volumeButton.text = "${(next * 100 / max.coerceAtLeast(1))}%"
+                        val max = audio.getStreamMaxVolume(AudioManager.STREAM_MUSIC).coerceAtLeast(1)
+                        val target = (initial + delta / stepHeight * max).toInt().coerceIn(0, max)
+                        if (target != audio.getStreamVolume(AudioManager.STREAM_MUSIC))
+                            audio.setStreamVolume(AudioManager.STREAM_MUSIC, target, 0)
+                        expand()
                     }
                     true
                 }
                 MotionEvent.ACTION_UP -> {
-                    if (!dragging) {
-                        val now = audio.getStreamVolume(AudioManager.STREAM_MUSIC)
-                        val next = if (now == 0) audio.getStreamMaxVolume(AudioManager.STREAM_MUSIC) / 2 else 0
-                        audio.setStreamVolume(AudioManager.STREAM_MUSIC, next, 0)
-                    }
-                    volumeButton.text = "🔊"
+                    if (!dragging) expand() else expand()
                     view.parent?.requestDisallowInterceptTouchEvent(false)
                     true
                 }
                 MotionEvent.ACTION_CANCEL -> {
-                    volumeButton.text = "🔊"
                     view.parent?.requestDisallowInterceptTouchEvent(false)
+                    handler.postDelayed(hideDetails, 3500L)
                     true
                 }
                 else -> true
             }
         }
-        column.addView(pauseButton, LinearLayout.LayoutParams(64 * resources.displayMetrics.density.toInt().coerceAtLeast(1),
-            WRAP_CONTENT))
-        column.addView(volumeButton, LinearLayout.LayoutParams(
-            MATCH_PARENT, WRAP_CONTENT))
-        playerLayer.addView(column, FrameLayout.LayoutParams(
-            (72f * resources.displayMetrics.density).toInt(), WRAP_CONTENT,
+        column.addView(pauseButton, LinearLayout.LayoutParams(MATCH_PARENT, dp(48)))
+        column.addView(volumeButton, LinearLayout.LayoutParams(MATCH_PARENT, dp(48)))
+        column.addView(detail, LinearLayout.LayoutParams(dp(152), WRAP_CONTENT))
+        playerLayer.addView(column, FrameLayout.LayoutParams(dp(160), WRAP_CONTENT,
             android.view.Gravity.END or android.view.Gravity.CENTER_VERTICAL))
         instagramOverlay = column
         updateInstagramOverlay()
