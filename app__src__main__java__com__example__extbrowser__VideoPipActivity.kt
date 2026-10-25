@@ -10,10 +10,7 @@ import android.util.Rational
 import android.view.Gravity
 import android.view.SurfaceView
 import android.view.View
-import android.view.ViewGroup
-import android.widget.Button
 import android.widget.FrameLayout
-import android.widget.LinearLayout
 import android.widget.TextView
 import androidx.core.content.ContextCompat
 import androidx.media3.session.MediaController
@@ -27,7 +24,6 @@ import com.google.common.util.concurrent.ListenableFuture
 class VideoPipActivity : Activity() {
     companion object { @Volatile var active = false; private set }
     private lateinit var videoSurface: SurfaceView
-    private lateinit var controls: LinearLayout
     private lateinit var info: TextView
     private var controllerFuture: ListenableFuture<MediaController>? = null
     private var controller: MediaController? = null
@@ -38,39 +34,12 @@ class VideoPipActivity : Activity() {
         val root = FrameLayout(this).apply { setBackgroundColor(android.graphics.Color.BLACK) }
         videoSurface = SurfaceView(this)
         root.addView(videoSurface, FrameLayout.LayoutParams(-1, -1, Gravity.CENTER))
-        controls = LinearLayout(this).apply {
-            gravity = Gravity.CENTER
-            orientation = LinearLayout.VERTICAL
-            setBackgroundColor(0x44000000)
-        }
         info = TextView(this).apply {
             text = "Conectando vídeo..."
             setTextColor(android.graphics.Color.WHITE)
             gravity = Gravity.CENTER
         }
-        controls.addView(info, LinearLayout.LayoutParams(-1, -2))
-        val actions = LinearLayout(this).apply { gravity = Gravity.CENTER }
-        val toggle = Button(this).apply {
-            text = "Play / Pausa"
-            setOnClickListener {
-                controller?.let { if (it.isPlaying) it.pause() else it.play() }
-            }
-        }
-        actions.addView(toggle)
-        actions.addView(Button(this).apply {
-            text = "Abrir player completo"
-            setOnClickListener { returnToBrowser(openPlayer = true) }
-        })
-        actions.addView(Button(this).apply {
-            text = "Navegador"
-            setOnClickListener { returnToBrowser(openPlayer = false) }
-        })
-        controls.addView(Button(this).apply {
-            text = "Voltar ao PiP"
-            setOnClickListener { enterVideoPip() }
-        })
-        controls.addView(actions)
-        root.addView(controls, FrameLayout.LayoutParams(-1, -1))
+        root.addView(info, FrameLayout.LayoutParams(-1, -1))
         setContentView(root)
         val token = SessionToken(this, ComponentName(this, Media3PlaybackService::class.java))
         val future = MediaController.Builder(this, token).buildAsync()
@@ -104,17 +73,18 @@ class VideoPipActivity : Activity() {
         if (!entered) {
             info.text = "Não foi possível abrir a janela PiP"
             info.visibility = View.VISIBLE
-            controls.visibility = View.VISIBLE
+            info.visibility = View.VISIBLE
         }
     }
 
-    /** Restaura a tarefa original antes de encerrar a janela independente de vídeo. */
-    private fun returnToBrowser(openPlayer: Boolean) {
+    /** Expandir o PiP restaura diretamente o player principal, sem tela intermediária. */
+    private fun restoreMainPlayer() {
+        if (isFinishing || isDestroyed) return
         controller?.let { runCatching { it.clearVideoSurfaceView(videoSurface) } }
         val intent = Intent(this, MainActivity::class.java).apply {
+            action = MainActivity.ACTION_OPEN_MEDIA_PLAYER
             flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or
                 Intent.FLAG_ACTIVITY_SINGLE_TOP
-            if (openPlayer) action = MainActivity.ACTION_OPEN_MEDIA_PLAYER
         }
         startActivity(intent)
         finishAndRemoveTask()
@@ -122,7 +92,10 @@ class VideoPipActivity : Activity() {
 
     override fun onPictureInPictureModeChanged(inPip: Boolean, configuration: Configuration) {
         super.onPictureInPictureModeChanged(inPip, configuration)
-        controls.visibility = if (inPip) View.GONE else View.VISIBLE
+        info.visibility = if (inPip || controller != null) View.GONE else View.VISIBLE
+        if (!inPip && !isFinishing && !isChangingConfigurations && controller != null) {
+            restoreMainPlayer()
+        }
     }
 
     override fun onDestroy() {
