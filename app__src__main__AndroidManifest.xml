@@ -11,7 +11,7 @@
         android:theme="@android:style/Theme.Material.Light.NoActionBar">
         <activity
             android:name=".MainActivity"
-            android:supportsPictureInPicture="true"
+            android:supportsPictureInPicture="false"
             android:resizeableActivity="true"
             android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout|keyboardHidden|uiMode"
             android:exported="true"
@@ -24,6 +24,8 @@
         <activity
             android:name=".VideoPipActivity"
             android:exported="false"
+            android:taskAffinity="com.example.extbrowser.videopip"
+            android:excludeFromRecents="true"
             android:supportsPictureInPicture="true"
             android:resizeableActivity="true"
             android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout|uiMode" />
