@@ -301,6 +301,13 @@ object Attention {
     }
 
     @Synchronized
+    fun pauseRemainingSeconds(pageUrl: String?): Long {
+        val host = pageUrl?.let { AttentionLogic.hostOf(it) } ?: return 0L
+        val site = findSite(host) ?: return 0L
+        return (breakLeftMs(site) + 999L) / 1000L
+    }
+
+    @Synchronized
     fun mediaPlaybackReset() {
         mediaSiteId = null
         mediaSessionMs = 0L
