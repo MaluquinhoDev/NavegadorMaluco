@@ -497,10 +497,7 @@ class MainActivity : ComponentActivity() {
                 val decor = window.decorView as FrameLayout
                 decor.addView(customView, FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT))
                 customView.systemUiVisibility = View.SYSTEM_UI_FLAG_FULLSCREEN or View.SYSTEM_UI_FLAG_HIDE_NAVIGATION or View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
-                // Só habilita a transição automática após anexar o player à janela.
-                customView.post {
-                    if (fullscreenView === customView) updatePipAutoEnter(true)
-                }
+                // O navegador nunca entra em PiP: a janela de vídeo tem Activity própria.
             }
             override fun onHideCustomView() { exitFullscreen() }
         }
@@ -1746,7 +1743,9 @@ class MainActivity : ComponentActivity() {
         // A Activity do navegador NÃO entra em PiP: só a Activity exclusiva do vídeo.
         // A sessão Media3 continua tocando enquanto a superfície migra de janela.
         closeNativePlayer()
-        startActivity(Intent(this, VideoPipActivity::class.java))
+        startActivity(Intent(this, VideoPipActivity::class.java).apply {
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_MULTIPLE_TASK)
+        })
     }
 
     override fun onUserLeaveHint() {
