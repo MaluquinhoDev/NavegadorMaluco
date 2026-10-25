@@ -3,6 +3,7 @@ package com.example.extbrowser
 import android.app.Activity
 import android.app.PictureInPictureParams
 import android.content.ComponentName
+import android.content.Intent
 import android.content.res.Configuration
 import android.os.Bundle
 import android.util.Rational
@@ -55,8 +56,16 @@ class VideoPipActivity : Activity() {
         }
         actions.addView(toggle)
         actions.addView(Button(this).apply {
-            text = "Voltar ao navegador"
-            setOnClickListener { finish() }
+            text = "Abrir player completo"
+            setOnClickListener { returnToBrowser(openPlayer = true) }
+        })
+        actions.addView(Button(this).apply {
+            text = "Navegador"
+            setOnClickListener { returnToBrowser(openPlayer = false) }
+        })
+        controls.addView(Button(this).apply {
+            text = "Voltar ao PiP"
+            setOnClickListener { enterVideoPip() }
         })
         controls.addView(actions)
         root.addView(controls, FrameLayout.LayoutParams(-1, -1))
@@ -74,16 +83,39 @@ class VideoPipActivity : Activity() {
             controller = c
             c.setVideoSurfaceView(videoSurface)
             info.visibility = View.GONE
-            if (packageManager.hasSystemFeature("android.software.picture_in_picture")) {
-                val params = PictureInPictureParams.Builder()
-                    .setAspectRatio(Rational(16, 9))
-                    .setAutoEnterEnabled(false)
-                    .setSeamlessResizeEnabled(false)
-                    .build()
-                runCatching { enterPictureInPictureMode(params) }
-                    .onFailure { info.text = "PiP indisponível neste dispositivo"; info.visibility = View.VISIBLE }
-            }
+            if (savedInstanceState == null) enterVideoPip()
         }, ContextCompat.getMainExecutor(this))
+    }
+
+    private fun enterVideoPip() {
+        if (!packageManager.hasSystemFeature("android.software.picture_in_picture")) {
+            info.text = "PiP indisponível neste dispositivo"
+            info.visibility = View.VISIBLE
+            return
+        }
+        val params = PictureInPictureParams.Builder()
+            .setAspectRatio(Rational(16, 9))
+            .setAutoEnterEnabled(false)
+            .setSeamlessResizeEnabled(false)
+            .build()
+        val entered = runCatching { enterPictureInPictureMode(params) }.getOrDefault(false)
+        if (!entered) {
+            info.text = "Não foi possível abrir a janela PiP"
+            info.visibility = View.VISIBLE
+            controls.visibility = View.VISIBLE
+        }
+    }
+
+    /** Restaura a tarefa original antes de encerrar a janela independente de vídeo. */
+    private fun returnToBrowser(openPlayer: Boolean) {
+        controller?.let { runCatching { it.clearVideoSurfaceView(videoSurface) } }
+        val intent = Intent(this, MainActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or
+                Intent.FLAG_ACTIVITY_SINGLE_TOP
+            if (openPlayer) action = MainActivity.ACTION_OPEN_MEDIA_PLAYER
+        }
+        startActivity(intent)
+        finishAndRemoveTask()
     }
 
     override fun onPictureInPictureModeChanged(inPip: Boolean, configuration: Configuration) {
