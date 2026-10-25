@@ -1385,6 +1385,7 @@ class MainActivity : ComponentActivity() {
         val future = MediaController.Builder(this, token).buildAsync()
         var player: MediaController? = null
         var playbackIssue: String? = null
+        var lastAttentionPage: String? = null
         var seeking = false
         var closed = false
         var videoFullscreen = false
@@ -1445,8 +1446,12 @@ class MainActivity : ComponentActivity() {
             override fun run() {
                 val c = player
                 if (!closed && c != null) {
-                    val attentionPage = c.currentMediaItem?.mediaMetadata?.extras
+                    val currentAttentionPage = c.currentMediaItem?.mediaMetadata?.extras
                         ?.getString("nm_attention_page")
+                    if (!currentAttentionPage.isNullOrBlank()) lastAttentionPage = currentAttentionPage
+                    // O serviço remove a mídia no limite. Conservar a origem na UI
+                    // evita que o aviso de bloqueio desapareça junto com o item.
+                    val attentionPage = currentAttentionPage ?: lastAttentionPage
                     val attentionStatus = Attention.status(attentionPage)
                     val secondsLeft = Attention.mediaRemainingSeconds(attentionPage)
                     // Modo Tranquilo: um aviso discreto somente nos cinco minutos finais,
@@ -1454,11 +1459,11 @@ class MainActivity : ComponentActivity() {
                     val nearEnd = secondsLeft != null && secondsLeft in 1L..300L
                     val ended = secondsLeft == 0L
                     attentionBanner.visibility = if (attentionStatus != null &&
-                        c.currentMediaItem != null && (nearEnd || ended))
+                        (nearEnd && c.currentMediaItem != null || ended))
                         View.VISIBLE else View.GONE
                     if (attentionStatus != null && (nearEnd || ended)) {
                         attentionBanner.text = if (ended)
-                            "☕ Sua sessão terminou. Hora de descansar."
+                            "☕ Controle de Atenção · limite atingido. Reprodução indisponível até o fim da pausa."
                         else "☕ Sua pausa está se aproximando. Aproveite para concluir o vídeo."
                     }
                     val duration = c.duration
@@ -1474,7 +1479,9 @@ class MainActivity : ComponentActivity() {
                         val sec = ms.coerceAtLeast(0L) / 1000L
                         return "%02d:%02d".format(sec / 60, sec % 60)
                     }
-                    info.text = playbackIssue ?: if (total > 0L) "${clock(pos)} / ${clock(total)}"
+                    info.text = if (ended)
+                        "Controle de Atenção: acesso temporariamente limitado"
+                    else playbackIssue ?: if (total > 0L) "${clock(pos)} / ${clock(total)}"
                         else "Áudio/vídeo nativo · ${clock(pos)}"
                     play.text = when {
                         c.playerError != null -> "Tentar novamente"
