@@ -72,6 +72,65 @@ class MainActivity : ComponentActivity() {
     private lateinit var favoriteButton: Button
     private lateinit var store: BrowserData
     private var statusDefaultColor = 0
+    private val defaultWebUserAgent by lazy { WebSettings.getDefaultUserAgent(this) }
+    private fun websiteHost(url: String?): String? = runCatching {
+        Uri.parse(url).host?.lowercase(java.util.Locale.ROOT)
+    }.getOrNull()
+
+    private fun siteDisplayMode(url: String?): String {
+        val host = websiteHost(url) ?: return "mobile"
+        return getSharedPreferences("site_display_modes", MODE_PRIVATE)
+            .getString(host, "mobile") ?: "mobile"
+    }
+
+    private fun configureSiteDisplay(view: WebView, url: String?) {
+        when (siteDisplayMode(url)) {
+            "desktop", "hybrid" -> {
+                // Apenas a identificação desktop; o modo híbrido mantém viewport
+                // estreita e CSS responsivo no tamanho real do aparelho.
+                val version = Regex("Chrome/([0-9.]+)")
+                    .find(defaultWebUserAgent)?.groupValues?.getOrNull(1) ?: "120.0.0.0"
+                view.settings.userAgentString =
+                    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 " +
+                    "(KHTML, like Gecko) Chrome/$version Safari/537.36"
+                val desktop = siteDisplayMode(url) == "desktop"
+                view.settings.useWideViewPort = desktop
+                view.settings.loadWithOverviewMode = desktop
+            }
+            else -> {
+                view.settings.userAgentString = defaultWebUserAgent
+                view.settings.useWideViewPort = false
+                view.settings.loadWithOverviewMode = false
+            }
+        }
+    }
+
+    private fun showSiteDisplayModes() {
+        val currentUrl = webView.url ?: tabs.getOrNull(activeIndex)?.url
+        val host = websiteHost(currentUrl)
+        if (host == null) {
+            Toast.makeText(this, "Abra um site primeiro", Toast.LENGTH_SHORT).show()
+            return
+        }
+        val choices = arrayOf("Celular (padrão)",
+            "Híbrido: funções desktop + layout compacto",
+            "Computador: layout completo")
+        val modes = listOf("mobile", "hybrid", "desktop")
+        val selected = modes.indexOf(siteDisplayMode(currentUrl)).coerceAtLeast(0)
+        AlertDialog.Builder(this).setTitle("Modo de exibição · $host")
+            .setSingleChoiceItems(choices, selected) { dialog, index ->
+                dialog.dismiss()
+                val chosen = modes[index]
+                if (chosen != siteDisplayMode(currentUrl)) {
+                    getSharedPreferences("site_display_modes", MODE_PRIVATE).edit()
+                        .putString(host, chosen).apply()
+                    configureSiteDisplay(webView, currentUrl)
+                    webView.reload()
+                    Toast.makeText(this, "Modo aplicado a $host", Toast.LENGTH_SHORT).show()
+                }
+            }.setNegativeButton("Cancelar", null).show()
+    }
+
     private var loaded = false
     private fun isDarkTheme() = getSharedPreferences("appearance", MODE_PRIVATE)
         .getString("theme", "light") == "dark"
@@ -448,6 +507,7 @@ class MainActivity : ComponentActivity() {
         val view = WebView(this)
         view.settings.javaScriptEnabled = true
         view.settings.domStorageEnabled = true
+        configureSiteDisplay(view, null)
         // Preferência de cores respeitada pela WebView quando o motor oferece suporte.
         // Sites que implementam tema próprio continuam controlando sua aparência.
         if (WebViewFeature.isFeatureSupported(WebViewFeature.ALGORITHMIC_DARKENING)) {
@@ -692,6 +752,7 @@ class MainActivity : ComponentActivity() {
     private fun showActive() {
         Attention.pause()
         val newView = webView
+        if (newView.url == null) configureSiteDisplay(newView, tabs[activeIndex].url)
         if (webHost.childCount > 0) {
             val old = webHost.getChildAt(0) as WebView
             // Evita suspender áudio/vídeo HTML5 ao trocar de aba quando habilitado.
@@ -935,11 +996,13 @@ class MainActivity : ComponentActivity() {
 
     private fun showToolsMenu() {
         AlertDialog.Builder(this).setTitle("Ferramentas")
-            .setItems(arrayOf("Extensões", "Opções avançadas de mídia", "Aparência · claro/escuro")) { _, which ->
+            .setItems(arrayOf("Extensões", "Opções avançadas de mídia",
+                "Aparência · claro/escuro", "Modo de exibição do site")) { _, which ->
                 when (which) {
                     0 -> extLauncher.launch(Intent(this, ExtensionsActivity::class.java))
                     1 -> showMediaOptions()
                     2 -> showThemePicker()
+                    3 -> showSiteDisplayModes()
                 }
             }.show()
     }
