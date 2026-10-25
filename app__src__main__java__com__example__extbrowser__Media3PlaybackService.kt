@@ -119,7 +119,19 @@ class Media3PlaybackService : MediaSessionService() {
             }
         })
         player = exo
-        session = MediaSession.Builder(this, exo).build()
+        val openPlayer = android.content.Intent(this, MainActivity::class.java).apply {
+            action = MainActivity.ACTION_OPEN_MEDIA_PLAYER
+            flags = android.content.Intent.FLAG_ACTIVITY_CLEAR_TOP or
+                android.content.Intent.FLAG_ACTIVITY_SINGLE_TOP
+        }
+        val sessionActivity = android.app.PendingIntent.getActivity(
+            this, 101, openPlayer,
+            android.app.PendingIntent.FLAG_UPDATE_CURRENT or
+                android.app.PendingIntent.FLAG_IMMUTABLE
+        )
+        session = MediaSession.Builder(this, exo)
+            .setSessionActivity(sessionActivity)
+            .build()
     }
 
     override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaSession? = session
