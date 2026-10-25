@@ -1562,7 +1562,8 @@ class MainActivity : ComponentActivity() {
                 "Rastrear remoção do formulário · Seu Imposto",
                 "Bloqueio experimental do FORM · Seu Imposto",
                 "Diagnóstico de origem · sem bloqueios",
-                "Proteção experimental FORM + SECTION")) { _, which ->
+                "Proteção experimental FORM + SECTION",
+                "Digitar no chat pelo Android · Seu Imposto")) { _, which ->
                 when (which) {
                     0 -> extLauncher.launch(Intent(this, ExtensionsActivity::class.java).apply {
                         putExtra("attention_current_page", webView.url ?: tabs[activeIndex].url)
@@ -1581,6 +1582,7 @@ class MainActivity : ComponentActivity() {
                     12 -> toggleSeuImpostoFormGuard()
                     13 -> startSeuImpostoOriginTrace()
                     14 -> toggleSeuImpostoSubtreeGuard()
+                    15 -> showSeuImpostoNativeChatInput()
                 }
             }.show()
     }
@@ -1770,6 +1772,61 @@ class MainActivity : ComponentActivity() {
                 Toast.LENGTH_LONG).show()
             webView.reload()
         }
+    }
+
+    private fun showSeuImpostoNativeChatInput() {
+        val page = webView
+        if (!isSeuImposto(page.url)) {
+            Toast.makeText(this, "Abra o chat do Seu Imposto primeiro", Toast.LENGTH_LONG).show()
+            return
+        }
+        val field = EditText(this).apply {
+            hint = "Mensagem para o chat"
+            minLines = 3
+            maxLines = 6
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE or
+                InputType.TYPE_TEXT_FLAG_CAP_SENTENCES
+        }
+        AlertDialog.Builder(this).setTitle("Digitar pelo Android · Seu Imposto")
+            .setMessage("O texto será preenchido no formulário do site. O envio não é automático.")
+            .setView(field)
+            .setPositiveButton("Preencher no chat") { _, _ ->
+                val message = field.text.toString()
+                if (message.isBlank()) return@setPositiveButton
+                if (page !== webView || !isSeuImposto(page.url)) return@setPositiveButton
+                val quoted = org.json.JSONObject.quote(message)
+                // Não registra o texto e não executa submit/click automaticamente.
+                page.evaluateJavascript("""(function(){
+                    const candidates=[...document.querySelectorAll('form input[type="text"],form textarea')]
+                        .filter(el=>{const rect=el.getBoundingClientRect();
+                            const style=getComputedStyle(el);
+                            return el.isConnected&&!el.disabled&&!el.readOnly&&
+                                rect.width>0&&rect.height>0&&style.display!=='none'&&
+                                style.visibility!=='hidden';});
+                    if(candidates.length!==1)return 'campos='+candidates.length;
+                    const el=candidates[0];
+                    const proto=el instanceof HTMLTextAreaElement?
+                        HTMLTextAreaElement.prototype:HTMLInputElement.prototype;
+                    const setter=Object.getOwnPropertyDescriptor(proto,'value')?.set;
+                    if(!setter)return 'sem-setter';
+                    setter.call(el,$quoted);
+                    el.dispatchEvent(new Event('input',{bubbles:true}));
+                    el.dispatchEvent(new Event('change',{bubbles:true}));
+                    return el.value===$quoted?'preenchido':'não-confirmado';
+                })()""") { raw ->
+                    val status = raw.trim('"')
+                    val notification = when (status) {
+                        "preenchido" -> "Texto preenchido. O envio continua pelo site."
+                        "campos=0" -> "Campo do chat indisponível ou desabilitado"
+                        else -> "Não foi possível confirmar o preenchimento do chat"
+                    }
+                    Toast.makeText(this, notification, Toast.LENGTH_LONG).show()
+                    // Nenhum conteúdo da mensagem entra no diagnóstico.
+                    recordSiteDiagnostic(page, "Entrada Android · resultado=$status")
+                }
+            }
+            .setNegativeButton("Cancelar", null)
+            .show()
     }
 
     private fun toggleSeuImpostoKeyboardCompat() {
