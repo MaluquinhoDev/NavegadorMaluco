@@ -1517,20 +1517,49 @@ class MainActivity : ComponentActivity() {
                     }).filter(x=>x.area>0).sort((a,b)=>b.area-a.area);
                     const video=visible.length?visible[0].v:null;
                     if(!video)return 'no_video';
-                    video.muted=!video.muted;
-                    return video.muted?'muted':'sound';
+                    const enable=video.muted;
+                    video.muted=!enable;
+                    // Não fabrica cliques no Instagram: eventos sintéticos não são
+                    // trusted e o player pode ignorá-los.
+                    return enable?'requested_sound':'requested_mute';
                 })()""") { result ->
-                    when (result?.trim('"')) {
-                        "sound" -> {
-                            text = "Silenciar vídeo"
-                            Toast.makeText(this@MainActivity,
-                                "Som do vídeo ativado", Toast.LENGTH_SHORT).show()
-                        }
-                        "muted" -> text = "Ativar som do vídeo"
-                        else -> Toast.makeText(this@MainActivity,
-                            "Vídeo não acessível nesta página",
-                            Toast.LENGTH_SHORT).show()
+                    val request = result?.trim('"')
+                    if (request != "requested_sound" && request != "requested_mute") {
+                        Toast.makeText(this@MainActivity,
+                            "Vídeo não acessível nesta página", Toast.LENGTH_SHORT).show()
+                        return@evaluateJavascript
                     }
+                    // Releia o estado: o Instagram pode desfazer a alteração.
+                    webView.postDelayed({
+                        if (webView.url != url) return@postDelayed
+                        webView.evaluateJavascript("""(function(){
+                            const items=[...document.querySelectorAll('video')].map(v=>{
+                                const r=v.getBoundingClientRect();
+                                return {v,area:Math.max(0,Math.min(r.right,innerWidth)-Math.max(r.left,0))*
+                                    Math.max(0,Math.min(r.bottom,innerHeight)-Math.max(r.top,0))};
+                            }).filter(x=>x.area>0).sort((a,b)=>b.area-a.area);
+                            return items.length?(items[0].v.muted?'muted':'sound'):'missing';
+                        })()""") { observed ->
+                            val actual = observed?.trim('"')
+                            val expected = if (request == "requested_sound") "sound" else "muted"
+                            if (actual == expected) {
+                                text = if (actual == "sound") "Silenciar vídeo" else "Ativar som do vídeo"
+                                Toast.makeText(this@MainActivity,
+                                    if (actual == "sound") "Vídeo sem mute HTML5" else "Vídeo silenciado",
+                                    Toast.LENGTH_SHORT).show()
+                            } else {
+                                text = "Ativar som do vídeo"
+                                AlertDialog.Builder(this@MainActivity)
+                                    .setTitle("Instagram controla o silêncio")
+                                    .setMessage("O Instagram não manteve a alteração solicitada. " +
+                                        "Use uma vez o botão de áudio original do vídeo. " +
+                                        "O navegador não consegue fabricar um toque confiável " +
+                                        "no controle interno do Instagram. " +
+                                        "Depois, ajuste o volume pelo NavegadorMaluco.")
+                                    .setPositiveButton("Entendi", null).show()
+                            }
+                        }
+                    }, 350L)
                 }
             }
         }
