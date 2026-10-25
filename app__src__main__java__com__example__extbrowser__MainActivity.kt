@@ -636,6 +636,22 @@ class MainActivity : ComponentActivity() {
                                 documentFocus:document.hasFocus(),
                                 activeTag:document.activeElement&&document.activeElement.tagName||''};
                         };
+                        const inputStates=new WeakMap();
+                        const scanInputs=()=>{
+                            document.querySelectorAll('input,textarea,[contenteditable="true"]')
+                                .forEach(el=>{
+                                    const now={disabled:!!el.disabled,readOnly:!!el.readOnly,
+                                        ariaDisabled:el.getAttribute('aria-disabled')==='true',
+                                        inert:!!(el.closest&&el.closest('[inert]'))};
+                                    const before=inputStates.get(el);
+                                    inputStates.set(el,now);
+                                    if(!before)return;
+                                    if(Object.keys(now).some(k=>now[k]!==before[k]))
+                                        add('input-state-change',el,{...now,
+                                            previousDisabled:before.disabled});
+                                });
+                        };
+                        scanInputs();
                         document.addEventListener('focusin',e=>{
                             audit.lastFocused=e.target;
                             audit.detachLogged=false;
@@ -645,6 +661,10 @@ class MainActivity : ComponentActivity() {
                             const el=e.target;
                             add('focusout',el,focusState(el));
                             audit.lastBlurAt=Date.now();
+                            scanInputs();
+                            setTimeout(scanInputs,250);
+                            setTimeout(scanInputs,1000);
+                            setTimeout(scanInputs,3000);
                             add(e.relatedTarget?'focusout-to-element':'focusout-no-target',
                                 e.relatedTarget||el);
                             if(!recoveryEnabled||!el||
@@ -714,8 +734,9 @@ class MainActivity : ComponentActivity() {
                                 timeout=setTimeout(()=>{stop();add('recovery-timeout',el);},350);
                             },0);
                         },true);
-                        // Somente estrutura do DOM: não lê valores, mensagens ou atributos.
+                        // Observa estrutura e estados de editabilidade, nunca valores digitados.
                         const monitor=new MutationObserver(changes=>{
+                            scanInputs();
                             if(!audit.lastFocused||Date.now()-audit.lastBlurAt>1000)return;
                             if(!audit.lastFocused.isConnected&&!audit.detachLogged){
                                 audit.detachLogged=true;
@@ -734,9 +755,12 @@ class MainActivity : ComponentActivity() {
                                 }
                                 if(addedInput)break;
                             }
-                            if(addedInput)add('dom-new-editable-field',addedInput);
+                            if(addedInput)add('dom-new-editable-field',addedInput,
+                                {...focusState(addedInput),
+                                ariaDisabled:addedInput.getAttribute('aria-disabled')==='true'});
                         });
-                        monitor.observe(document.documentElement,{childList:true,subtree:true});
+                        monitor.observe(document.documentElement,{childList:true,subtree:true,
+                            attributes:true,attributeFilter:['disabled','readonly','aria-disabled','inert']});
                         if(window.visualViewport)
                             visualViewport.addEventListener('resize',()=>add('viewport-resize',document.activeElement));
                         add('monitor-start',document.activeElement);
@@ -1390,6 +1414,9 @@ class MainActivity : ComponentActivity() {
                             " visível=${e.optString("visible")}" +
                             " docFocado=${e.optString("documentFocus")}" +
                             " elementoAtivo=${e.optString("activeTag")}" else ""))
+                    if (e.has("ariaDisabled") || e.has("previousDisabled"))
+                        appendLine("  ariaDisabled=${e.optString("ariaDisabled", "?")}" +
+                            " disabledAnterior=${e.optString("previousDisabled", "?")}")
                 }
                 appendLine("Eventos de carregamento (${events.size}):")
                 events.forEach { appendLine("- $it") }
