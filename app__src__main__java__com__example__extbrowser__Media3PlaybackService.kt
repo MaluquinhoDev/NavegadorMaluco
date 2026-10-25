@@ -73,7 +73,7 @@ class Media3PlaybackService : MediaSessionService() {
         val exo = ExoPlayer.Builder(this).setMediaSourceFactory(mediaSources).build()
         exo.addListener(object : Player.Listener {
             override fun onMediaItemTransition(item: MediaItem?, reason: Int) {
-                Attention.mediaPlaybackReset()
+                // Mantém a sessão de atenção ao trocar de vídeo no mesmo site.
                 lastMediaTickMs = SystemClock.elapsedRealtime()
                 val origin = item?.mediaMetadata?.extras?.getString("nm_page_origin") ?: ""
                 val mediaUri = item?.localConfiguration?.uri
