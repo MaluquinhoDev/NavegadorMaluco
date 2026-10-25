@@ -24,6 +24,17 @@ class Media3PlaybackService : MediaSessionService() {
     companion object { private const val TAG = "NavegadorMedia3" }
     private var player: ExoPlayer? = null
     private var session: MediaSession? = null
+    private lateinit var playerHistory: PlayerHistory
+    private var lastHistorySaveMs = 0L
+    private fun savePlaybackPosition(exo: ExoPlayer) {
+        val extras = exo.currentMediaItem?.mediaMetadata?.extras ?: return
+        val page = extras.getString("nm_attention_page") ?: return
+        val title = exo.currentMediaItem?.mediaMetadata?.title?.toString() ?: "Vídeo"
+        val duration = exo.duration
+        val position = if (exo.playbackState == Player.STATE_ENDED) 0L else exo.currentPosition
+        val safePosition = if (duration > 0L && position >= duration - 5000L) 0L else position
+        playerHistory.save(page, title, safePosition)
+    }
     private val attentionHandler = Handler(Looper.getMainLooper())
     private var lastMediaTickMs = 0L
     private val attentionCheck = object : Runnable {
@@ -35,6 +46,10 @@ class Media3PlaybackService : MediaSessionService() {
             val delta = if (exo.isPlaying && lastMediaTickMs > 0L)
                 (now - lastMediaTickMs).coerceIn(0L, 1500L) else 0L
             lastMediaTickMs = now
+            if (exo.currentMediaItem != null && now - lastHistorySaveMs >= 5000L) {
+                savePlaybackPosition(exo)
+                lastHistorySaveMs = now
+            }
             val verdict = Attention.mediaPlaybackTick(pageUrl, delta)
             if (verdict != null) {
                 // Parar e retirar a fonte da sessão impede Play/Seek/Próximo na
@@ -71,6 +86,7 @@ class Media3PlaybackService : MediaSessionService() {
     override fun onCreate() {
         super.onCreate()
         Attention.init(this)
+        playerHistory = PlayerHistory(this)
         val http = DefaultHttpDataSource.Factory()
             .setUserAgent(WebSettings.getDefaultUserAgent(this))
         val dataSource = DefaultDataSource.Factory(this, http)
@@ -78,6 +94,7 @@ class Media3PlaybackService : MediaSessionService() {
         val exo = ExoPlayer.Builder(this).setMediaSourceFactory(mediaSources).build()
         exo.addListener(object : Player.Listener {
             override fun onMediaItemTransition(item: MediaItem?, reason: Int) {
+                // Salva também ao trocar de item, independentemente do ticker.
                 // Mantém a sessão de atenção ao trocar de vídeo no mesmo site.
                 lastMediaTickMs = SystemClock.elapsedRealtime()
                 val origin = item?.mediaMetadata?.extras?.getString("nm_page_origin") ?: ""
@@ -170,6 +187,7 @@ class Media3PlaybackService : MediaSessionService() {
     override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaSession? = session
 
     override fun onDestroy() {
+        player?.let(::savePlaybackPosition)
         attentionHandler.removeCallbacks(attentionCheck)
         Attention.mediaPlaybackReset()
         session?.release()
