@@ -68,6 +68,25 @@ class MainActivity : ComponentActivity() {
     private val siteDiagnostics = WeakHashMap<WebView, MutableList<String>>()
     private fun isSeuImposto(url: String?): Boolean = websiteHost(url) == "seuimposto.com" ||
         websiteHost(url) == "www.seuimposto.com"
+    private fun safeDiagnosticPath(uri: Uri): String {
+        // Nunca registra query, fragmento ou segmentos identificadores da sessão.
+        return "/" + uri.pathSegments.take(4).joinToString("/") { segment ->
+            if (segment.length <= 24 && segment.matches(Regex("[A-Za-z_.-]+"))) segment
+            else ":id"
+        }
+    }
+    private fun consoleErrorCategory(message: String): String {
+        val source = message.lowercase(java.util.Locale.ROOT)
+        return when {
+            "cors" in source || "cross-origin" in source -> "CORS"
+            "websocket" in source -> "WebSocket"
+            "failed to fetch" in source || "networkerror" in source -> "Falha fetch/rede"
+            "content security policy" in source || "csp" in source -> "Política CSP"
+            "uncaught" in source || "typeerror" in source || "referenceerror" in source -> "Exceção JavaScript"
+            "404" in source || "503" in source -> "Erro HTTP no console"
+            else -> "Outro aviso/erro"
+        }
+    }
     private fun recordSiteDiagnostic(view: WebView, event: String) {
         synchronized(siteDiagnostics) {
             val events = siteDiagnostics[view] ?: return
@@ -558,7 +577,11 @@ class MainActivity : ComponentActivity() {
                 val loginDomain = host == "x.com" || host?.endsWith(".x.com") == true ||
                     host == "twitter.com" || host?.endsWith(".twitter.com") == true ||
                     host == "accounts.google.com"
-                CookieManager.getInstance().setAcceptThirdPartyCookies(v, loginDomain)
+                val seuImpostoCookies = isSeuImposto(url) &&
+                    getSharedPreferences("seuimposto_diagnostic", MODE_PRIVATE)
+                        .getBoolean("third_party_cookies", false)
+                CookieManager.getInstance().setAcceptThirdPartyCookies(v,
+                    loginDomain || seuImpostoCookies)
                 val t = tabs.firstOrNull { it.view === v } ?: return
                 synchronized(mediaCandidateLock) { mediaCandidates.remove(v); mediaRequestOrigins.remove(v); mediaNetworkSignals.remove(v) }
                 t.url = url
@@ -622,7 +645,8 @@ class MainActivity : ComponentActivity() {
                 }
                 val hit = blockerList.firstOrNull { it.regex.matches(url) }
                 if (hit != null && synchronized(siteDiagnostics) { siteDiagnostics.containsKey(v) })
-                    recordSiteDiagnostic(v, "Requisição bloqueada por extensão: ${hit.name}")
+                    recordSiteDiagnostic(v, "Extensão ${hit.name} bloqueou " +
+                        "${request.method} ${request.url.host}${safeDiagnosticPath(request.url)}")
                 if (hit != null) return if (request.isForMainFrame)
                     htmlResponse(BlockPage.html("Bloqueado", hit.name, ""))
                     else WebResourceResponse("text/plain", "utf-8", 403, "Blocked", emptyMap(), ByteArrayInputStream(ByteArray(0)))
@@ -637,14 +661,14 @@ class MainActivity : ComponentActivity() {
                 if (isSeuImposto(v.url)) recordSiteDiagnostic(v,
                     "HTTP ${errorResponse.statusCode} · " +
                     (if (request.isForMainFrame) "documento principal" else "subrecurso") +
-                    " · host ${request.url.host ?: "?"}")
+                    " · ${request.method} ${request.url.host ?: "?"}${safeDiagnosticPath(request.url)}")
             }
             override fun onReceivedError(v: WebView, request: WebResourceRequest,
                                          error: WebResourceError) {
                 if (isSeuImposto(v.url)) recordSiteDiagnostic(v,
                     "Rede ${error.errorCode} · " +
                     (if (request.isForMainFrame) "documento principal" else "subrecurso") +
-                    " · host ${request.url.host ?: "?"}")
+                    " · ${request.method} ${request.url.host ?: "?"}${safeDiagnosticPath(request.url)}")
             }
         }
         // Upload de arquivos e vídeos HTML5 em tela cheia.
@@ -655,7 +679,9 @@ class MainActivity : ComponentActivity() {
                      message.messageLevel() == ConsoleMessage.MessageLevel.WARNING)) {
                     val sourceHost = websiteHost(message.sourceId()) ?: "script incorporado"
                     recordSiteDiagnostic(view,
-                        "Console ${message.messageLevel()} · $sourceHost:${message.lineNumber()}")
+                        "Console ${message.messageLevel()} · " +
+                        "${consoleErrorCategory(message.message())} · " +
+                        "$sourceHost:${message.lineNumber()}")
                 }
                 return false
             }
@@ -1129,6 +1155,19 @@ class MainActivity : ComponentActivity() {
                 .setTitle("Diagnóstico · Seu Imposto")
                 .setMessage(report)
                 .setPositiveButton("Fechar", null)
+                .setNegativeButton(if (CookieManager.getInstance().acceptThirdPartyCookies(page))
+                    "Desligar cookies extras" else "Testar cookies extras") { _, _ ->
+                    val prefs = getSharedPreferences("seuimposto_diagnostic", MODE_PRIVATE)
+                    val enable = !prefs.getBoolean("third_party_cookies", false)
+                    prefs.edit().putBoolean("third_party_cookies", enable).apply()
+                    CookieManager.getInstance().setAcceptThirdPartyCookies(page, enable)
+                    Toast.makeText(this,
+                        if (enable) "Cookies de terceiros habilitados apenas para este site"
+                        else "Cookies de terceiros desativados para este site",
+                        Toast.LENGTH_LONG).show()
+                    // Recarrega para comparar o comportamento com a opção anterior.
+                    page.reload()
+                }
                 .setNeutralButton("Copiar relatório") { _, _ ->
                     val clipboard = getSystemService(Context.CLIPBOARD_SERVICE)
                         as android.content.ClipboardManager
