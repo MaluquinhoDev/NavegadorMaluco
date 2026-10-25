@@ -555,6 +555,12 @@ class MainActivity : ComponentActivity() {
                 t.url = url
                 if (v === webView) { updateFavorite(); persistTabs() }
                 scanDeclaredMedia(v)
+                val pageHost = websiteHost(url)
+                if ((pageHost == "instagram.com" || pageHost?.endsWith(".instagram.com") == true) &&
+                    siteDisplayMode(url) == "hybrid" &&
+                    getSharedPreferences("instagram_controls", MODE_PRIVATE).getBoolean("sound_on", false)) {
+                    applyInstagramAudioIntent(v, true)
+                }
                 updateInstagramOverlay()
             }
             override fun doUpdateVisitedHistory(v: WebView, url: String, isReload: Boolean) {
@@ -1433,6 +1439,57 @@ class MainActivity : ComponentActivity() {
     private val playerDisplay = PlayerDisplayCoordinator()
     private var instagramOverlay: LinearLayout? = null
     private var instagramOverlayExpanded = false
+    private var instagramAudioButton: Button? = null
+    private fun applyInstagramAudioIntent(view: WebView, soundOn: Boolean,
+                                          callback: ((String?) -> Unit)? = null) {
+        val enabled = if (soundOn) "true" else "false"
+        view.evaluateJavascript("""(function(){
+            const soundOn=$enabled;
+            const pick=()=>{
+                const candidates=[...document.querySelectorAll('video')]
+                    .filter(v=>!v.ended)
+                    .map(v=>{
+                        const r=v.getBoundingClientRect();
+                        const w=Math.max(0,Math.min(r.right,innerWidth)-Math.max(0,r.left));
+                        const h=Math.max(0,Math.min(r.bottom,innerHeight)-Math.max(0,r.top));
+                        return {v,area:w*h};
+                    }).filter(x=>x.area>0).sort((a,b)=>b.area-a.area);
+                return (candidates.find(x=>!x.v.paused)||candidates[0]||{}).v;
+            };
+            const existing=window.__nmInstagramAudioState;
+            if(existing&&existing.interval)clearInterval(existing.interval);
+            if(window.__nmInstagramAudioResumeCleanup)
+                window.__nmInstagramAudioResumeCleanup();
+            window.__nmInstagramAudioResumeCleanup=null;
+            const state={soundOn,interval:null,checks:0,reassertions:0};
+            window.__nmInstagramAudioState=state;
+            const apply=()=>{
+                if(window.__nmInstagramAudioState!==state||document.visibilityState==='hidden')return;
+                const v=pick();
+                if(!v)return;
+                window.__nmInstagramActiveVideo=v;
+                state.checks++;
+                if(soundOn&&v.muted){v.muted=false;state.reassertions++;}
+            };
+            const current=pick();
+            if(current){
+                window.__nmInstagramActiveVideo=current;
+                current.muted=!soundOn;
+            }
+            if(soundOn){state.interval=setInterval(apply,750);apply();}
+            return JSON.stringify({status:'applied',soundOn,videoFound:!!current});
+        })()""") { raw -> callback?.invoke(raw) }
+    }
+    private fun refreshInstagramAudioButton() {
+        val enabled = getSharedPreferences("instagram_controls", MODE_PRIVATE)
+            .getBoolean("sound_on", false)
+        instagramAudioButton?.apply {
+            text = if (enabled) "🔊" else "🔇"
+            contentDescription = if (enabled)
+                "Som ligado; tocar para silenciar e parar acompanhamento"
+            else "Som silenciado; tocar para ativar acompanhamento"
+        }
+    }
     private fun updateInstagramOverlay() {
         val overlay = instagramOverlay ?: return
         val url = tabs.getOrNull(activeIndex)?.view?.url ?: tabs.getOrNull(activeIndex)?.url
@@ -1798,97 +1855,31 @@ class MainActivity : ComponentActivity() {
                         Toast.LENGTH_SHORT).show()
                     return@setOnClickListener
                 }
-                // A preferência explícita persiste até o próximo toque no botão.
-                // O monitor acompanha trocas de vídeo sem iniciar reprodução.
+                // A intenção fica salva fora do documento para sobreviver ao F5.
                 val page = webView
-                page.evaluateJavascript("""(function(){
-                    const pick=()=>{
-                        const candidates=[...document.querySelectorAll('video')]
-                            .filter(v=>!v.ended)
-                            .map(v=>{
-                                const r=v.getBoundingClientRect();
-                                const w=Math.max(0,Math.min(r.right,innerWidth)-Math.max(0,r.left));
-                                const h=Math.max(0,Math.min(r.bottom,innerHeight)-Math.max(0,r.top));
-                                return {v,area:w*h};
-                            }).filter(x=>x.area>0).sort((a,b)=>b.area-a.area);
-                        const playing=candidates.find(x=>!x.v.paused);
-                        return (playing||candidates[0]||{}).v;
-                    };
-                    const existing=window.__nmInstagramAudioState;
-                    const v=pick();
-                    if(!v&&!existing)return JSON.stringify({status:'missing'});
-                    if(window.__nmInstagramAudioResumeCleanup)
-                        window.__nmInstagramAudioResumeCleanup();
-                    window.__nmInstagramAudioResumeCleanup=null;
-                    if(existing&&existing.interval)clearInterval(existing.interval);
-                    // Usa a intenção anterior, e não o valor de muted que o
-                    // Instagram pode ter revertido desde o último clique.
-                    const soundOn=existing?!existing.soundOn:!!(v&&v.muted);
-                    const state={soundOn,interval:null,checks:0,reassertions:0};
-                    window.__nmInstagramAudioState=state;
-                    const apply=()=>{
-                        if(window.__nmInstagramAudioState!==state)return;
-                        if(document.visibilityState==='hidden')return;
-                        const active=pick();
-                        if(!active)return;
-                        window.__nmInstagramActiveVideo=active;
-                        state.checks++;
-                        if(soundOn&&active.muted){
-                            active.muted=false;
-                            state.reassertions++;
-                        }
-                    };
-                    if(v){
-                        window.__nmInstagramActiveVideo=v;
-                        v.muted=!soundOn;
-                    }
-                    if(soundOn){
-                        state.interval=setInterval(apply,750);
-                        apply();
-                    }
-                    window.__nmAudioProbe={video:v,expected:!soundOn};
-                    return JSON.stringify({status:'attempted',soundOn,
-                        muted:v?v.muted:null,paused:v?v.paused:null});
-                })()""") { raw ->
+                val prefs = getSharedPreferences("instagram_controls", MODE_PRIVATE)
+                val soundEnabled = !prefs.getBoolean("sound_on", false)
+                applyInstagramAudioIntent(page, soundEnabled) { raw ->
                     val result = runCatching {
                         org.json.JSONObject(org.json.JSONArray("[$raw]").getString(0))
                     }.getOrNull()
-                    if (result?.optString("status") != "attempted") {
+                    if (result?.optString("status") != "applied") {
                         Toast.makeText(this@MainActivity,
-                            "Nenhum vídeo visível encontrado",
+                            "Falha ao configurar o áudio do Instagram",
                             Toast.LENGTH_LONG).show()
-                        return@evaluateJavascript
+                        return@applyInstagramAudioIntent
                     }
-                    val soundEnabled = result.optBoolean("soundOn")
-                    text = if (soundEnabled) "🔊" else "🔇"
-                    contentDescription = if (soundEnabled)
-                        "Som ligado; tocar para silenciar e parar acompanhamento"
-                    else "Som silenciado; tocar para ativar acompanhamento"
-                    page.postDelayed({
-                        if (page !== webView || page.url != currentUrl) return@postDelayed
-                        page.evaluateJavascript("""(function(){
-                            const state=window.__nmInstagramAudioState;
-                            const p=window.__nmAudioProbe;
-                            if(!state||!p)return 'changed';
-                            return JSON.stringify({status:state.soundOn?'sound':'muted',
-                                reassertions:state.reassertions,
-                                activeConnected:!!(p.video&&p.video.isConnected)});
-                        })()""") { observed ->
-                            val report = runCatching {
-                                org.json.JSONObject(org.json.JSONArray("[$observed]").getString(0))
-                            }.getOrNull()
-                            val message = when (report?.optString("status")) {
-                                "sound" -> "Som ligado: acompanhamento ativo para vídeos do feed"
-                                "muted" -> "Som silenciado: acompanhamento desativado"
-                                else -> "Não foi possível confirmar o estado do áudio"
-                            }
-                            Toast.makeText(this@MainActivity, message,
-                                Toast.LENGTH_SHORT).show()
-                        }
-                    }, 500L)
+                    prefs.edit().putBoolean("sound_on", soundEnabled).apply()
+                    refreshInstagramAudioButton()
+                    Toast.makeText(this@MainActivity,
+                        if (soundEnabled) "Som ligado, inclusive após recarregar"
+                        else "Som silenciado e acompanhamento desligado",
+                        Toast.LENGTH_SHORT).show()
                 }
             }
         }
+        instagramAudioButton = experimentalAudioButton
+        refreshInstagramAudioButton()
         val debugSection = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             visibility = View.GONE
