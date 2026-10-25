@@ -14,6 +14,8 @@ import android.os.Environment
 import android.webkit.CookieManager
 import android.webkit.URLUtil
 import android.webkit.WebChromeClient
+import android.webkit.ConsoleMessage
+import android.webkit.WebResourceError
 import android.webkit.ValueCallback
 import android.widget.FrameLayout
 import android.content.ActivityNotFoundException
@@ -63,6 +65,16 @@ class MainActivity : ComponentActivity() {
     private data class Tab(val view: WebView, var title: String = "Nova aba", var url: String = HOME)
 
     private val tabs = mutableListOf<Tab>()
+    private val siteDiagnostics = WeakHashMap<WebView, MutableList<String>>()
+    private fun isSeuImposto(url: String?): Boolean = websiteHost(url) == "seuimposto.com" ||
+        websiteHost(url) == "www.seuimposto.com"
+    private fun recordSiteDiagnostic(view: WebView, event: String) {
+        synchronized(siteDiagnostics) {
+            val events = siteDiagnostics[view] ?: return
+            if (events.size >= 60) events.removeAt(0)
+            events.add(event)
+        }
+    }
     // WebViews em espera pelo transporte de uma nova janela.
     private val pendingPopups = mutableSetOf<WebView>()
     private var activeIndex = 0
@@ -531,6 +543,10 @@ class MainActivity : ComponentActivity() {
         WebView.setWebContentsDebuggingEnabled((applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) != 0)
         view.webViewClient = object : WebViewClient() {
             override fun onPageStarted(v: WebView, url: String, favicon: Bitmap?) {
+                synchronized(siteDiagnostics) {
+                    if (isSeuImposto(url)) siteDiagnostics[v] = mutableListOf("Navegação iniciada")
+                    else siteDiagnostics.remove(v)
+                }
                 val pageHost = websiteHost(url)
                 val instagramHybrid = (pageHost == "instagram.com" ||
                     pageHost?.endsWith(".instagram.com") == true) &&
@@ -550,6 +566,7 @@ class MainActivity : ComponentActivity() {
                 if (v === webView) { updateFavorite(); updateInstagramOverlay() }
             }
             override fun onPageFinished(v: WebView, url: String) {
+                if (isSeuImposto(url)) recordSiteDiagnostic(v, "Navegação concluída")
                 val t = tabs.firstOrNull { it.view === v } ?: return
                 t.title = v.title ?: url
                 t.url = url
@@ -604,6 +621,8 @@ class MainActivity : ComponentActivity() {
                     }
                 }
                 val hit = blockerList.firstOrNull { it.regex.matches(url) }
+                if (hit != null && synchronized(siteDiagnostics) { siteDiagnostics.containsKey(v) })
+                    recordSiteDiagnostic(v, "Requisição bloqueada por extensão: ${hit.name}")
                 if (hit != null) return if (request.isForMainFrame)
                     htmlResponse(BlockPage.html("Bloqueado", hit.name, ""))
                     else WebResourceResponse("text/plain", "utf-8", 403, "Blocked", emptyMap(), ByteArrayInputStream(ByteArray(0)))
@@ -613,9 +632,33 @@ class MainActivity : ComponentActivity() {
                 }
                 return null
             }
+            override fun onReceivedHttpError(v: WebView, request: WebResourceRequest,
+                                             errorResponse: WebResourceResponse) {
+                if (isSeuImposto(v.url)) recordSiteDiagnostic(v,
+                    "HTTP ${errorResponse.statusCode} · " +
+                    (if (request.isForMainFrame) "documento principal" else "subrecurso") +
+                    " · host ${request.url.host ?: "?"}")
+            }
+            override fun onReceivedError(v: WebView, request: WebResourceRequest,
+                                         error: WebResourceError) {
+                if (isSeuImposto(v.url)) recordSiteDiagnostic(v,
+                    "Rede ${error.errorCode} · " +
+                    (if (request.isForMainFrame) "documento principal" else "subrecurso") +
+                    " · host ${request.url.host ?: "?"}")
+            }
         }
         // Upload de arquivos e vídeos HTML5 em tela cheia.
         view.webChromeClient = object : WebChromeClient() {
+            override fun onConsoleMessage(message: ConsoleMessage): Boolean {
+                if (isSeuImposto(view.url) &&
+                    (message.messageLevel() == ConsoleMessage.MessageLevel.ERROR ||
+                     message.messageLevel() == ConsoleMessage.MessageLevel.WARNING)) {
+                    val sourceHost = websiteHost(message.sourceId()) ?: "script incorporado"
+                    recordSiteDiagnostic(view,
+                        "Console ${message.messageLevel()} · $sourceHost:${message.lineNumber()}")
+                }
+                return false
+            }
             override fun onCreateWindow(
                 source: WebView?, isDialog: Boolean, isUserGesture: Boolean, resultMsg: Message?
             ): Boolean {
@@ -1021,7 +1064,8 @@ class MainActivity : ComponentActivity() {
     private fun showToolsMenu() {
         AlertDialog.Builder(this).setTitle("Ferramentas")
             .setItems(arrayOf("Extensões", "Opções avançadas de mídia",
-                "Aparência · claro/escuro", "Modo de exibição do site")) { _, which ->
+                "Aparência · claro/escuro", "Modo de exibição do site",
+                "Diagnóstico · Seu Imposto")) { _, which ->
                 when (which) {
                     0 -> extLauncher.launch(Intent(this, ExtensionsActivity::class.java).apply {
                         putExtra("attention_current_page", webView.url ?: tabs[activeIndex].url)
@@ -1029,8 +1073,69 @@ class MainActivity : ComponentActivity() {
                     1 -> showMediaOptions()
                     2 -> showThemePicker()
                     3 -> showSiteDisplayModes()
+                    4 -> showSeuImpostoDiagnostic()
                 }
             }.show()
+    }
+
+    private fun showSeuImpostoDiagnostic() {
+        val page = webView
+        if (!isSeuImposto(page.url)) {
+            Toast.makeText(this, "Abra seuimposto.com antes do diagnóstico",
+                Toast.LENGTH_LONG).show()
+            return
+        }
+        val script = """(function(){
+            const body=document.body;
+            const text=body?body.innerText||'':'';
+            return JSON.stringify({
+                title:document.title,
+                blockedText:text.includes('Não deu para abrir a apuração neste navegador'),
+                scripts:document.scripts.length,
+                frames:document.querySelectorAll('iframe').length,
+                bodyCharacters:text.length,
+                webSocket:typeof WebSocket!=='undefined',
+                eventSource:typeof EventSource!=='undefined',
+                localStorage:(()=>{try{return !!window.localStorage}catch(e){return false}})(),
+                cryptoSubtle:!!(window.crypto&&crypto.subtle),
+                webRTC:typeof RTCPeerConnection!=='undefined'
+            });
+        })()"""
+        page.evaluateJavascript(script) { raw ->
+            if (page !== webView || !isSeuImposto(page.url)) return@evaluateJavascript
+            val data = runCatching {
+                org.json.JSONObject(org.json.JSONArray("[$raw]").getString(0))
+            }.getOrNull()
+            val events = synchronized(siteDiagnostics) { siteDiagnostics[page]?.toList().orEmpty() }
+            val packageInfo = WebView.getCurrentWebViewPackage()
+            val report = buildString {
+                appendLine("Seu Imposto · diagnóstico WebView")
+                appendLine("Motor: ${packageInfo?.packageName ?: "indisponível"} " +
+                    "${packageInfo?.versionName ?: ""}")
+                appendLine("Modo: ${siteDisplayMode(page.url)}")
+                appendLine("User-Agent: ${page.settings.userAgentString}")
+                appendLine("JavaScript: ${page.settings.javaScriptEnabled}")
+                appendLine("DOM Storage: ${page.settings.domStorageEnabled}")
+                appendLine("Cookies de terceiros: " +
+                    CookieManager.getInstance().acceptThirdPartyCookies(page))
+                listOf("title", "blockedText", "scripts", "frames", "bodyCharacters",
+                    "webSocket", "eventSource", "localStorage", "cryptoSubtle", "webRTC")
+                    .forEach { appendLine("$it: ${data?.optString(it, "indisponível") ?: "indisponível"}") }
+                appendLine("Eventos de carregamento (${events.size}):")
+                events.forEach { appendLine("- $it") }
+                appendLine("Não inclui mensagens, cookies, URLs completas ou dados do chat.")
+            }
+            AlertDialog.Builder(this)
+                .setTitle("Diagnóstico · Seu Imposto")
+                .setMessage(report)
+                .setPositiveButton("Fechar", null)
+                .setNeutralButton("Copiar relatório") { _, _ ->
+                    val clipboard = getSystemService(Context.CLIPBOARD_SERVICE)
+                        as android.content.ClipboardManager
+                    clipboard.setPrimaryClip(android.content.ClipData.newPlainText(
+                        "Diagnóstico Seu Imposto", report))
+                }.show()
+        }
     }
 
     /**
