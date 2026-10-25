@@ -39,6 +39,7 @@ import android.webkit.WebSettings
 import android.widget.Button
 import android.widget.EditText
 import android.widget.LinearLayout
+import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.ComponentActivity
@@ -1431,6 +1432,7 @@ class MainActivity : ComponentActivity() {
     }
     private val playerDisplay = PlayerDisplayCoordinator()
     private var instagramOverlay: LinearLayout? = null
+    private var instagramOverlayExpanded = false
     private fun updateInstagramOverlay() {
         val overlay = instagramOverlay ?: return
         val url = tabs.getOrNull(activeIndex)?.view?.url ?: tabs.getOrNull(activeIndex)?.url
@@ -1441,8 +1443,20 @@ class MainActivity : ComponentActivity() {
         (overlay.layoutParams as? FrameLayout.LayoutParams)?.let {
             val side = getSharedPreferences("instagram_controls", MODE_PRIVATE)
                 .getString("side", "right")
+            val vertical = getSharedPreferences("instagram_controls", MODE_PRIVATE)
+                .getString("vertical", "center")
             it.gravity = (if (side == "left") android.view.Gravity.START else android.view.Gravity.END) or
-                android.view.Gravity.CENTER_VERTICAL
+                when (vertical) {
+                    "top" -> android.view.Gravity.TOP
+                    "bottom" -> android.view.Gravity.BOTTOM
+                    else -> android.view.Gravity.CENTER_VERTICAL
+                }
+            it.topMargin = if (vertical == "top") (96 * resources.displayMetrics.density).toInt() else 0
+            it.bottomMargin = if (vertical == "bottom") (96 * resources.displayMetrics.density).toInt() else 0
+            val availableDp = (resources.displayMetrics.widthPixels / resources.displayMetrics.density).toInt()
+            it.width = (if (instagramOverlayExpanded) (availableDp - 24).coerceIn(60, 224) else 60).let { width ->
+                (width * resources.displayMetrics.density).toInt()
+            }
             overlay.layoutParams = it
         }
     }
@@ -1772,7 +1786,7 @@ class MainActivity : ComponentActivity() {
             }
         }
         val experimentalAudioButton = Button(this).apply {
-            text = "🔊 Ligar / silenciar"
+            text = "🔈"
             contentDescription = "Alternar som do vídeo visível sem iniciar ou pausar reprodução"
             setOnClickListener {
                 val currentUrl = webView.url
@@ -1870,7 +1884,7 @@ class MainActivity : ComponentActivity() {
             }
         }
         val sideButton = Button(this).apply {
-            text = "↔"
+            text = "↔ Mudar lateral"
             contentDescription = "Mover controles para a outra lateral"
             setOnClickListener {
                 val prefs = getSharedPreferences("instagram_controls", MODE_PRIVATE)
@@ -1879,14 +1893,32 @@ class MainActivity : ComponentActivity() {
                 updateInstagramOverlay()
             }
         }
-        fun setExpanded(expanded: Boolean) {
-            detail.visibility = if (expanded) View.VISIBLE else View.GONE
-            (column.layoutParams as? FrameLayout.LayoutParams)?.let { params ->
-                params.width = dp(if (expanded) 224 else 60)
-                column.layoutParams = params
+        val positionButton = Button(this).apply {
+            text = "↕ Mudar altura"
+            contentDescription = "Alternar posição superior, central e inferior dos controles"
+            setOnClickListener {
+                val prefs = getSharedPreferences("instagram_controls", MODE_PRIVATE)
+                val next = when (prefs.getString("vertical", "center")) {
+                    "center" -> "top"
+                    "top" -> "bottom"
+                    else -> "center"
+                }
+                prefs.edit().putString("vertical", next).apply()
+                updateInstagramOverlay()
             }
         }
-        val hideDetails = Runnable { if (debugSection.visibility != View.VISIBLE) setExpanded(false) }
+        val collapseButton = Button(this).apply {
+            text = "⌃ Recolher painel"
+            contentDescription = "Recolher os controles do Instagram"
+        }
+        lateinit var scroll: ScrollView
+        fun setExpanded(expanded: Boolean) {
+            instagramOverlayExpanded = expanded
+            detail.visibility = View.VISIBLE
+            scroll.visibility = if (expanded) View.VISIBLE else View.GONE
+            updateInstagramOverlay()
+        }
+        collapseButton.setOnClickListener { setExpanded(false) }
         fun refreshVolume() {
             val max = audio.getStreamMaxVolume(AudioManager.STREAM_MUSIC).coerceAtLeast(1)
             val current = audio.getStreamVolume(AudioManager.STREAM_MUSIC)
@@ -1900,8 +1932,6 @@ class MainActivity : ComponentActivity() {
         fun expand() {
             refreshVolume()
             setExpanded(true)
-            handler.removeCallbacks(hideDetails)
-            handler.postDelayed(hideDetails, 3500L)
         }
         slider.setOnSeekBarChangeListener(object : android.widget.SeekBar.OnSeekBarChangeListener {
             override fun onProgressChanged(bar: android.widget.SeekBar?, value: Int, fromUser: Boolean) {
@@ -1911,19 +1941,18 @@ class MainActivity : ComponentActivity() {
                 val max = audio.getStreamMaxVolume(AudioManager.STREAM_MUSIC).coerceAtLeast(1)
                 percent.text = "${value * 100 / max}%"
             }
-            override fun onStartTrackingTouch(bar: android.widget.SeekBar?) {
-                handler.removeCallbacks(hideDetails)
-            }
+            override fun onStartTrackingTouch(bar: android.widget.SeekBar?) {}
             override fun onStopTrackingTouch(bar: android.widget.SeekBar?) { expand() }
         })
+        detail.addView(collapseButton, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
         detail.addView(percent, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
         detail.addView(slider, LinearLayout.LayoutParams(MATCH_PARENT, dp(48)))
         detail.addView(muteButton, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
         detail.addView(sideButton, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
+        detail.addView(positionButton, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
         detail.addView(debugToggle, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
         debugSection.addView(debugButton, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
         debugSection.addView(eventMonitorButton, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
-        debugSection.addView(experimentalAudioButton, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
         detail.addView(debugSection, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
         val stepHeight = dp(160).toFloat()
         var startY = 0f
@@ -1957,15 +1986,29 @@ class MainActivity : ComponentActivity() {
                 }
                 MotionEvent.ACTION_CANCEL -> {
                     view.parent?.requestDisallowInterceptTouchEvent(false)
-                    handler.postDelayed(hideDetails, 3500L)
                     true
                 }
                 else -> true
             }
         }
         column.addView(pauseButton, LinearLayout.LayoutParams(MATCH_PARENT, dp(48)))
+        column.addView(experimentalAudioButton, LinearLayout.LayoutParams(MATCH_PARENT, dp(48)))
         column.addView(volumeButton, LinearLayout.LayoutParams(MATCH_PARENT, dp(48)))
-        column.addView(detail, LinearLayout.LayoutParams(dp(216), WRAP_CONTENT))
+        scroll = object : ScrollView(this) {
+            override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
+                val maxHeight = (resources.displayMetrics.heightPixels * 0.48f).toInt()
+                super.onMeasure(widthMeasureSpec,
+                    View.MeasureSpec.makeMeasureSpec(maxHeight, View.MeasureSpec.AT_MOST))
+            }
+        }.apply {
+            isFillViewport = false
+            isVerticalScrollBarEnabled = true
+            detail.visibility = View.VISIBLE
+            addView(detail, FrameLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
+            visibility = View.GONE
+        }
+        // A área rolável pertence ao painel expandido, não ao feed do Instagram.
+        column.addView(scroll, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
         playerLayer.addView(column, FrameLayout.LayoutParams(dp(60), WRAP_CONTENT,
             android.view.Gravity.END or android.view.Gravity.CENTER_VERTICAL))
         instagramOverlay = column
