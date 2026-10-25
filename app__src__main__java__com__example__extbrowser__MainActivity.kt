@@ -1051,8 +1051,22 @@ class MainActivity : ComponentActivity() {
             enqueueDownload(url, userAgent, contentDisposition, mimeType)
         }
         setupExtensions(view)
+        setupSeuImpostoViewportOverlay(view)
         setupSeuImpostoFocusBridge(view)
         return view
+    }
+
+    private fun setupSeuImpostoViewportOverlay(view: WebView) {
+        if (!WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)) return
+        // Executa antes dos scripts da página; não altera fetch, eventos ou o formulário.
+        // A API VirtualKeyboard impede que a área visual diminua durante o IME.
+        WebViewCompat.addDocumentStartJavaScript(view, """(function(){
+            try {
+                const vk=navigator.virtualKeyboard;
+                if(vk)vk.overlaysContent =
+                    sessionStorage.getItem('__nmVkOverlayOff')!=='1';
+            } catch(_) {}
+        })()""", setOf("https://seuimposto.com", "https://www.seuimposto.com"))
     }
 
     private fun setupSeuImpostoFocusBridge(view: WebView) {
@@ -1421,7 +1435,8 @@ class MainActivity : ComponentActivity() {
                 "Aparência · claro/escuro", "Modo de exibição do site",
                 "Diagnóstico · Seu Imposto", "Teste de teclado · Seu Imposto",
                 "Recuperação de foco · Seu Imposto", "Teclado · teste HTML isolado",
-                "Teclado sem redimensionamento · Seu Imposto")) { _, which ->
+                "Teclado sem redimensionamento · Seu Imposto",
+                "Área visual estável · Seu Imposto")) { _, which ->
                 when (which) {
                     0 -> extLauncher.launch(Intent(this, ExtensionsActivity::class.java).apply {
                         putExtra("attention_current_page", webView.url ?: tabs[activeIndex].url)
@@ -1434,6 +1449,7 @@ class MainActivity : ComponentActivity() {
                     6 -> toggleSeuImpostoFocusRecovery()
                     7 -> openIsolatedKeyboardTest()
                     8 -> toggleSeuImpostoKeyboardPan()
+                    9 -> toggleSeuImpostoViewportOverlay()
                 }
             }.show()
     }
@@ -1507,6 +1523,29 @@ class MainActivity : ComponentActivity() {
             Toast.LENGTH_LONG).show()
     }
 
+    private fun toggleSeuImpostoViewportOverlay() {
+        if (!isSeuImposto(webView.url)) {
+            Toast.makeText(this, "Abra seuimposto.com antes deste ajuste", Toast.LENGTH_LONG).show()
+            return
+        }
+        // A sessão conserva a escolha inclusive após recarregar a página.
+        webView.evaluateJavascript("""(function(){
+            try {
+                const vk=navigator.virtualKeyboard;
+                if(!vk)return 'indisponivel';
+                const next=!vk.overlaysContent;
+                sessionStorage.setItem('__nmVkOverlayOff',next?'0':'1');
+                vk.overlaysContent=next;
+                return next?'ligado':'desligado';
+            }catch(_){return 'erro';}
+        })()""") { raw ->
+            val result = raw.trim('"')
+            Toast.makeText(this,
+                "Área visual estável · $result", Toast.LENGTH_LONG).show()
+            recordSiteDiagnostic(webView, "VirtualKeyboard overlaysContent · $result")
+        }
+    }
+
     private fun toggleSeuImpostoKeyboardCompat() {
         if (!isSeuImposto(webView.url)) {
             Toast.makeText(this, "Abra seuimposto.com antes deste teste", Toast.LENGTH_LONG).show()
@@ -1557,6 +1596,9 @@ class MainActivity : ComponentActivity() {
                 localStorage:(()=>{try{return !!window.localStorage}catch(e){return false}})(),
                 cryptoSubtle:!!(window.crypto&&crypto.subtle),
                 webRTC:typeof RTCPeerConnection!=='undefined',
+                virtualKeyboardAvailable:!!navigator.virtualKeyboard,
+                overlaysContent:navigator.virtualKeyboard?
+                    navigator.virtualKeyboard.overlaysContent:null,
                 activeTag:document.activeElement&&document.activeElement.tagName,
                 keyboardEvents:audit?audit.logs:[],chatRequests:chatRequests
             });
@@ -1579,7 +1621,8 @@ class MainActivity : ComponentActivity() {
                 appendLine("Cookies de terceiros: " +
                     CookieManager.getInstance().acceptThirdPartyCookies(page))
                 listOf("title", "blockedText", "scripts", "frames", "bodyCharacters",
-                    "webSocket", "eventSource", "localStorage", "cryptoSubtle", "webRTC", "activeTag")
+                    "webSocket", "eventSource", "localStorage", "cryptoSubtle", "webRTC",
+                    "virtualKeyboardAvailable", "overlaysContent", "activeTag")
                     .forEach { appendLine("$it: ${data?.optString(it, "indisponível") ?: "indisponível"}") }
                 appendLine("Compatibilidade teclado: " +
                     getSharedPreferences("seuimposto_diagnostic", MODE_PRIVATE)
