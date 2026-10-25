@@ -1443,7 +1443,30 @@ class MainActivity : ComponentActivity() {
         navControls.addView(attentionButton, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
         val aspectButton = Button(this).apply { text = "Ajustar" }
         navControls.addView(aspectButton, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
+        // Alterar o enquadramento nunca deve reativar áudio de uma sessão limitada.
+        fun enforceAttentionForPlayerControls(): Boolean {
+            val page = player?.currentMediaItem?.mediaMetadata?.extras
+                ?.getString("nm_attention_page") ?: lastAttentionPage
+            if (page.isNullOrBlank() || Attention.checkNavigation(page) == null) return false
+            player?.let { c ->
+                if (c.mediaItemCount > 0) {
+                    c.stop()
+                    c.clearMediaItems()
+                }
+            }
+            // Sites podem retomar HTML5 após mudanças de layout/orientação.
+            // Pausa os elementos acessíveis na WebView do site limitado.
+            tabs.forEach { tab ->
+                if (Attention.status(tab.view.url)?.site?.id == Attention.status(page)?.site?.id) {
+                    tab.view.evaluateJavascript(
+                        "(function(){for(const m of document.querySelectorAll('video,audio'))" +
+                            "{try{m.pause()}catch(e){}}})()", null)
+                }
+            }
+            return true
+        }
         aspectButton.setOnClickListener {
+            enforceAttentionForPlayerControls()
             filling = !filling
             aspectButton.text = if (filling) "Preencher" else "Ajustar"
             updateVideoAspect()
