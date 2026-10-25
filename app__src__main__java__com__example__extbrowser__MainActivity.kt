@@ -811,22 +811,66 @@ class MainActivity : ComponentActivity() {
         return id?.takeIf { it.matches(Regex("[A-Za-z0-9_-]{11}")) }
     }
 
+    /** Inspeção somente de estados HTMLMediaElement acessíveis no documento atual. */
+    private fun inspectYouTubePlayer(view: WebView, onResult: (String) -> Unit) {
+        val js = """(function() {
+            const videos = Array.from(document.querySelectorAll('video'));
+            const audios = Array.from(document.querySelectorAll('audio'));
+            const frames = document.querySelectorAll('iframe').length;
+            const protocols = { blob: 0, https: 0, other: 0, empty: 0 };
+            let playing = 0, paused = 0, withDimensions = 0, buffered = 0;
+            for (const el of [...videos, ...audios]) {
+                const src = el.currentSrc || '';
+                if (!src) protocols.empty++;
+                else if (src.startsWith('blob:')) protocols.blob++;
+                else if (src.startsWith('https:')) protocols.https++;
+                else protocols.other++;
+                if (el.paused) paused++; else playing++;
+                if (el.videoWidth > 0 && el.videoHeight > 0) withDimensions++;
+                if (el.buffered && el.buffered.length > 0) buffered++;
+            }
+            return JSON.stringify({video:videos.length,audio:audios.length,iframes:frames,
+                playing:playing,paused:paused,dimensions:withDimensions,buffered:buffered,
+                blob:protocols.blob,https:protocols.https,
+                other:protocols.other,empty:protocols.empty});
+        })()"""
+        view.evaluateJavascript(js) { result ->
+            val summary = runCatching {
+                val decoded = org.json.JSONArray("[$result]").getString(0)
+                val data = org.json.JSONObject(decoded)
+                "Elementos: ${data.optInt("video")} vídeo(s), ${data.optInt("audio")} áudio(s), " +
+                    "${data.optInt("iframes")} iframe(s)\\n" +
+                    "Estado: ${data.optInt("playing")} reproduzindo, ${data.optInt("paused")} pausado(s)\\n" +
+                    "Fonte: ${data.optInt("blob")} blob, ${data.optInt("https")} HTTPS, " +
+                    "${data.optInt("empty")} vazia, ${data.optInt("other")} outra(s)\\n" +
+                    "Com dimensões: ${data.optInt("dimensions")}; com buffer: ${data.optInt("buffered")}"
+            }.getOrElse { "Estados do player indisponíveis neste documento." }
+            onResult(summary)
+        }
+    }
+
     private fun showYouTubeDetectedNotice() {
+        val current = webView
         val signals = synchronized(mediaCandidateLock) {
-            mediaNetworkSignals[webView]?.toMap().orEmpty()
+            mediaNetworkSignals[current]?.toMap().orEmpty()
         }
         val summary = if (signals.isEmpty()) "Nenhum sinal de mídia observado." else
-            signals.entries.joinToString("\n") { "${it.key}: ${it.value} requisição(ões)" }
+            signals.entries.joinToString("\\n") { "${it.key}: ${it.value} requisição(ões)" }
         android.util.Log.i("NavegadorMedia3", "DiagnosticoYouTube: " +
             (if (signals.isEmpty()) "sem_sinais" else
                 signals.entries.joinToString("; ") { "${it.key}=${it.value}" }))
-        AlertDialog.Builder(this).setTitle("Diagnóstico de vídeo YouTube")
-            .setMessage("Página de vídeo reconhecida. Requisições observadas:\n\n$summary\n\n" +
-                "Tipos são inferidos de parâmetros declarados, não do conteúdo da resposta. " +
-                "Isso não prova a existência de um manifesto utilizável pelo Media3. " +
-                "A WebView pode não expor todos os fluxos da página.")
-            .setPositiveButton("Voltar ao vídeo") { _, _ -> webView.requestFocus() }
-            .setNegativeButton("Fechar", null).show()
+        inspectYouTubePlayer(current) { dom ->
+            if (isFinishing || isDestroyed || current !== webView) return@inspectYouTubePlayer
+            android.util.Log.i("NavegadorMedia3", "DiagnosticoDOMYouTube: " +
+                dom.replace('\\n', ';'))
+            AlertDialog.Builder(this).setTitle("Diagnóstico de vídeo YouTube")
+                .setMessage("Rede (requisições observadas):\\n$summary\\n\\n" +
+                    "Player HTML5 (documento atual):\\n$dom\\n\\n" +
+                    "O diagnóstico não inspeciona iframes de outra origem, URLs privadas, " +
+                    "respostas HTTP ou recursos blob internos. Não confirma fonte reproduzível no Media3.")
+                .setPositiveButton("Voltar ao vídeo") { _, _ -> current.requestFocus() }
+                .setNegativeButton("Fechar", null).show()
+        }
     }
 
     private fun showRequestMediaCandidates() {
