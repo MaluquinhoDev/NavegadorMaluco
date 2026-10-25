@@ -88,6 +88,24 @@ class MainActivity : ComponentActivity() {
     // Apenas metadados de requisições. Nunca intercepta conteúdo, tokens nem corpos HTTP.
     private val mediaCandidates = WeakHashMap<WebView, LinkedHashSet<String>>()
     private val mediaCandidateLock = Any()
+    // Contadores agregados: nunca armazenam URL, caminho, query ou cabeçalhos HTTP.
+    private val mediaNetworkSignals = WeakHashMap<WebView, LinkedHashMap<String, Int>>()
+    private fun mediaSignal(uri: Uri): String? {
+        val host = uri.host?.lowercase(java.util.Locale.ROOT) ?: return null
+        val path = uri.path.orEmpty().lowercase(java.util.Locale.ROOT)
+        val yt = host == "youtube.com" || host.endsWith(".youtube.com") ||
+            host == "googlevideo.com" || host.endsWith(".googlevideo.com") ||
+            host == "youtu.be"
+        if (!yt) return null
+        return when {
+            path.endsWith(".mpd") -> "DASH: extensão mpd"
+            path.endsWith(".m3u8") -> "HLS: extensão m3u8"
+            path.endsWith(".m4s") -> "Segmento: m4s"
+            path.endsWith(".ts") -> "Segmento: ts"
+            path.contains("videoplayback") -> "Entrega de mídia: videoplayback (formato não identificado)"
+            else -> null
+        }
+    }
     // Domínio do Referer observado por fonte, sem valores completos de cabeçalhos.
     private val mediaRequestOrigins = WeakHashMap<WebView, LinkedHashMap<String, String>>()
     private fun refererHost(headers: Map<String, String>): String {
@@ -310,7 +328,7 @@ class MainActivity : ComponentActivity() {
         view.webViewClient = object : WebViewClient() {
             override fun onPageStarted(v: WebView, url: String, favicon: Bitmap?) {
                 val t = tabs.firstOrNull { it.view === v } ?: return
-                synchronized(mediaCandidateLock) { mediaCandidates.remove(v); mediaRequestOrigins.remove(v) }
+                synchronized(mediaCandidateLock) { mediaCandidates.remove(v); mediaRequestOrigins.remove(v); mediaNetworkSignals.remove(v) }
                 t.url = url
                 if (v === webView && !urlBar.hasFocus()) urlBar.setText(url)
                 if (v === webView) updateFavorite()
@@ -339,6 +357,14 @@ class MainActivity : ComponentActivity() {
             }
             override fun shouldInterceptRequest(v: WebView, request: WebResourceRequest): WebResourceResponse? {
                 val url = request.url.toString()
+                if (!request.isForMainFrame && request.url.scheme == "https") {
+                    mediaSignal(request.url)?.let { category ->
+                        synchronized(mediaCandidateLock) {
+                            val counts = mediaNetworkSignals.getOrPut(v) { LinkedHashMap() }
+                            counts[category] = (counts[category] ?: 0) + 1
+                        }
+                    }
+                }
                 // Chamado em thread auxiliar. Observa apenas URLs aparentes de mídia,
                 // mantendo o mecanismo de rede e bloqueio existentes inalterados.
                 if (!request.isForMainFrame &&
@@ -769,8 +795,18 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun showYouTubeDetectedNotice() {
-        AlertDialog.Builder(this).setTitle("Vídeo do YouTube detectado")
-            .setMessage("Esta aba contém um vídeo do YouTube. Ele usa o player próprio do site, e não uma URL de mídia direta compatível com nosso Media3.\n\nVocê pode assistir normalmente na WebView e usar a tela cheia do player do YouTube.")
+        val signals = synchronized(mediaCandidateLock) {
+            mediaNetworkSignals[webView]?.toMap().orEmpty()
+        }
+        val summary = if (signals.isEmpty()) "Nenhum sinal de mídia observado." else
+            signals.entries.joinToString("\\n") { "${it.key}: ${it.value} requisição(ões)" }
+        android.util.Log.i("NavegadorMedia3", "DiagnosticoYouTube: " +
+            (if (signals.isEmpty()) "sem_sinais" else
+                signals.entries.joinToString("; ") { "${it.key}=${it.value}" }))
+        AlertDialog.Builder(this).setTitle("Diagnóstico de vídeo YouTube")
+            .setMessage("Página de vídeo reconhecida. Requisições observadas:\\n\\n$summary\\n\\n" +
+                "Isso não prova a existência de um manifesto utilizável pelo Media3. " +
+                "A WebView pode não expor todos os fluxos da página.")
             .setPositiveButton("Voltar ao vídeo") { _, _ -> webView.requestFocus() }
             .setNegativeButton("Fechar", null).show()
     }
