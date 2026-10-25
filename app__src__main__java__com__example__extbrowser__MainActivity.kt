@@ -1802,8 +1802,29 @@ class MainActivity : ComponentActivity() {
                     const shared=candidates.find(x=>x.v===window.__nmInstagramActiveVideo);
                     const v=(shared||playing||candidates[0]).v;
                     window.__nmInstagramActiveVideo=v;
+                    // Cancela a intenção anterior ao alternar ou trocar de vídeo.
+                    if(window.__nmInstagramAudioResumeCleanup)
+                        window.__nmInstagramAudioResumeCleanup();
+                    window.__nmInstagramAudioResumeCleanup=null;
                     const expected=!v.muted;
                     v.muted=expected;
+                    // O Instagram pode impor muted=true na transição para playing.
+                    // Uma ativação explícita feita enquanto pausado autoriza UMA
+                    // reaplicação após o evento playing, sem chamar play() e sem loop.
+                    if(!expected&&v.paused){
+                        const onPlaying=()=>{
+                            v.removeEventListener('playing',onPlaying);
+                            if(window.__nmInstagramAudioResumeCleanup===cleanup)
+                                window.__nmInstagramAudioResumeCleanup=null;
+                            setTimeout(()=>{
+                                if(v.isConnected&&window.__nmInstagramActiveVideo===v&&
+                                    !v.paused&&v.muted)v.muted=false;
+                            },200);
+                        };
+                        const cleanup=()=>v.removeEventListener('playing',onPlaying);
+                        window.__nmInstagramAudioResumeCleanup=cleanup;
+                        v.addEventListener('playing',onPlaying,{once:true});
+                    }
                     window.__nmAudioProbe={video:v,expected};
                     return JSON.stringify({status:'attempted',muted:v.muted,paused:v.paused});
                 })()""") { raw ->
