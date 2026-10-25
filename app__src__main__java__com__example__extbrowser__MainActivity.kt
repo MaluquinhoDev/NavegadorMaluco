@@ -741,10 +741,10 @@ class MainActivity : ComponentActivity() {
                     }
                     val labels = sources.map { it.label +
                         (if (it.playable) "" else " · exige áudio separado") }.toTypedArray()
+                    // Não combinar setMessage com setItems: o AlertDialog exibe a
+                    // mensagem no lugar da lista e impede selecionar uma fonte.
                     AlertDialog.Builder(this)
                         .setTitle("YouTube · ${sources.size} formato(s)")
-                        .setMessage(MediaSourceCatalog.summary(sources) +
-                            "\n\nSelecione uma fonte. Vídeos sem áudio exigem trilha separada.")
                         .setItems(labels) { _, i ->
                             val selected = sources[i]
                             if (selected.playable) startMedia3(selected.url)
