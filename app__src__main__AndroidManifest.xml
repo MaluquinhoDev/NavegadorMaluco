@@ -33,6 +33,10 @@
             android:name=".ExtensionsActivity"
             android:exported="false" />
         <activity
+            android:name=".GeckoBrowserActivity"
+            android:exported="false"
+            android:windowSoftInputMode="stateUnspecified|adjustResize" />
+        <activity
             android:name=".AttentionActivity"
             android:exported="false"
             android:windowSoftInputMode="adjustResize" />
