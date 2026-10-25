@@ -1462,7 +1462,13 @@ class MainActivity : ComponentActivity() {
             text = "⏯"
             contentDescription = "Pausar ou retomar vídeo principal visível"
             setOnClickListener {
-                if (Attention.checkNavigation(webView.url ?: "") != null) return@setOnClickListener
+                if (Attention.checkNavigation(webView.url ?: "") != null) {
+                    Toast.makeText(this@MainActivity, "Play bloqueado pelo Controle de Atenção",
+                        Toast.LENGTH_SHORT).show()
+                    return@setOnClickListener
+                }
+                Toast.makeText(this@MainActivity, "⏯ Comando recebido",
+                    Toast.LENGTH_SHORT).show()
                 // O feed costuma manter outros vídeos tocando fora da publicação
                 // principal. Priorizar o vídeo maior, não outro que esteja tocando.
                 val page = webView
@@ -1512,6 +1518,10 @@ class MainActivity : ComponentActivity() {
                             "Vídeo não localizado no feed", Toast.LENGTH_SHORT).show()
                         "denied" -> Toast.makeText(this@MainActivity,
                             "Instagram recusou iniciar o vídeo", Toast.LENGTH_SHORT).show()
+                        "paused" -> Toast.makeText(this@MainActivity,
+                            "Vídeo pausado", Toast.LENGTH_SHORT).show()
+                        "ignored" -> Toast.makeText(this@MainActivity,
+                            "Instagram não aceitou pausar", Toast.LENGTH_SHORT).show()
                         "requested_play" -> page.postDelayed({
                             if (page !== webView) return@postDelayed
                             page.evaluateJavascript("""(function(){
@@ -1539,6 +1549,10 @@ class MainActivity : ComponentActivity() {
                                 }
                             }
                         }, 700L)
+                        else -> Toast.makeText(this@MainActivity,
+                            "Falha ao interpretar retorno do player: " +
+                                (raw?.take(90) ?: "sem resposta"),
+                            Toast.LENGTH_LONG).show()
                     }
                 }
             }
