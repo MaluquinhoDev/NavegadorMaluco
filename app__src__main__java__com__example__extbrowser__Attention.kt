@@ -216,6 +216,51 @@ object Attention {
         saveBreaks()
     }
 
+    /**
+     * Contabiliza somente reprodução efetiva do Media3, inclusive em PiP/background.
+     * O relógio e a cota diária são compartilhados com a navegação.
+     * A sessão multimídia é mantida separada para não reativar a WebView em segundo plano.
+     */
+    private var mediaSiteId: String? = null
+    private var mediaSessionMs = 0L
+
+    @Synchronized
+    fun mediaPlaybackTick(pageUrl: String?, elapsedMs: Long): AttentionVerdict? {
+        val host = pageUrl?.let { AttentionLogic.hostOf(it) } ?: run {
+            mediaSiteId = null
+            mediaSessionMs = 0L
+            return null
+        }
+        val site = findSite(host) ?: run {
+            mediaSiteId = null
+            mediaSessionMs = 0L
+            return null
+        }
+        if (mediaSiteId != site.id) {
+            mediaSiteId = site.id
+            mediaSessionMs = 0L
+        }
+        navigationBlock(site)?.let { return it }
+        val delta = elapsedMs.coerceIn(0L, MAX_TICK_MS)
+        if (delta > 0L) {
+            addUsage(site.id, delta)
+            mediaSessionMs += delta
+        }
+        if (site.sessionMinutes > 0 && mediaSessionMs >= site.sessionMinutes * 60_000L) {
+            val until = wallNow() + AttentionLogic.breakMinutes(site.sessionMinutes) * 60_000L
+            breaks[site.id] = until
+            saveBreaks()
+            return AttentionVerdict(site, "A duração máxima desta sessão foi atingida.", until)
+        }
+        return navigationBlock(site)
+    }
+
+    @Synchronized
+    fun mediaPlaybackReset() {
+        mediaSiteId = null
+        mediaSessionMs = 0L
+    }
+
     // ---------- Consulta ----------
 
     private fun todayKey(): String {
