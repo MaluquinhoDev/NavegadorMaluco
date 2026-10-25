@@ -939,8 +939,10 @@ class MainActivity : ComponentActivity() {
                     " · Retry-After ${if (hasRetryAfter) "presente" else "ausente"}")
                 // Fotografia somente de estado, sem capturar texto, corpo da requisição ou cookies.
                 // Ajuda a distinguir falha do servidor de desabilitação do campo na interface.
-                if (isSeuImposto(v.url) && request.url.host == "seuimposto.com" &&
-                    request.url.path == "/api/chat/eu" && errorResponse.statusCode == 503) {
+                val chatPath = request.url.path
+                if (isSeuImposto(v.url) && isSeuImposto(request.url.toString()) &&
+                    (chatPath == "/api/chat/eu" || chatPath == "/api/chat/sala") &&
+                    errorResponse.statusCode == 503) {
                     v.post {
                         if (!isSeuImposto(v.url)) return@post
                         v.evaluateJavascript("""(function(){
@@ -950,13 +952,17 @@ class MainActivity : ComponentActivity() {
                             return JSON.stringify({visible:visible.length,
                                 disabled:visible.filter(el=>el.disabled).length,
                                 active:document.activeElement&&document.activeElement.tagName||'',
+                                formCount:document.querySelectorAll('form').length,
+                                online:navigator.onLine,
                                 viewport:window.visualViewport?Math.round(visualViewport.height):null});
                         })()""") { raw ->
                             val state = runCatching {
                                 org.json.JSONObject(org.json.JSONArray("[$raw]").getString(0))
                             }.getOrNull() ?: return@evaluateJavascript
-                            recordSiteDiagnostic(v, "Chat 503 · DOM visíveis=${state.optInt("visible")} " +
+                            recordSiteDiagnostic(v, "Chat ${chatPath?.substringAfterLast('/')} 503 · DOM visíveis=${state.optInt("visible")} " +
                                 "desabilitados=${state.optInt("disabled")} " +
+                                "formulários=${state.optInt("formCount")} " +
+                                "online=${state.optString("online")} " +
                                 "foco=${state.optString("active")} " +
                                 "viewport=${state.optString("viewport")}")
                         }
@@ -1577,8 +1583,10 @@ class MainActivity : ComponentActivity() {
             // Resource Timing é observacional: não intercepta fetch/XHR nem lê mensagens.
             const chatRequests=performance.getEntriesByType('resource').filter(entry=>{
                 try{const u=new URL(entry.name);return u.origin===location.origin&&
-                    u.pathname==='/api/chat/eu';}catch(_){return false;}
-            }).slice(-25).map(entry=>({
+                    (u.pathname==='/api/chat/eu'||u.pathname==='/api/chat/sala');}
+                catch(_){return false;}
+            }).slice(-35).map(entry=>({
+                route:new URL(entry.name).pathname==='/api/chat/sala'?'sala':'eu',
                 started:Math.round((performance.timeOrigin+entry.startTime)%600000),
                 finished:Math.round((performance.timeOrigin+entry.responseEnd)%600000),
                 status:Number(entry.responseStatus)||0,
@@ -1596,6 +1604,7 @@ class MainActivity : ComponentActivity() {
                 localStorage:(()=>{try{return !!window.localStorage}catch(e){return false}})(),
                 cryptoSubtle:!!(window.crypto&&crypto.subtle),
                 webRTC:typeof RTCPeerConnection!=='undefined',
+                networkOnline:navigator.onLine,
                 virtualKeyboardAvailable:!!navigator.virtualKeyboard,
                 overlaysContent:navigator.virtualKeyboard?
                     navigator.virtualKeyboard.overlaysContent:null,
@@ -1622,7 +1631,7 @@ class MainActivity : ComponentActivity() {
                     CookieManager.getInstance().acceptThirdPartyCookies(page))
                 listOf("title", "blockedText", "scripts", "frames", "bodyCharacters",
                     "webSocket", "eventSource", "localStorage", "cryptoSubtle", "webRTC",
-                    "virtualKeyboardAvailable", "overlaysContent", "activeTag")
+                    "virtualKeyboardAvailable", "overlaysContent", "networkOnline", "activeTag")
                     .forEach { appendLine("$it: ${data?.optString(it, "indisponível") ?: "indisponível"}") }
                 appendLine("Compatibilidade teclado: " +
                     getSharedPreferences("seuimposto_diagnostic", MODE_PRIVATE)
@@ -1669,7 +1678,8 @@ class MainActivity : ComponentActivity() {
                 for (i in 0 until (chatRequests?.length() ?: 0)) {
                     val e = chatRequests?.optJSONObject(i) ?: continue
                     val status = e.optInt("status")
-                    appendLine("- início=${e.optString("started")} " +
+                    appendLine("- rota=${e.optString("route")} " +
+                        "início=${e.optString("started")} " +
                         "fim=${e.optString("finished")} " +
                         "HTTP=${if (status == 0) "indisponível" else status.toString()} " +
                         "duração=${e.optString("duration")}ms " +
