@@ -1578,6 +1578,7 @@ class MainActivity : ComponentActivity() {
                         "hostReferer=${if (related) refHost else "indisponivel"}; hostMidia=$mediaHost")
                     val mediaInfo = android.os.Bundle().apply {
                         putString("nm_page_origin", selectedOrigin)
+                        putString("nm_attention_page", sourceView.url ?: "")
                     }
                     val item = MediaItem.Builder().setUri(u)
                         .setMediaMetadata(androidx.media3.common.MediaMetadata.Builder()
