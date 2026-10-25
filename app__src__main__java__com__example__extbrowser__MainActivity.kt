@@ -1275,6 +1275,9 @@ class MainActivity : ComponentActivity() {
         panel.addView(outer, FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT))
         playerLayer.addView(panel, FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT))
         playerPanel = panel
+        // Android 12+: ao ir para Home, a tela do player vira PiP automaticamente.
+        // O navegador sozinho nunca aciona a autoentrada.
+        updatePipAutoEnter(true)
         miniPlayerBar.visibility = View.GONE
         playerControls = outer
         browserBar.visibility = View.GONE
@@ -1423,6 +1426,7 @@ class MainActivity : ComponentActivity() {
                 MediaController.releaseFuture(future)
                 playerLayer.removeView(panel)
                 playerPanel = null
+                updatePipAutoEnter(false)
                 playerControls = null
                 nativePlayerClose = null
                 playerIsImmersive = false
@@ -1794,15 +1798,10 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onUserLeaveHint() {
+        // Com setAutoEnterEnabled(true), o Android realiza a transição Home → PiP.
+        // Não lançar VideoPipActivity daqui: lançamento em segundo plano é restrito
+        // e foi justamente o motivo da tentativa anterior não funcionar.
         super.onUserLeaveHint()
-        // Ao sair pelo Início/Home enquanto o player nativo está aberto,
-        // transfere a sessão Media3 ao PiP independente. Não transforma
-        // a Activity do navegador em PiP (evita conflitos de layout).
-        // Restringimos ao player aberto para não disparar em telas internas.
-        if (playerPanel != null && miniController?.currentMediaItem != null &&
-            pipAvailable() && !VideoPipActivity.active && !isFinishing) {
-            enterPip()
-        }
     }
 
     override fun onPictureInPictureModeChanged(isInPictureInPictureMode: Boolean, newConfig: Configuration) {
