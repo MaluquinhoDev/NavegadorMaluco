@@ -1384,7 +1384,6 @@ class MainActivity : ComponentActivity() {
         val token = SessionToken(this, ComponentName(this, Media3PlaybackService::class.java))
         val future = MediaController.Builder(this, token).buildAsync()
         var player: MediaController? = null
-        var lastAttentionWarning = -1
         var playbackIssue: String? = null
         var seeking = false
         var closed = false
@@ -1448,24 +1447,36 @@ class MainActivity : ComponentActivity() {
                 if (!closed && c != null) {
                     val attentionPage = c.currentMediaItem?.mediaMetadata?.extras
                         ?.getString("nm_attention_page")
+                    val attentionStatus = Attention.status(attentionPage)
                     val secondsLeft = Attention.mediaRemainingSeconds(attentionPage)
-                    val warning = secondsLeft != null && secondsLeft <= 300L
-                    attentionBanner.visibility = if (warning) View.VISIBLE else View.GONE
-                    if (warning) {
-                        attentionBanner.text = if (secondsLeft == 0L)
-                            "⏳ Tempo encerrado · reprodução bloqueada"
-                        else "⏳ Controle de Atenção: ${secondsLeft / 60}m ${secondsLeft % 60}s restantes"
-                        val threshold = when {
-                            secondsLeft == 0L -> 0
-                            secondsLeft <= 60L -> 1
-                            else -> 5
+                    attentionBanner.visibility =
+                        if (attentionStatus == null || c.currentMediaItem == null)
+                            View.GONE else View.VISIBLE
+                    if (attentionStatus != null) {
+                        val site = attentionStatus.site
+                        val today = AttentionLogic.formatTime(attentionStatus.usedSeconds)
+                        val daily = if (site.dailyMinutes > 0)
+                            "$today de ${site.dailyMinutes} min" else "$today (sem limite)"
+                        val session = if (site.sessionMinutes > 0)
+                            "sessão · ${site.sessionMinutes} min" else "sessão sem limite"
+                        val lastMinute = secondsLeft != null && secondsLeft <= 60L
+                        val leftText = if (secondsLeft != null)
+                            AttentionLogic.formatTime(secondsLeft) else ""
+                        attentionBanner.text = when {
+                            secondsLeft == 0L ->
+                                "⏳ ${site.domain} · limite atingido · reprodução bloqueada"
+                            lastMinute ->
+                                "⏳ ${site.domain} · hoje $daily · falta $leftText, " +
+                                    "depois pausa de ${attentionStatus.breakMinutes} min"
+                            else -> "⏳ ${site.domain} · hoje $daily · $session"
                         }
-                        if (threshold != lastAttentionWarning) {
-                            lastAttentionWarning = threshold
-                            Toast.makeText(this@MainActivity,
-                                attentionBanner.text, Toast.LENGTH_LONG).show()
-                        }
-                    } else lastAttentionWarning = -1
+                        // Mesma convenção do indicador do Controle de Atenção:
+                        // informação normal, destaque vermelho no último minuto.
+                        attentionBanner.setTextColor(
+                            if (lastMinute) 0xFFC62828.toInt() else android.graphics.Color.WHITE)
+                        attentionBanner.setBackgroundColor(
+                            if (lastMinute) 0xEEFFFFFF.toInt() else 0xAA202B3A.toInt())
+                    }
                     val duration = c.duration
                     val pos = c.currentPosition.coerceAtLeast(0L)
                     val total = if (duration > 0L && duration != androidx.media3.common.C.TIME_UNSET)
