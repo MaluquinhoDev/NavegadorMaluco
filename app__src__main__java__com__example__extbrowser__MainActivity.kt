@@ -209,7 +209,8 @@ class MainActivity : ComponentActivity() {
         future.addListener({
             try {
                 val controller = future.get()
-                if (!isFinishing && !isDestroyed && controller.currentMediaItem != null) {
+                if (!isFinishing && !isDestroyed && controller.currentMediaItem != null &&
+                    playerDisplay.shouldOpenFullscreen(VideoPipActivity.active)) {
                     showNativeVideoPlayer()
                 } else if (!isFinishing && !isDestroyed) {
                     Toast.makeText(this, "Nenhuma reprodução ativa para retomar", Toast.LENGTH_SHORT).show()
@@ -1192,8 +1193,10 @@ class MainActivity : ComponentActivity() {
                 val active = c.currentMediaItem != null &&
                     c.playbackState != androidx.media3.common.Player.STATE_IDLE &&
                     c.playbackState != androidx.media3.common.Player.STATE_ENDED
-                miniPlayerBar.visibility = if (active && playerPanel == null &&
-                    !isInPictureInPictureMode) View.VISIBLE else View.GONE
+                val display = playerDisplay.browserState(
+                    active, playerPanel != null, VideoPipActivity.active)
+                miniPlayerBar.visibility = if (display == PlayerDisplayCoordinator.Mode.MINI)
+                    View.VISIBLE else View.GONE
                 miniPlayButton.text = if (c.isPlaying) "Pausar" else "Play"
             }
             handler.postDelayed(this, 1000L)
@@ -1212,6 +1215,7 @@ class MainActivity : ComponentActivity() {
                 .onFailure { android.util.Log.w("NavegadorMedia3", "Mini-player indisponível", it) }
         }, androidx.core.content.ContextCompat.getMainExecutor(this))
     }
+    private val playerDisplay = PlayerDisplayCoordinator()
     private lateinit var playerLayer: FrameLayout
     private var playerPanel: FrameLayout? = null
     private var nativePlayerClose: (() -> Unit)? = null
@@ -1221,6 +1225,8 @@ class MainActivity : ComponentActivity() {
 
     /** Interface de vídeo vinculada à sessão que já toca áudio em segundo plano. */
     private fun showNativeVideoPlayer() {
+        // Nunca disputar a superfície com o PiP independente.
+        if (!playerDisplay.shouldOpenFullscreen(VideoPipActivity.active)) return
         if (playerPanel != null) { playerControls?.visibility = View.VISIBLE; return }
         val panel = FrameLayout(this).apply { setBackgroundColor(android.graphics.Color.BLACK) }
         val outer = LinearLayout(this).apply {
@@ -1732,16 +1738,15 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun enterPip() {
-        if (VideoPipActivity.active) {
-            Toast.makeText(this, "O vídeo já está em uma janela PiP", Toast.LENGTH_SHORT).show()
-            return
-        }
-        if (!pipAvailable()) {
-            Toast.makeText(this, "Este Android não oferece Picture-in-Picture", Toast.LENGTH_LONG).show()
-            return
-        }
-        if (miniController?.currentMediaItem == null) {
-            Toast.makeText(this, "Abra um vídeo no Media3 antes de ativar PiP", Toast.LENGTH_SHORT).show()
+        val hasMedia = miniController?.currentMediaItem != null
+        val supported = pipAvailable()
+        if (!playerDisplay.canOpenPip(hasMedia, supported, VideoPipActivity.active)) {
+            val reason = when {
+                VideoPipActivity.active -> "O vídeo já está em uma janela PiP"
+                !supported -> "Este Android não oferece Picture-in-Picture"
+                else -> "Abra um vídeo no Media3 antes de ativar PiP"
+            }
+            Toast.makeText(this, reason, Toast.LENGTH_SHORT).show()
             return
         }
         // A Activity do navegador NÃO entra em PiP: só a Activity exclusiva do vídeo.
