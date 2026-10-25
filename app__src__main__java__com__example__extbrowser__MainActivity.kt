@@ -1578,6 +1578,7 @@ class MainActivity : ComponentActivity() {
             MATCH_PARENT, WRAP_CONTENT, android.view.Gravity.TOP))
         playerLayer.addView(panel, FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT))
         playerPanel = panel
+        updateInstagramOverlay()
         // Android 12+: ao ir para Home, a tela do player vira PiP automaticamente.
         // O navegador sozinho nunca aciona a autoentrada.
         updatePipAutoEnter(true)
@@ -1833,6 +1834,7 @@ class MainActivity : ComponentActivity() {
                 MediaController.releaseFuture(future)
                 playerLayer.removeView(panel)
                 playerPanel = null
+                updateInstagramOverlay()
                 updatePipAutoEnter(false)
                 playerControls = null
                 nativePlayerClose = null
