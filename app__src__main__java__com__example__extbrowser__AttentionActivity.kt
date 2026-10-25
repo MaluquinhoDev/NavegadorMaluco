@@ -43,7 +43,17 @@ class AttentionActivity : ComponentActivity() {
             setPadding(0, 0, 0, dp(12))
         })
 
-        domainEt = field(content, "Site", "youtube.com", InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_URI, "")
+        val suggestedDomain = AttentionLogic.rootDomainOf(
+            intent.getStringExtra("attention_current_page"))
+        domainEt = field(content, "Site", "youtube.com",
+            InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_URI,
+            suggestedDomain.orEmpty())
+        if (suggestedDomain != null) {
+            content.addView(TextView(this).apply {
+                text = "Site atual detectado: $suggestedDomain · inclui subdomínios"
+                textSize = 13f
+            })
+        }
         dailyEt = field(content, "Limite diário (minutos, 0 = sem limite)", "60", InputType.TYPE_CLASS_NUMBER, "60")
         sessionEt = field(content, "Duração da sessão (minutos, 0 = sem limite)", "30", InputType.TYPE_CLASS_NUMBER, "30")
         startEt = timeField(content, "Horário permitido: início (vazio = qualquer horário)")
