@@ -1574,7 +1574,7 @@ class MainActivity : ComponentActivity() {
             }
         }
         val eventMonitorButton = Button(this).apply {
-            text = "Monitorar som"
+            text = "Monitorar / parar"
             contentDescription = "Iniciar ou ler depuração passiva por vídeo"
             setOnClickListener {
                 val host = websiteHost(webView.url)
@@ -1586,7 +1586,9 @@ class MainActivity : ComponentActivity() {
                 webView.evaluateJavascript("""(function(){
                     if(window.nmVideoAudit){
                         const state=window.nmVideoAudit;
+                        clearInterval(state.interval);
                         const result=JSON.stringify(state.logs);
+                        delete window.nmVideoAudit;
                         return result;
                     }
                     const state={started:Date.now(),logs:[],ids:new WeakMap(),next:1,last:new Map()};
@@ -1625,6 +1627,7 @@ class MainActivity : ComponentActivity() {
                     };
                     scan();
                     state.interval=setInterval(scan,250);
+                    setTimeout(()=>clearInterval(state.interval),30000);
                     return 'started';
                 })()""") { raw ->
                     val output = runCatching {
@@ -1722,6 +1725,49 @@ class MainActivity : ComponentActivity() {
                     }.show()
             }
         }
+        val siteAudioButton = Button(this).apply {
+            text = "Som do vídeo"
+            contentDescription = "Ativar ou silenciar o vídeo ativo"
+            setOnClickListener {
+                val url = webView.url
+                val host = websiteHost(url)
+                if ((host != "instagram.com" && host?.endsWith(".instagram.com") != true) ||
+                    siteDisplayMode(url) != "hybrid" ||
+                    Attention.checkNavigation(url ?: "") != null) return@setOnClickListener
+                webView.evaluateJavascript("""(function(){
+                    const clips=[...document.querySelectorAll('video')]
+                        .filter(v=>!v.paused&&!v.ended)
+                        .map(v=>{
+                            const r=v.getBoundingClientRect();
+                            const w=Math.max(0,Math.min(r.right,innerWidth)-Math.max(0,r.left));
+                            const h=Math.max(0,Math.min(r.bottom,innerHeight)-Math.max(0,r.top));
+                            return {v,area:w*h};
+                        }).filter(x=>x.area>0).sort((a,b)=>b.area-a.area);
+                    if(!clips.length)return 'missing';
+                    const v=clips[0].v;
+                    v.muted=!v.muted;
+                    return v.muted?'muted':'sound';
+                })()""") { result ->
+                    when(result?.trim('"')) {
+                        "muted" -> text = "Ativar som do vídeo"
+                        "sound" -> text = "Silenciar vídeo"
+                        else -> Toast.makeText(this@MainActivity,
+                            "Nenhum vídeo ativo visível", Toast.LENGTH_SHORT).show()
+                    }
+                }
+            }
+        }
+        val debugSection = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            visibility = View.GONE
+        }
+        val debugToggle = Button(this).apply {
+            text = "⚙ Depuração"
+            setOnClickListener {
+                debugSection.visibility = if (debugSection.visibility == View.VISIBLE)
+                    View.GONE else View.VISIBLE
+            }
+        }
         val sideButton = Button(this).apply {
             text = "↔"
             contentDescription = "Mover controles para a outra lateral"
@@ -1771,11 +1817,14 @@ class MainActivity : ComponentActivity() {
         })
         detail.addView(percent, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
         detail.addView(slider, LinearLayout.LayoutParams(MATCH_PARENT, dp(48)))
+        detail.addView(siteAudioButton, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
         detail.addView(muteButton, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
         detail.addView(sideButton, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
-        detail.addView(debugButton, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
-        detail.addView(eventMonitorButton, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
-        detail.addView(experimentalAudioButton, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
+        detail.addView(debugToggle, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
+        debugSection.addView(debugButton, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
+        debugSection.addView(eventMonitorButton, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
+        debugSection.addView(experimentalAudioButton, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
+        detail.addView(debugSection, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
         val stepHeight = dp(160).toFloat()
         var startY = 0f
         var initial = 0
