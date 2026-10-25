@@ -999,7 +999,9 @@ class MainActivity : ComponentActivity() {
             .setItems(arrayOf("Extensões", "Opções avançadas de mídia",
                 "Aparência · claro/escuro", "Modo de exibição do site")) { _, which ->
                 when (which) {
-                    0 -> extLauncher.launch(Intent(this, ExtensionsActivity::class.java))
+                    0 -> extLauncher.launch(Intent(this, ExtensionsActivity::class.java).apply {
+                        putExtra("attention_current_page", webView.url ?: tabs[activeIndex].url)
+                    })
                     1 -> showMediaOptions()
                     2 -> showThemePicker()
                     3 -> showSiteDisplayModes()
