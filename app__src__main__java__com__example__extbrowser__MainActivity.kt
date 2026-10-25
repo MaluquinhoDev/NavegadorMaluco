@@ -153,45 +153,56 @@ class MainActivity : ComponentActivity() {
                         button.setAttribute('aria-label', 'Volume ' + level + ' por cento');
                         button.title = 'Volume ' + level + '% · deslize para cima/baixo';
                     };
-                    button.style.cssText = 'position:absolute;right:12px;bottom:12px;z-index:20;' +
-                        'background:rgba(0,0,0,.65);color:white;border:0;border-radius:50%;' +
-                        'width:48px;height:48px;display:flex;align-items:center;justify-content:center;' +
-                        'font-size:19px;touch-action:none;user-select:none;';
-                    let startY = 0, startVolume = 1, dragging = false, activePointer = null;
-                    button.addEventListener('pointerdown', function(e) {
-                        if (!e.isPrimary) return;
-                        activePointer = e.pointerId;
-                        startY = e.clientY;
+                    button.style.cssText = 'position:absolute;right:12px;bottom:12px;' +
+                        'z-index:2147483647;pointer-events:auto;' +
+                        'background:rgba(0,0,0,.75);color:white;border:0;border-radius:50%;' +
+                        'width:52px;height:52px;display:flex;align-items:center;justify-content:center;' +
+                        'font-size:19px;touch-action:none;-webkit-user-select:none;user-select:none;';
+                    let startY = 0, startVolume = 1, dragging = false, touchActive = false;
+                    const hold = function(e) {
+                        startY = e.touches[0].clientY;
                         startVolume = video.muted ? 0 : video.volume;
                         dragging = false;
-                        button.setPointerCapture(e.pointerId);
-                        e.stopPropagation();
-                    });
-                    button.addEventListener('pointermove', function(e) {
-                        if (activePointer !== e.pointerId) return;
-                        const distance = startY - e.clientY;
+                        touchActive = true;
+                        e.preventDefault();
+                        e.stopImmediatePropagation();
+                    };
+                    button.addEventListener('touchstart', function(e) {
+                        if (e.touches.length !== 1) return;
+                        hold(e);
+                    }, {passive:false, capture:true});
+                    button.addEventListener('touchmove', function(e) {
+                        if (!touchActive) return;
+                        e.preventDefault();
+                        e.stopImmediatePropagation();
+                        const distance = startY - e.touches[0].clientY;
                         if (Math.abs(distance) > 4) dragging = true;
                         if (!dragging) return;
-                        e.preventDefault();
-                        e.stopPropagation();
                         video.muted = false;
                         video.volume = Math.max(0, Math.min(1, startVolume + distance / 140));
                         if (video.volume < 0.01) video.muted = true;
                         updateSound();
-                    });
-                    button.addEventListener('pointerup', function(e) {
-                        if (activePointer !== e.pointerId) return;
-                        e.stopPropagation();
+                    }, {passive:false, capture:true});
+                    button.addEventListener('touchend', function(e) {
+                        if (!touchActive) return;
+                        e.preventDefault();
+                        e.stopImmediatePropagation();
+                        touchActive = false;
                         if (!dragging) video.muted = !video.muted;
                         updateSound();
-                        activePointer = null;
-                    });
-                    button.addEventListener('pointercancel', function(e) {
-                        if (activePointer === e.pointerId) activePointer = null;
-                    });
-                    // Impede que o clique sintetizado abra um Reels após o gesto.
+                    }, {passive:false, capture:true});
+                    button.addEventListener('touchcancel', function(e) {
+                        touchActive = false;
+                        e.stopPropagation();
+                    }, {capture:true});
+                    // Suporte a mouse, sem interferir com o toque tratado acima.
                     button.addEventListener('click', function(e) {
-                        e.preventDefault(); e.stopImmediatePropagation();
+                        e.preventDefault();
+                        e.stopImmediatePropagation();
+                        if (e.detail !== 0 && !('ontouchstart' in window)) {
+                            video.muted = !video.muted;
+                            updateSound();
+                        }
                     }, true);
                     video.addEventListener('volumechange', updateSound);
                     updateSound();
