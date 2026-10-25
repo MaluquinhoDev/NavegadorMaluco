@@ -66,6 +66,7 @@ class MainActivity : ComponentActivity() {
 
     private val tabs = mutableListOf<Tab>()
     private val siteDiagnostics = WeakHashMap<WebView, MutableList<String>>()
+    private var lastSeuImpostoImeVisible: Boolean? = null
     private fun isSeuImposto(url: String?): Boolean = websiteHost(url) == "seuimposto.com" ||
         websiteHost(url) == "www.seuimposto.com"
     private fun safeDiagnosticPath(uri: Uri): String {
@@ -518,8 +519,22 @@ class MainActivity : ComponentActivity() {
         createInstagramOverlay()
         updatePipAutoEnter(false)
         ViewCompat.setOnApplyWindowInsetsListener(root) { v, insets ->
-            val b = insets.getInsets(WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.ime())
-            v.setPadding(b.left, b.top, b.right, b.bottom)
+            val bars = insets.getInsets(WindowInsetsCompat.Type.systemBars())
+            val ime = insets.getInsets(WindowInsetsCompat.Type.ime())
+            val showingIme = insets.isVisible(WindowInsetsCompat.Type.ime())
+            val site = tabs.getOrNull(activeIndex)?.view
+            val currentSite = site?.let { isSeuImposto(it.url) } == true
+            if (currentSite && lastSeuImpostoImeVisible != showingIme) {
+                site?.let { recordSiteDiagnostic(it,
+                    "IME ${if (showingIme) "aberto" else "fechado"} · altura ${ime.bottom}") }
+                lastSeuImpostoImeVisible = showingIme
+            }
+            // Experimento reversível: deixa o ajuste de altura da janela cuidar
+            // do teclado, mantendo apenas a proteção das barras do sistema.
+            val compat = currentSite && getSharedPreferences("seuimposto_diagnostic", MODE_PRIVATE)
+                .getBoolean("keyboard_compat", false)
+            val bottom = if (compat) bars.bottom else maxOf(bars.bottom, ime.bottom)
+            v.setPadding(bars.left, bars.top, bars.right, bottom)
             insets
         }
 
@@ -589,7 +604,27 @@ class MainActivity : ComponentActivity() {
                 if (v === webView) { updateFavorite(); updateInstagramOverlay() }
             }
             override fun onPageFinished(v: WebView, url: String) {
-                if (isSeuImposto(url)) recordSiteDiagnostic(v, "Navegação concluída")
+                if (isSeuImposto(url)) {
+                    recordSiteDiagnostic(v, "Navegação concluída")
+                    v.evaluateJavascript("""(function(){
+                        if(window.__nmKeyboardAudit)return;
+                        const audit={logs:[]};
+                        window.__nmKeyboardAudit=audit;
+                        const add=(kind,el)=>{
+                            const entry={event:kind,tag:el&&el.tagName||'',
+                                type:el&&el.type||'',
+                                viewport:window.visualViewport?Math.round(visualViewport.height):null,
+                                screen:innerHeight};
+                            audit.logs.push(entry);
+                            if(audit.logs.length>40)audit.logs.shift();
+                        };
+                        document.addEventListener('focusin',e=>add('focusin',e.target),true);
+                        document.addEventListener('focusout',e=>add('focusout',e.target),true);
+                        if(window.visualViewport)
+                            visualViewport.addEventListener('resize',()=>add('viewport-resize',document.activeElement));
+                        add('monitor-start',document.activeElement);
+                    })()""", null)
+                }
                 val t = tabs.firstOrNull { it.view === v } ?: return
                 t.title = v.title ?: url
                 t.url = url
@@ -1091,7 +1126,7 @@ class MainActivity : ComponentActivity() {
         AlertDialog.Builder(this).setTitle("Ferramentas")
             .setItems(arrayOf("Extensões", "Opções avançadas de mídia",
                 "Aparência · claro/escuro", "Modo de exibição do site",
-                "Diagnóstico · Seu Imposto")) { _, which ->
+                "Diagnóstico · Seu Imposto", "Teste de teclado · Seu Imposto")) { _, which ->
                 when (which) {
                     0 -> extLauncher.launch(Intent(this, ExtensionsActivity::class.java).apply {
                         putExtra("attention_current_page", webView.url ?: tabs[activeIndex].url)
@@ -1100,8 +1135,26 @@ class MainActivity : ComponentActivity() {
                     2 -> showThemePicker()
                     3 -> showSiteDisplayModes()
                     4 -> showSeuImpostoDiagnostic()
+                    5 -> toggleSeuImpostoKeyboardCompat()
                 }
             }.show()
+    }
+
+    private fun toggleSeuImpostoKeyboardCompat() {
+        if (!isSeuImposto(webView.url)) {
+            Toast.makeText(this, "Abra seuimposto.com antes deste teste", Toast.LENGTH_LONG).show()
+            return
+        }
+        val prefs = getSharedPreferences("seuimposto_diagnostic", MODE_PRIVATE)
+        val enabled = !prefs.getBoolean("keyboard_compat", false)
+        prefs.edit().putBoolean("keyboard_compat", enabled).apply()
+        lastSeuImpostoImeVisible = null
+        ViewCompat.requestApplyInsets(window.decorView)
+        webView.reload()
+        Toast.makeText(this,
+            if (enabled) "Teste de teclado ativado apenas para Seu Imposto"
+            else "Tratamento normal do teclado restaurado",
+            Toast.LENGTH_LONG).show()
     }
 
     private fun showSeuImpostoDiagnostic() {
@@ -1114,6 +1167,7 @@ class MainActivity : ComponentActivity() {
         val script = """(function(){
             const body=document.body;
             const text=body?body.innerText||'':'';
+            const audit=window.__nmKeyboardAudit;
             return JSON.stringify({
                 title:document.title,
                 blockedText:text.includes('Não deu para abrir a apuração neste navegador'),
@@ -1124,7 +1178,9 @@ class MainActivity : ComponentActivity() {
                 eventSource:typeof EventSource!=='undefined',
                 localStorage:(()=>{try{return !!window.localStorage}catch(e){return false}})(),
                 cryptoSubtle:!!(window.crypto&&crypto.subtle),
-                webRTC:typeof RTCPeerConnection!=='undefined'
+                webRTC:typeof RTCPeerConnection!=='undefined',
+                activeTag:document.activeElement&&document.activeElement.tagName,
+                keyboardEvents:audit?audit.logs:[]
             });
         })()"""
         page.evaluateJavascript(script) { raw ->
@@ -1145,8 +1201,19 @@ class MainActivity : ComponentActivity() {
                 appendLine("Cookies de terceiros: " +
                     CookieManager.getInstance().acceptThirdPartyCookies(page))
                 listOf("title", "blockedText", "scripts", "frames", "bodyCharacters",
-                    "webSocket", "eventSource", "localStorage", "cryptoSubtle", "webRTC")
+                    "webSocket", "eventSource", "localStorage", "cryptoSubtle", "webRTC", "activeTag")
                     .forEach { appendLine("$it: ${data?.optString(it, "indisponível") ?: "indisponível"}") }
+                appendLine("Compatibilidade teclado: " +
+                    getSharedPreferences("seuimposto_diagnostic", MODE_PRIVATE)
+                        .getBoolean("keyboard_compat", false))
+                appendLine("Eventos de foco/teclado:")
+                val keyboardEvents = data?.optJSONArray("keyboardEvents")
+                for (i in 0 until (keyboardEvents?.length() ?: 0)) {
+                    val e = keyboardEvents?.optJSONObject(i) ?: continue
+                    appendLine("- ${e.optString("event")} ${e.optString("tag")}" +
+                        " tipo=${e.optString("type")} viewport=${e.optString("viewport")}" +
+                        " janela=${e.optString("screen")}")
+                }
                 appendLine("Eventos de carregamento (${events.size}):")
                 events.forEach { appendLine("- $it") }
                 appendLine("Não inclui mensagens, cookies, URLs completas ou dados do chat.")
