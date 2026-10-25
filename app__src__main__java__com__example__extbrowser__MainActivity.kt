@@ -839,10 +839,10 @@ class MainActivity : ComponentActivity() {
                 val decoded = org.json.JSONArray("[$result]").getString(0)
                 val data = org.json.JSONObject(decoded)
                 "Elementos: ${data.optInt("video")} vídeo(s), ${data.optInt("audio")} áudio(s), " +
-                    "${data.optInt("iframes")} iframe(s)\\n" +
-                    "Estado: ${data.optInt("playing")} reproduzindo, ${data.optInt("paused")} pausado(s)\\n" +
+                    "${data.optInt("iframes")} iframe(s)\n" +
+                    "Estado: ${data.optInt("playing")} reproduzindo, ${data.optInt("paused")} pausado(s)\n" +
                     "Fonte: ${data.optInt("blob")} blob, ${data.optInt("https")} HTTPS, " +
-                    "${data.optInt("empty")} vazia, ${data.optInt("other")} outra(s)\\n" +
+                    "${data.optInt("empty")} vazia, ${data.optInt("other")} outra(s)\n" +
                     "Com dimensões: ${data.optInt("dimensions")}; com buffer: ${data.optInt("buffered")}"
             }.getOrElse { "Estados do player indisponíveis neste documento." }
             onResult(summary)
@@ -855,17 +855,17 @@ class MainActivity : ComponentActivity() {
             mediaNetworkSignals[current]?.toMap().orEmpty()
         }
         val summary = if (signals.isEmpty()) "Nenhum sinal de mídia observado." else
-            signals.entries.joinToString("\\n") { "${it.key}: ${it.value} requisição(ões)" }
+            signals.entries.joinToString("\n") { "${it.key}: ${it.value} requisição(ões)" }
         android.util.Log.i("NavegadorMedia3", "DiagnosticoYouTube: " +
             (if (signals.isEmpty()) "sem_sinais" else
                 signals.entries.joinToString("; ") { "${it.key}=${it.value}" }))
         inspectYouTubePlayer(current) { dom ->
             if (isFinishing || isDestroyed || current !== webView) return@inspectYouTubePlayer
             android.util.Log.i("NavegadorMedia3", "DiagnosticoDOMYouTube: " +
-                dom.replace('\\n', ';'))
+                dom.replace('\n', ';'))
             AlertDialog.Builder(this).setTitle("Diagnóstico de vídeo YouTube")
-                .setMessage("Rede (requisições observadas):\\n$summary\\n\\n" +
-                    "Player HTML5 (documento atual):\\n$dom\\n\\n" +
+                .setMessage("Rede (requisições observadas):\n$summary\n\n" +
+                    "Player HTML5 (documento atual):\n$dom\n\n" +
                     "O diagnóstico não inspeciona iframes de outra origem, URLs privadas, " +
                     "respostas HTTP ou recursos blob internos. Não confirma fonte reproduzível no Media3.")
                 .setPositiveButton("Voltar ao vídeo") { _, _ -> current.requestFocus() }
