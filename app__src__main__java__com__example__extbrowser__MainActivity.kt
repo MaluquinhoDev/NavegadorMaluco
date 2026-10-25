@@ -1074,16 +1074,20 @@ class MainActivity : ComponentActivity() {
             } catch(_) {}
             // Experimento opt-in: identifica qual rotina chama a remoção do FORM.
             // Registra apenas nomes de funções; nunca texto, valores ou URLs de scripts.
-            const trace={enabled:false,events:[]};
+            const trace={enabled:false,guardEnabled:false,guardBlocked:0,events:[]};
             window.__nmRemovalTrace=trace;
             try {
                 trace.enabled=sessionStorage.getItem('__nmTraceFormRemoval')==='1';
-                if(trace.enabled){
+                trace.guardEnabled=sessionStorage.getItem('__nmGuardFormRemoval')==='1';
+                if(trace.enabled||trace.guardEnabled){
                     let focused=null;
+                    let focusGuardUsed=false;
                     document.addEventListener('focusin',e=>{
                         if(e.target&&e.target.matches&&
-                            e.target.matches('input,textarea,[contenteditable="true"]'))
+                            e.target.matches('input,textarea,[contenteditable="true"]')){
                             focused=e.target;
+                            focusGuardUsed=false;
+                        }
                     },true);
                     const traceRemoval=(method,node)=>{
                         if(!focused||!node||
@@ -1100,6 +1104,20 @@ class MainActivity : ComponentActivity() {
                     const removeChild=Node.prototype.removeChild;
                     Node.prototype.removeChild=function(node){
                         traceRemoval('removeChild',node);
+                        // Um único bloqueio por foco: teste controlado, não correção geral.
+                        const viewport=window.visualViewport;
+                        if(trace.guardEnabled&&!focusGuardUsed&&
+                            node&&node.nodeName==='FORM'&&focused&&
+                            node.contains&&node.contains(focused)&&
+                            document.activeElement===focused&&
+                            viewport&&viewport.height<innerHeight-100){
+                            focusGuardUsed=true;
+                            trace.guardBlocked++;
+                            trace.events.push({t:Date.now()%600000,
+                                method:'removeChild-BLOQUEADO',removedTag:'FORM',functions:[]});
+                            if(trace.events.length>12)trace.events.shift();
+                            return node;
+                        }
                         return removeChild.apply(this,arguments);
                     };
                     const replaceChild=Node.prototype.replaceChild;
@@ -1506,7 +1524,8 @@ class MainActivity : ComponentActivity() {
                 "Teclado sem redimensionamento · Seu Imposto",
                 "Área visual estável · Seu Imposto",
                 "Experimento de eventos resize · Seu Imposto",
-                "Rastrear remoção do formulário · Seu Imposto")) { _, which ->
+                "Rastrear remoção do formulário · Seu Imposto",
+                "Bloqueio experimental do FORM · Seu Imposto")) { _, which ->
                 when (which) {
                     0 -> extLauncher.launch(Intent(this, ExtensionsActivity::class.java).apply {
                         putExtra("attention_current_page", webView.url ?: tabs[activeIndex].url)
@@ -1522,6 +1541,7 @@ class MainActivity : ComponentActivity() {
                     9 -> toggleSeuImpostoViewportOverlay()
                     10 -> showSeuImpostoResizeExperiment()
                     11 -> toggleSeuImpostoRemovalTrace()
+                    12 -> toggleSeuImpostoFormGuard()
                 }
             }.show()
     }
@@ -1658,6 +1678,24 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    private fun toggleSeuImpostoFormGuard() {
+        if (!isSeuImposto(webView.url)) {
+            Toast.makeText(this, "Abra seuimposto.com antes deste experimento", Toast.LENGTH_LONG).show()
+            return
+        }
+        webView.evaluateJavascript("""(function(){
+            const enabled=sessionStorage.getItem('__nmGuardFormRemoval')==='1';
+            sessionStorage.setItem('__nmGuardFormRemoval',enabled?'0':'1');
+            sessionStorage.setItem('__nmTraceFormRemoval','1');
+            sessionStorage.setItem('__nmResizeProbeMode','normal');
+            return enabled?'desligado':'ligado';
+        })()""") { raw ->
+            Toast.makeText(this, "Bloqueio experimental do FORM · ${raw.trim('"')}",
+                Toast.LENGTH_LONG).show()
+            webView.reload()
+        }
+    }
+
     private fun toggleSeuImpostoKeyboardCompat() {
         if (!isSeuImposto(webView.url)) {
             Toast.makeText(this, "Abra seuimposto.com antes deste teste", Toast.LENGTH_LONG).show()
@@ -1720,6 +1758,8 @@ class MainActivity : ComponentActivity() {
                 resizeBlockedWindow:resizeProbe.blockedWindow||0,
                 resizeBlockedVisual:resizeProbe.blockedVisual||0,
                 removalTraceEnabled:!!removalTrace.enabled,
+                formGuardEnabled:!!removalTrace.guardEnabled,
+                formGuardBlocked:removalTrace.guardBlocked||0,
                 removalTraceEvents:removalTrace.events||[],
                 activeTag:document.activeElement&&document.activeElement.tagName,
                 keyboardEvents:audit?audit.logs:[],chatRequests:chatRequests
@@ -1748,6 +1788,8 @@ class MainActivity : ComponentActivity() {
                     "resizeProbeMode", "resizeBlockedWindow", "resizeBlockedVisual")
                     .forEach { appendLine("$it: ${data?.optString(it, "indisponível") ?: "indisponível"}") }
                 appendLine("Rastreamento de remoções: ${data?.optString("removalTraceEnabled", "false")}")
+                appendLine("Bloqueio experimental FORM: ${data?.optString("formGuardEnabled", "false")}")
+                appendLine("Remoções impedidas: ${data?.optString("formGuardBlocked", "0")}")
                 val removalEvents = data?.optJSONArray("removalTraceEvents")
                 for (i in 0 until (removalEvents?.length() ?: 0)) {
                     val e = removalEvents?.optJSONObject(i) ?: continue
