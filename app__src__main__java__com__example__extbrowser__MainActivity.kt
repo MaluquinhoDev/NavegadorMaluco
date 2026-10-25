@@ -1453,12 +1453,15 @@ class MainActivity : ComponentActivity() {
             setOnClickListener {
                 if (Attention.checkNavigation(webView.url ?: "") != null) return@setOnClickListener
                 webView.evaluateJavascript("""(function(){
-                    const visible=[...document.querySelectorAll('video')].map(v=>{
-                        const r=v.getBoundingClientRect();
-                        const w=Math.max(0,Math.min(r.right,innerWidth)-Math.max(r.left,0));
-                        const h=Math.max(0,Math.min(r.bottom,innerHeight)-Math.max(r.top,0));
-                        return {v,area:w*h};
-                    }).filter(x=>x.area>0).sort((a,b)=>b.area-a.area);
+                    const visible=[...document.querySelectorAll('video')]
+                        .filter(v=>!v.ended)
+                        .map(v=>{
+                            const r=v.getBoundingClientRect();
+                            const w=Math.max(0,Math.min(r.right,innerWidth)-Math.max(r.left,0));
+                            const h=Math.max(0,Math.min(r.bottom,innerHeight)-Math.max(r.top,0));
+                            return {v,area:w*h};
+                        }).filter(x=>x.area>0)
+                        .sort((a,b)=>(Number(!b.v.paused)-Number(!a.v.paused))||b.area-a.area);
                     const v=visible.length?visible[0].v:null;
                     if(!v)return;
                     if(v.paused)v.play().catch(()=>{});else v.pause();
