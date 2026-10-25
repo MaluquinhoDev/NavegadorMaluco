@@ -26,6 +26,8 @@ import android.os.Message
 import android.os.SystemClock
 import android.text.InputType
 import android.view.View
+import android.view.MotionEvent
+import android.media.AudioManager
 import android.view.ViewGroup.LayoutParams.MATCH_PARENT
 import android.view.ViewGroup.LayoutParams.WRAP_CONTENT
 import android.view.inputmethod.EditorInfo
@@ -105,116 +107,6 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    /** Controles acessíveis somente em vídeos HTML5 do Instagram híbrido.
-     * O toque direto na área do vídeo não propaga para o link de Reels;
-     * controles nativos e arrastos continuam nas mãos do Instagram.
-     */
-    private fun configureInstagramMediaGestures(view: WebView, url: String) {
-        val host = websiteHost(url)
-        if ((host != "instagram.com" && host?.endsWith(".instagram.com") != true) ||
-            siteDisplayMode(url) != "hybrid") return
-        view.evaluateJavascript("""(function() {
-            if (window.__nmInstagramMediaControls) return;
-            window.__nmInstagramMediaControls = true;
-            let downX = 0, downY = 0, moved = false;
-            document.addEventListener('pointerdown', function(e) {
-                downX = e.clientX; downY = e.clientY; moved = false;
-            }, true);
-            document.addEventListener('pointermove', function(e) {
-                if (Math.abs(e.clientX-downX)>10 || Math.abs(e.clientY-downY)>10) moved = true;
-            }, true);
-            document.addEventListener('click', function(e) {
-                if (moved || !e.isTrusted) return;
-                const target = e.target;
-                if (!(target instanceof Element) || target.tagName !== 'VIDEO') return;
-                const video = target;
-                e.preventDefault();
-                e.stopImmediatePropagation();
-                if (video.paused) video.play().catch(function(){});
-                else video.pause();
-            }, true);
-            // Botão explícito para som: não intercepta rolagem ou clique em Reels.
-            const addSoundButtons = function() {
-                document.querySelectorAll('video').forEach(function(video) {
-                    if (video.dataset.nmSoundControl) return;
-                    video.dataset.nmSoundControl = '1';
-                    const wrapper = video.parentElement;
-                    if (!wrapper || wrapper.querySelector('[data-nm-sound-button]')) return;
-                    const style = window.getComputedStyle(wrapper);
-                    if (style.position === 'static') wrapper.style.position = 'relative';
-                    const button = document.createElement('button');
-                    button.type = 'button';
-                    button.setAttribute('data-nm-sound-button','1');
-                    button.setAttribute('aria-label','Ativar ou silenciar áudio');
-                    const updateSound = function() {
-                        const level = video.muted ? 0 : Math.round(video.volume * 100);
-                        button.textContent = level === 0 ? '🔇' :
-                            level < 50 ? '🔉' : '🔊';
-                        button.setAttribute('aria-label', 'Volume ' + level + ' por cento');
-                        button.title = 'Volume ' + level + '% · deslize para cima/baixo';
-                    };
-                    button.style.cssText = 'position:absolute;right:12px;bottom:12px;' +
-                        'z-index:2147483647;pointer-events:auto;' +
-                        'background:rgba(0,0,0,.75);color:white;border:0;border-radius:50%;' +
-                        'width:52px;height:52px;display:flex;align-items:center;justify-content:center;' +
-                        'font-size:19px;touch-action:none;-webkit-user-select:none;user-select:none;';
-                    let startY = 0, startVolume = 1, dragging = false, touchActive = false;
-                    const hold = function(e) {
-                        startY = e.touches[0].clientY;
-                        startVolume = video.muted ? 0 : video.volume;
-                        dragging = false;
-                        touchActive = true;
-                        e.preventDefault();
-                        e.stopImmediatePropagation();
-                    };
-                    button.addEventListener('touchstart', function(e) {
-                        if (e.touches.length !== 1) return;
-                        hold(e);
-                    }, {passive:false, capture:true});
-                    button.addEventListener('touchmove', function(e) {
-                        if (!touchActive) return;
-                        e.preventDefault();
-                        e.stopImmediatePropagation();
-                        const distance = startY - e.touches[0].clientY;
-                        if (Math.abs(distance) > 4) dragging = true;
-                        if (!dragging) return;
-                        video.muted = false;
-                        video.volume = Math.max(0, Math.min(1, startVolume + distance / 140));
-                        if (video.volume < 0.01) video.muted = true;
-                        updateSound();
-                    }, {passive:false, capture:true});
-                    button.addEventListener('touchend', function(e) {
-                        if (!touchActive) return;
-                        e.preventDefault();
-                        e.stopImmediatePropagation();
-                        touchActive = false;
-                        if (!dragging) video.muted = !video.muted;
-                        updateSound();
-                    }, {passive:false, capture:true});
-                    button.addEventListener('touchcancel', function(e) {
-                        touchActive = false;
-                        e.stopPropagation();
-                    }, {capture:true});
-                    // Suporte a mouse, sem interferir com o toque tratado acima.
-                    button.addEventListener('click', function(e) {
-                        e.preventDefault();
-                        e.stopImmediatePropagation();
-                        if (e.detail !== 0 && !('ontouchstart' in window)) {
-                            video.muted = !video.muted;
-                            updateSound();
-                        }
-                    }, true);
-                    video.addEventListener('volumechange', updateSound);
-                    updateSound();
-                    wrapper.appendChild(button);
-                });
-            };
-            addSoundButtons();
-            new MutationObserver(function(){addSoundButtons()})
-                .observe(document.documentElement,{childList:true,subtree:true});
-        })()""", null)
-    }
-
     private fun showSiteDisplayModes() {
         val currentUrl = webView.url ?: tabs.getOrNull(activeIndex)?.url
         val host = websiteHost(currentUrl)
@@ -236,6 +128,7 @@ class MainActivity : ComponentActivity() {
                         .putString(host, chosen).apply()
                     configureSiteDisplay(webView, currentUrl)
                     webView.reload()
+                    updateInstagramOverlay()
                     Toast.makeText(this, "Modo aplicado a $host", Toast.LENGTH_SHORT).show()
                 }
             }.setNegativeButton("Cancelar", null).show()
@@ -584,6 +477,7 @@ class MainActivity : ComponentActivity() {
         }
         playerLayer = FrameLayout(this).apply { addView(root, FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT)) }
         setContentView(playerLayer)
+        createInstagramOverlay()
         updatePipAutoEnter(false)
         ViewCompat.setOnApplyWindowInsetsListener(root) { v, insets ->
             val b = insets.getInsets(WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.ime())
@@ -641,7 +535,7 @@ class MainActivity : ComponentActivity() {
                 synchronized(mediaCandidateLock) { mediaCandidates.remove(v); mediaRequestOrigins.remove(v); mediaNetworkSignals.remove(v) }
                 t.url = url
                 if (v === webView && !urlBar.hasFocus()) urlBar.setText(url)
-                if (v === webView) updateFavorite()
+                if (v === webView) { updateFavorite(); updateInstagramOverlay() }
             }
             override fun onPageFinished(v: WebView, url: String) {
                 val t = tabs.firstOrNull { it.view === v } ?: return
@@ -649,7 +543,7 @@ class MainActivity : ComponentActivity() {
                 t.url = url
                 if (v === webView) { updateFavorite(); persistTabs() }
                 scanDeclaredMedia(v)
-                configureInstagramMediaGestures(v, url)
+                updateInstagramOverlay()
             }
             override fun doUpdateVisitedHistory(v: WebView, url: String, isReload: Boolean) {
                 if (!isReload && (url.startsWith("https://") || url.startsWith("http://")))
@@ -880,6 +774,7 @@ class MainActivity : ComponentActivity() {
         lastBlockMs = 0
         updateFavorite()
         updateStatus()
+        updateInstagramOverlay()
         persistTabs()
     }
 
@@ -1524,6 +1419,105 @@ class MainActivity : ComponentActivity() {
         }, androidx.core.content.ContextCompat.getMainExecutor(this))
     }
     private val playerDisplay = PlayerDisplayCoordinator()
+    private var instagramOverlay: LinearLayout? = null
+    private fun updateInstagramOverlay() {
+        val overlay = instagramOverlay ?: return
+        val url = tabs.getOrNull(activeIndex)?.view?.url ?: tabs.getOrNull(activeIndex)?.url
+        val host = websiteHost(url)
+        val instagram = host == "instagram.com" || host?.endsWith(".instagram.com") == true
+        overlay.visibility = if (instagram && siteDisplayMode(url) == "hybrid" &&
+            playerPanel == null && !isInPictureInPictureMode) View.VISIBLE else View.GONE
+    }
+
+    private fun createInstagramOverlay() {
+        val audio = getSystemService(Context.AUDIO_SERVICE) as AudioManager
+        val column = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(4, 4, 4, 4)
+            setBackgroundColor(0x990F1720.toInt())
+            elevation = 12f
+            visibility = View.GONE
+        }
+        val pauseButton = Button(this).apply {
+            text = "⏯"
+            contentDescription = "Pausar ou retomar vídeo visível sem abrir Reels"
+            setOnClickListener {
+                val page = webView.url
+                if (Attention.checkNavigation(page ?: "") != null) return@setOnClickListener
+                webView.evaluateJavascript("""(function(){
+                    const videos=[...document.querySelectorAll('video')];
+                    const visible=videos.map(v=>{
+                        const r=v.getBoundingClientRect();
+                        const w=Math.max(0,Math.min(r.right,innerWidth)-Math.max(r.left,0));
+                        const h=Math.max(0,Math.min(r.bottom,innerHeight)-Math.max(r.top,0));
+                        return {v,area:w*h};
+                    }).filter(x=>x.area>0).sort((a,b)=>b.area-a.area);
+                    const v=visible.length?visible[0].v:null;
+                    if(!v)return;
+                    if(v.paused)v.play().catch(()=>{});else v.pause();
+                })()""", null)
+            }
+        }
+        val volumeButton = Button(this).apply {
+            text = "🔊"
+            contentDescription = "Volume: deslize para cima ou para baixo"
+        }
+        val stepHeight = 160f * resources.displayMetrics.density
+        var touchY = 0f
+        var startingVolume = 0
+        var dragging = false
+        volumeButton.setOnTouchListener { view, event ->
+            when (event.actionMasked) {
+                MotionEvent.ACTION_DOWN -> {
+                    touchY = event.rawY
+                    startingVolume = audio.getStreamVolume(AudioManager.STREAM_MUSIC)
+                    dragging = false
+                    view.parent?.requestDisallowInterceptTouchEvent(true)
+                    true
+                }
+                MotionEvent.ACTION_MOVE -> {
+                    val distance = touchY - event.rawY
+                    if (kotlin.math.abs(distance) > 8f * resources.displayMetrics.density)
+                        dragging = true
+                    if (dragging) {
+                        val max = audio.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
+                        val next = (startingVolume + distance / stepHeight * max)
+                            .toInt().coerceIn(0, max)
+                        if (next != audio.getStreamVolume(AudioManager.STREAM_MUSIC))
+                            audio.setStreamVolume(AudioManager.STREAM_MUSIC, next, 0)
+                        volumeButton.text = "${(next * 100 / max.coerceAtLeast(1))}%"
+                    }
+                    true
+                }
+                MotionEvent.ACTION_UP -> {
+                    if (!dragging) {
+                        val now = audio.getStreamVolume(AudioManager.STREAM_MUSIC)
+                        val next = if (now == 0) audio.getStreamMaxVolume(AudioManager.STREAM_MUSIC) / 2 else 0
+                        audio.setStreamVolume(AudioManager.STREAM_MUSIC, next, 0)
+                    }
+                    volumeButton.text = "🔊"
+                    view.parent?.requestDisallowInterceptTouchEvent(false)
+                    true
+                }
+                MotionEvent.ACTION_CANCEL -> {
+                    volumeButton.text = "🔊"
+                    view.parent?.requestDisallowInterceptTouchEvent(false)
+                    true
+                }
+                else -> true
+            }
+        }
+        column.addView(pauseButton, LinearLayout.LayoutParams(64 * resources.displayMetrics.density.toInt().coerceAtLeast(1),
+            WRAP_CONTENT))
+        column.addView(volumeButton, LinearLayout.LayoutParams(
+            MATCH_PARENT, WRAP_CONTENT))
+        playerLayer.addView(column, FrameLayout.LayoutParams(
+            (72f * resources.displayMetrics.density).toInt(), WRAP_CONTENT,
+            android.view.Gravity.END or android.view.Gravity.CENTER_VERTICAL))
+        instagramOverlay = column
+        updateInstagramOverlay()
+    }
+
     private lateinit var playerLayer: FrameLayout
     private var playerPanel: FrameLayout? = null
     private var nativePlayerClose: (() -> Unit)? = null
@@ -2315,6 +2309,7 @@ class MainActivity : ComponentActivity() {
         }
         configureSiteDisplay(webView, url)
         webView.loadUrl(url)
+        updateInstagramOverlay()
         urlBar.clearFocus()
     }
 
