@@ -669,7 +669,8 @@ class MainActivity : ComponentActivity() {
     private fun playPageMediaDirectly() {
         val current = webView
         scanDeclaredMedia(current) {
-            if (tabs.none { it.view === current }) return@scanDeclaredMedia
+            scanYouTubeDeclaredManifests(current) {
+            if (tabs.none { it.view === current }) return@scanYouTubeDeclaredManifests
             val detected = synchronized(mediaCandidateLock) {
                 mediaCandidates[current]?.toList().orEmpty().reversed()
             }
@@ -693,6 +694,7 @@ class MainActivity : ComponentActivity() {
                         .setItems(labels) { _, index -> startMedia3(sources[index]) }
                         .setNegativeButton("Cancelar", null).show()
                 }
+            }
             }
         }
     }
@@ -909,6 +911,63 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    /**
+     * Adaptador experimental: lê somente manifestos declarados pela página atual.
+     * Não decifra assinaturas nem acessa recursos privados ou protegidos.
+     */
+    private fun scanYouTubeDeclaredManifests(view: WebView, after: () -> Unit) {
+        if (youtubeVideoId(view.url) == null) { after(); return }
+        val original = view.url
+        val js = """(function() {
+            const out = [];
+            try {
+                const data = window.ytInitialPlayerResponse;
+                const stream = data && data.streamingData;
+                for (const key of ['hlsManifestUrl', 'dashManifestUrl']) {
+                    const url = stream && stream[key];
+                    if (typeof url !== 'string') continue;
+                    const u = new URL(url, location.href);
+                    if (u.protocol !== 'https:') continue;
+                    out.push({kind:key, url:u.href});
+                }
+            } catch(e) {}
+            return JSON.stringify(out);
+        })()"""
+        view.evaluateJavascript(js) { result ->
+            if (view.url == original && !isDestroyed) {
+                runCatching {
+                    val decoded = org.json.JSONArray("[$result]").getString(0)
+                    val list = org.json.JSONArray(decoded)
+                    var accepted = 0
+                    synchronized(mediaCandidateLock) {
+                        val found = mediaCandidates.getOrPut(view) { LinkedHashSet() }
+                        for (i in 0 until list.length()) {
+                            val obj = list.optJSONObject(i) ?: continue
+                            val kind = obj.optString("kind")
+                            val url = obj.optString("url")
+                            val parsed = Uri.parse(url)
+                            val suffix = if (kind == "hlsManifestUrl") ".m3u8" else ".mpd"
+                            if (kind !in listOf("hlsManifestUrl", "dashManifestUrl") ||
+                                parsed.scheme != "https" || parsed.host.isNullOrBlank()) continue
+                            // Este catálogo existente reconhece apenas manifestos com extensão.
+                            // Se a plataforma usar URLs sem extensão, registrar só a contagem.
+                            if (parsed.path?.lowercase(java.util.Locale.ROOT)?.endsWith(suffix) == true) {
+                                if (found.size >= 60) found.remove(found.first())
+                                if (found.add(url)) accepted++
+                            }
+                        }
+                    }
+                    android.util.Log.i("NavegadorMedia3",
+                        "YouTubeManifestosDeclarados: recebidos=${list.length()}, catalogados=$accepted")
+                }.onFailure {
+                    android.util.Log.w("NavegadorMedia3",
+                        "Erro ao ler manifestos declarados: ${it.javaClass.simpleName}")
+                }
+            }
+            after()
+        }
+    }
+
     private fun showYouTubeDetectedNotice() {
         val current = webView
         val signals = synchronized(mediaCandidateLock) {
@@ -934,7 +993,12 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun showRequestMediaCandidates() {
-        scanDeclaredMedia(webView) { showDetectedMediaDialog() }
+        val current = webView
+        scanDeclaredMedia(current) {
+            scanYouTubeDeclaredManifests(current) {
+                if (current === webView && !isFinishing && !isDestroyed) showDetectedMediaDialog()
+            }
+        }
     }
 
     private fun showDetectedMediaDialog() {
