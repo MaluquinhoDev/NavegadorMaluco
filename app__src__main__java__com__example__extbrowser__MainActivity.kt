@@ -1586,6 +1586,7 @@ class MainActivity : ComponentActivity() {
     private fun showSeuImpostoToolsMenu() {
         AlertDialog.Builder(this).setTitle("Seu Imposto · chat")
             .setItems(arrayOf(
+                "Abrir chat no motor Firefox · GeckoView",
                 "Diagnóstico · resumo, foco e rede",
                 "Digitar mensagem pelo Android",
                 "Rastrear origem da reconstrução (sem bloqueios)",
@@ -1593,13 +1594,23 @@ class MainActivity : ComponentActivity() {
                 "Experimentos anteriores · teclado e DOM"
             )) { _, selected ->
                 when (selected) {
-                    0 -> showSeuImpostoDiagnostic()
-                    1 -> showSeuImpostoNativeChatInput()
-                    2 -> startSeuImpostoOriginTrace()
-                    3 -> toggleSeuImpostoPlainChromeUa()
-                    4 -> showSeuImpostoLegacyTests()
+                    0 -> openSeuImpostoInGecko()
+                    1 -> showSeuImpostoDiagnostic()
+                    2 -> showSeuImpostoNativeChatInput()
+                    3 -> startSeuImpostoOriginTrace()
+                    4 -> toggleSeuImpostoPlainChromeUa()
+                    5 -> showSeuImpostoLegacyTests()
                 }
             }.show()
+    }
+
+    private fun openSeuImpostoInGecko() {
+        val currentUrl = webView.url ?: tabs.getOrNull(activeIndex)?.url
+        val target = currentUrl?.takeIf { isSeuImposto(it) }
+            ?: "https://seuimposto.com/#chat"
+        startActivity(Intent(this, GeckoBrowserActivity::class.java).apply {
+            putExtra(GeckoBrowserActivity.EXTRA_URL, target)
+        })
     }
 
     private fun showSeuImpostoLegacyTests() {
