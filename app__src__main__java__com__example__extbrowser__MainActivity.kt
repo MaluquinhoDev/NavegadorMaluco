@@ -1651,7 +1651,7 @@ class MainActivity : ComponentActivity() {
             }
         }
         val experimentalAudioButton = Button(this).apply {
-            text = "Teste de áudio (desligado)"
+            text = "Ativar áudio · teste"
             contentDescription = "Experimento manual e isolado de áudio no vídeo ativo"
             setOnClickListener {
                 val currentUrl = webView.url
@@ -1666,31 +1666,36 @@ class MainActivity : ComponentActivity() {
                 AlertDialog.Builder(this@MainActivity)
                     .setTitle("Experimento de áudio · Instagram")
                     .setMessage("Essa função é opcional e fica desligada até você confirmar. " +
-                        "Ela tenta alterar apenas o mute do vídeo HTML5 que está tocando e " +
-                        "mais visível, sem iniciar ou pausar vídeos. O Instagram pode rejeitar a alteração.")
+                        "Ela tenta desmutar somente o vídeo HTML5 visível, priorizando " +
+                        "o que está reproduzindo. Não inicia nem pausa vídeos. Se o som " +
+                        "continuar ausente, confira também o volume do Android.")
                     .setNegativeButton("Cancelar", null)
                     .setPositiveButton("Testar agora") { _, _ ->
                         webView.evaluateJavascript("""(function(){
                             const candidates=[...document.querySelectorAll('video')]
-                                .filter(v=>!v.paused&&!v.ended)
+                                .filter(v=>!v.ended)
                                 .map(v=>{
                                     const r=v.getBoundingClientRect();
                                     const w=Math.max(0,Math.min(r.right,innerWidth)-Math.max(0,r.left));
                                     const h=Math.max(0,Math.min(r.bottom,innerHeight)-Math.max(0,r.top));
                                     return {v,area:w*h};
-                                }).filter(x=>x.area>0).sort((a,b)=>b.area-a.area);
-                            if(!candidates.length)return JSON.stringify({status:'no_active'});
+                                }).filter(x=>x.area>0)
+                                .sort((a,b)=>(Number(!b.v.paused)-Number(!a.v.paused))||b.area-a.area);
+                            if(!candidates.length)return JSON.stringify({status:'no_visible'});
                             const v=candidates[0].v, before=v.muted;
-                            v.muted=!before;
-                            window.__nmAudioProbe={video:v,expected:!before,before:before};
-                            return JSON.stringify({status:'attempted',before:before,after:v.muted});
+                            // O comando é sempre DESMUTAR, nunca alternar para silêncio.
+                            // Não invoca play() e não altera volume do Android.
+                            if(v.muted)v.muted=false;
+                            window.__nmAudioProbe={video:v,expected:false,before:before};
+                            return JSON.stringify({status:'attempted',before:before,
+                                after:v.muted,paused:v.paused});
                         })()""") { raw ->
                             val first = runCatching {
                                 org.json.JSONObject(org.json.JSONArray("[$raw]").getString(0))
                             }.getOrNull()
                             if (first?.optString("status") != "attempted") {
                                 Toast.makeText(this@MainActivity,
-                                    "Não foi encontrado vídeo ativo e visível",
+                                    "Não foi encontrado vídeo visível nesta página",
                                     Toast.LENGTH_SHORT).show()
                                 return@evaluateJavascript
                             }
@@ -1711,8 +1716,8 @@ class MainActivity : ComponentActivity() {
                                     val message = if (data?.optString("status") != "checked")
                                         "O vídeo ativo mudou antes da verificação."
                                     else if (maintained)
-                                        "O estado HTML5 foi mantido após 500 ms. " +
-                                            "Isso ainda não garante que a interface do Instagram reconheceu o comando."
+                                        "Vídeo desmutado após 500 ms. Se ainda estiver sem áudio, " +
+                                            "confira o volume do Android ou o próprio Instagram."
                                     else
                                         "O Instagram ou a página reverteu o estado de áudio solicitado."
                                     AlertDialog.Builder(this@MainActivity)
