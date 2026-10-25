@@ -151,7 +151,15 @@ class MainActivity : ComponentActivity() {
                 view.settings.loadWithOverviewMode = desktop
             }
             else -> {
-                view.settings.userAgentString = defaultWebUserAgent
+                // Teste A/B limitado ao Seu Imposto: identifica-se como Chrome
+                // móvel sem o marcador WebView. O motor continua sendo WebView.
+                val plainChrome = isSeuImposto(url) &&
+                    getSharedPreferences("seuimposto_diagnostic", MODE_PRIVATE)
+                        .getBoolean("plain_chrome_ua", false)
+                view.settings.userAgentString = if (plainChrome)
+                    defaultWebUserAgent.replace("; wv)", ")")
+                        .replace(" Version/4.0", "")
+                    else defaultWebUserAgent
                 view.settings.useWideViewPort = false
                 view.settings.loadWithOverviewMode = false
             }
@@ -1563,7 +1571,8 @@ class MainActivity : ComponentActivity() {
                 "Bloqueio experimental do FORM · Seu Imposto",
                 "Diagnóstico de origem · sem bloqueios",
                 "Proteção experimental FORM + SECTION",
-                "Digitar no chat pelo Android · Seu Imposto")) { _, which ->
+                "Digitar no chat pelo Android · Seu Imposto",
+                "Teste de identificação Chrome · Seu Imposto")) { _, which ->
                 when (which) {
                     0 -> extLauncher.launch(Intent(this, ExtensionsActivity::class.java).apply {
                         putExtra("attention_current_page", webView.url ?: tabs[activeIndex].url)
@@ -1583,6 +1592,7 @@ class MainActivity : ComponentActivity() {
                     13 -> startSeuImpostoOriginTrace()
                     14 -> toggleSeuImpostoSubtreeGuard()
                     15 -> showSeuImpostoNativeChatInput()
+                    16 -> toggleSeuImpostoPlainChromeUa()
                 }
             }.show()
     }
@@ -1853,6 +1863,24 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    private fun toggleSeuImpostoPlainChromeUa() {
+        val page = webView
+        if (!isSeuImposto(page.url)) {
+            Toast.makeText(this, "Abra seuimposto.com antes deste teste", Toast.LENGTH_LONG).show()
+            return
+        }
+        val prefs = getSharedPreferences("seuimposto_diagnostic", MODE_PRIVATE)
+        val enabled = !prefs.getBoolean("plain_chrome_ua", false)
+        prefs.edit().putBoolean("plain_chrome_ua", enabled).apply()
+        configureSiteDisplay(page, page.url)
+        // Mantém cookies e armazenamento; altera apenas a identificação.
+        page.reload()
+        Toast.makeText(this,
+            if (enabled) "Teste Chrome móvel ativado apenas para Seu Imposto"
+            else "Identificação WebView original restaurada",
+            Toast.LENGTH_LONG).show()
+    }
+
     private fun toggleSeuImpostoKeyboardCompat() {
         if (!isSeuImposto(webView.url)) {
             Toast.makeText(this, "Abra seuimposto.com antes deste teste", Toast.LENGTH_LONG).show()
@@ -1936,6 +1964,9 @@ class MainActivity : ComponentActivity() {
                     "${packageInfo?.versionName ?: ""}")
                 appendLine("Modo: ${siteDisplayMode(page.url)}")
                 appendLine("User-Agent: ${page.settings.userAgentString}")
+                appendLine("Teste UA Chrome comum: " +
+                    getSharedPreferences("seuimposto_diagnostic", MODE_PRIVATE)
+                        .getBoolean("plain_chrome_ua", false))
                 appendLine("JavaScript: ${page.settings.javaScriptEnabled}")
                 appendLine("DOM Storage: ${page.settings.domStorageEnabled}")
                 appendLine("Cookies de terceiros: " +
