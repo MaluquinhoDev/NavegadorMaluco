@@ -151,19 +151,25 @@ class MainActivity : ComponentActivity() {
                 view.settings.loadWithOverviewMode = desktop
             }
             else -> {
-                // Teste A/B limitado ao Seu Imposto: identifica-se como Chrome
-                // móvel sem o marcador WebView. O motor continua sendo WebView.
-                val plainChrome = isSeuImposto(url) &&
-                    getSharedPreferences("seuimposto_diagnostic", MODE_PRIVATE)
-                        .getBoolean("plain_chrome_ua", false)
-                view.settings.userAgentString = if (plainChrome)
-                    defaultWebUserAgent.replace("; wv)", ")")
+                // Teste controlado de identidade: o motor permanece Chromium.
+                val uaMode = if (isSeuImposto(url)) seuImpostoUaProbe() else "webview"
+                view.settings.userAgentString = when (uaMode) {
+                    "chrome" -> defaultWebUserAgent.replace("; wv)", ")")
                         .replace(" Version/4.0", "")
-                    else defaultWebUserAgent
+                    "firefox" -> "Mozilla/5.0 (Android 16; Mobile; rv:140.0) " +
+                        "Gecko/140.0 Firefox/140.0"
+                    else -> defaultWebUserAgent
+                }
                 view.settings.useWideViewPort = false
                 view.settings.loadWithOverviewMode = false
             }
         }
+    }
+
+    private fun seuImpostoUaProbe(): String {
+        val prefs = getSharedPreferences("seuimposto_diagnostic", MODE_PRIVATE)
+        return prefs.getString("ua_probe", null) ?: if (prefs.getBoolean("plain_chrome_ua", false))
+            "chrome" else "webview"
     }
 
     private fun showSiteDisplayModes() {
@@ -1572,7 +1578,7 @@ class MainActivity : ComponentActivity() {
                 "Diagnóstico de origem · sem bloqueios",
                 "Proteção experimental FORM + SECTION",
                 "Digitar no chat pelo Android · Seu Imposto",
-                "Teste de identificação Chrome · Seu Imposto")) { _, which ->
+                "Comparar UA WebView/Chrome/Firefox · Seu Imposto")) { _, which ->
                 when (which) {
                     0 -> extLauncher.launch(Intent(this, ExtensionsActivity::class.java).apply {
                         putExtra("attention_current_page", webView.url ?: tabs[activeIndex].url)
@@ -1869,16 +1875,21 @@ class MainActivity : ComponentActivity() {
             Toast.makeText(this, "Abra seuimposto.com antes deste teste", Toast.LENGTH_LONG).show()
             return
         }
-        val prefs = getSharedPreferences("seuimposto_diagnostic", MODE_PRIVATE)
-        val enabled = !prefs.getBoolean("plain_chrome_ua", false)
-        prefs.edit().putBoolean("plain_chrome_ua", enabled).apply()
-        configureSiteDisplay(page, page.url)
-        // Mantém cookies e armazenamento; altera apenas a identificação.
-        page.reload()
-        Toast.makeText(this,
-            if (enabled) "Teste Chrome móvel ativado apenas para Seu Imposto"
-            else "Identificação WebView original restaurada",
-            Toast.LENGTH_LONG).show()
+        val modes = arrayOf("webview", "chrome", "firefox")
+        val labels = arrayOf("WebView original", "Chrome móvel (simulado)",
+            "Firefox móvel (simulado)")
+        val selected = modes.indexOf(seuImpostoUaProbe()).coerceAtLeast(0)
+        AlertDialog.Builder(this).setTitle("Comparar identificação do navegador")
+            .setSingleChoiceItems(labels, selected) { dialog, chosen ->
+                dialog.dismiss()
+                getSharedPreferences("seuimposto_diagnostic", MODE_PRIVATE).edit()
+                    .putString("ua_probe", modes[chosen]).apply()
+                configureSiteDisplay(page, page.url)
+                // Conserva cookies e storage, mudando somente a identificação.
+                page.reload()
+                Toast.makeText(this, "Identificação: ${labels[chosen]}",
+                    Toast.LENGTH_LONG).show()
+            }.setNegativeButton("Cancelar", null).show()
     }
 
     private fun toggleSeuImpostoKeyboardCompat() {
@@ -1964,9 +1975,7 @@ class MainActivity : ComponentActivity() {
                     "${packageInfo?.versionName ?: ""}")
                 appendLine("Modo: ${siteDisplayMode(page.url)}")
                 appendLine("User-Agent: ${page.settings.userAgentString}")
-                appendLine("Teste UA Chrome comum: " +
-                    getSharedPreferences("seuimposto_diagnostic", MODE_PRIVATE)
-                        .getBoolean("plain_chrome_ua", false))
+                appendLine("Identificação em teste: ${seuImpostoUaProbe()}")
                 appendLine("JavaScript: ${page.settings.javaScriptEnabled}")
                 appendLine("DOM Storage: ${page.settings.domStorageEnabled}")
                 appendLine("Cookies de terceiros: " +
