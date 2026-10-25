@@ -799,12 +799,12 @@ class MainActivity : ComponentActivity() {
             mediaNetworkSignals[webView]?.toMap().orEmpty()
         }
         val summary = if (signals.isEmpty()) "Nenhum sinal de mídia observado." else
-            signals.entries.joinToString("\\n") { "${it.key}: ${it.value} requisição(ões)" }
+            signals.entries.joinToString("\n") { "${it.key}: ${it.value} requisição(ões)" }
         android.util.Log.i("NavegadorMedia3", "DiagnosticoYouTube: " +
             (if (signals.isEmpty()) "sem_sinais" else
                 signals.entries.joinToString("; ") { "${it.key}=${it.value}" }))
         AlertDialog.Builder(this).setTitle("Diagnóstico de vídeo YouTube")
-            .setMessage("Página de vídeo reconhecida. Requisições observadas:\\n\\n$summary\\n\\n" +
+            .setMessage("Página de vídeo reconhecida. Requisições observadas:\n\n$summary\n\n" +
                 "Isso não prova a existência de um manifesto utilizável pelo Media3. " +
                 "A WebView pode não expor todos os fluxos da página.")
             .setPositiveButton("Voltar ao vídeo") { _, _ -> webView.requestFocus() }
