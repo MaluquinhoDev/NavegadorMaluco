@@ -1739,14 +1739,14 @@ class MainActivity : ComponentActivity() {
             Toast.makeText(this, "Este Android não oferece Picture-in-Picture", Toast.LENGTH_LONG).show()
             return
         }
-        try {
-            if (!isInPictureInPictureMode) {
-                val entered = enterPictureInPictureMode(pipParams(false))
-                if (!entered) Toast.makeText(this, "PiP não autorizado nas configurações do Android", Toast.LENGTH_LONG).show()
-            }
-        } catch (e: Exception) {
-            Toast.makeText(this, "PiP indisponível: ${e.message}", Toast.LENGTH_LONG).show()
+        if (miniController?.currentMediaItem == null) {
+            Toast.makeText(this, "Abra um vídeo no Media3 antes de ativar PiP", Toast.LENGTH_SHORT).show()
+            return
         }
+        // A Activity do navegador NÃO entra em PiP: só a Activity exclusiva do vídeo.
+        // A sessão Media3 continua tocando enquanto a superfície migra de janela.
+        closeNativePlayer()
+        startActivity(Intent(this, VideoPipActivity::class.java))
     }
 
     override fun onUserLeaveHint() {
