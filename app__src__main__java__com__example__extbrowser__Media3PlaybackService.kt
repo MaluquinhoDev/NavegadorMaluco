@@ -30,7 +30,7 @@ class Media3PlaybackService : MediaSessionService() {
         override fun run() {
             val exo = player ?: return
             val pageUrl = exo.currentMediaItem?.mediaMetadata?.extras
-                ?.getString("nm_page_origin")
+                ?.getString("nm_attention_page")
             val now = SystemClock.elapsedRealtime()
             val delta = if (exo.isPlaying && lastMediaTickMs > 0L)
                 (now - lastMediaTickMs).coerceIn(0L, 1500L) else 0L
