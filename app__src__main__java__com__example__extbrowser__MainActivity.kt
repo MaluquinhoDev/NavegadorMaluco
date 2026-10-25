@@ -1364,7 +1364,7 @@ class MainActivity : ComponentActivity() {
         // Aviso independente dos controles que podem sumir na tela cheia.
         val attentionBanner = TextView(this).apply {
             setTextColor(android.graphics.Color.WHITE)
-            setBackgroundColor(0xCC9A321A.toInt())
+            setBackgroundColor(0xAA202B3A.toInt())
             gravity = android.view.Gravity.CENTER
             textSize = 14f
             setPadding(12, 8, 12, 8)
@@ -1449,33 +1449,17 @@ class MainActivity : ComponentActivity() {
                         ?.getString("nm_attention_page")
                     val attentionStatus = Attention.status(attentionPage)
                     val secondsLeft = Attention.mediaRemainingSeconds(attentionPage)
-                    attentionBanner.visibility =
-                        if (attentionStatus == null || c.currentMediaItem == null)
-                            View.GONE else View.VISIBLE
-                    if (attentionStatus != null) {
-                        val site = attentionStatus.site
-                        val today = AttentionLogic.formatTime(attentionStatus.usedSeconds)
-                        val daily = if (site.dailyMinutes > 0)
-                            "$today de ${site.dailyMinutes} min" else "$today (sem limite)"
-                        val session = if (site.sessionMinutes > 0)
-                            "sessão · ${site.sessionMinutes} min" else "sessão sem limite"
-                        val lastMinute = secondsLeft != null && secondsLeft <= 60L
-                        val leftText = if (secondsLeft != null)
-                            AttentionLogic.formatTime(secondsLeft) else ""
-                        attentionBanner.text = when {
-                            secondsLeft == 0L ->
-                                "⏳ ${site.domain} · limite atingido · reprodução bloqueada"
-                            lastMinute ->
-                                "⏳ ${site.domain} · hoje $daily · falta $leftText, " +
-                                    "depois pausa de ${attentionStatus.breakMinutes} min"
-                            else -> "⏳ ${site.domain} · hoje $daily · $session"
-                        }
-                        // Mesma convenção do indicador do Controle de Atenção:
-                        // informação normal, destaque vermelho no último minuto.
-                        attentionBanner.setTextColor(
-                            if (lastMinute) 0xFFC62828.toInt() else android.graphics.Color.WHITE)
-                        attentionBanner.setBackgroundColor(
-                            if (lastMinute) 0xEEFFFFFF.toInt() else 0xAA202B3A.toInt())
+                    // Modo Tranquilo: um aviso discreto somente nos cinco minutos finais,
+                    // sem números que diminuem nem cor de urgência.
+                    val nearEnd = secondsLeft != null && secondsLeft in 1L..300L
+                    val ended = secondsLeft == 0L
+                    attentionBanner.visibility = if (attentionStatus != null &&
+                        c.currentMediaItem != null && (nearEnd || ended))
+                        View.VISIBLE else View.GONE
+                    if (attentionStatus != null && (nearEnd || ended)) {
+                        attentionBanner.text = if (ended)
+                            "☕ Sua sessão terminou. Hora de descansar."
+                        else "☕ Sua pausa está se aproximando. Aproveite para concluir o vídeo."
                     }
                     val duration = c.duration
                     val pos = c.currentPosition.coerceAtLeast(0L)
@@ -2063,21 +2047,23 @@ class MainActivity : ComponentActivity() {
         }
     }
     private fun updateStatus() {
-        if (isInPictureInPictureMode) { statusView.visibility = View.GONE; return }
-        if (tabs.isEmpty()) return
-        val st = Attention.status(webView.url)
-        if (st == null) { statusView.visibility = View.GONE; return }
-        val s = st.site
-        val used = AttentionLogic.formatTime(st.usedSeconds)
-        val today = if (s.dailyMinutes > 0) "$used de ${s.dailyMinutes} min" else "$used (sem limite)"
-        val session = AttentionLogic.formatTime(st.sessionSeconds) +
-            (if (st.sessionLimitSeconds > 0) " de ${s.sessionMinutes} min" else "")
-        var line = "⏳ ${s.domain} · hoje $today · sessão $session"
-        val remaining = st.sessionLimitSeconds - st.sessionSeconds
-        val lastMinute = st.sessionLimitSeconds > 0 && remaining <= 60
-        if (lastMinute) line += " · falta ${AttentionLogic.formatTime(remaining)}, depois pausa de ${st.breakMinutes} min"
-        statusView.text = line
-        statusView.setTextColor(if (lastMinute) 0xFFC62828.toInt() else statusDefaultColor)
+        if (isInPictureInPictureMode || tabs.isEmpty()) {
+            statusView.visibility = View.GONE
+            return
+        }
+        val page = webView.url
+        val st = Attention.status(page)
+        if (st == null) {
+            statusView.visibility = View.GONE
+            return
+        }
+        // Modo Tranquilo: apenas estado estável, sem relógio progressivo.
+        // O bloqueio e a contabilização continuam sob responsabilidade de Attention.
+        val blocked = Attention.checkNavigation(page) != null
+        statusView.text = if (blocked)
+            "☕ ${st.site.domain} · sessão concluída. Hora de descansar."
+        else "✓ ${st.site.domain} · Controle de Atenção ativo"
+        statusView.setTextColor(statusDefaultColor)
         statusView.visibility = View.VISIBLE
     }
     /** Mantém as mesmas instâncias de WebView e abas durante a rotação.
