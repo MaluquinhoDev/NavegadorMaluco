@@ -1419,34 +1419,6 @@ class MainActivity : ComponentActivity() {
         }, androidx.core.content.ContextCompat.getMainExecutor(this))
     }
     private val playerDisplay = PlayerDisplayCoordinator()
-    // O Instagram controla 'muted' dentro do próprio HTML5. O volume do
-    // Android sozinho não desfaz esse silêncio. Sincroniza apenas quando o
-    // usuário manipula explicitamente nosso controle e o site está permitido.
-    private fun syncInstagramAudio(enabled: Boolean) {
-        val url = tabs.getOrNull(activeIndex)?.view?.url ?: return
-        val host = websiteHost(url)
-        if ((host != "instagram.com" && host?.endsWith(".instagram.com") != true) ||
-            siteDisplayMode(url) != "hybrid" ||
-            Attention.checkNavigation(url) != null) return
-        val js = """(function(allowSound){
-            const videos = document.querySelectorAll('video');
-            for (const video of videos) {
-                if (!video.isConnected) continue;
-                const box = video.getBoundingClientRect();
-                if (box.bottom <= 0 || box.top >= innerHeight ||
-                    box.right <= 0 || box.left >= innerWidth) continue;
-                if (allowSound) {
-                    video.muted = false;
-                    video.defaultMuted = false;
-                    video.volume = 1;
-                } else {
-                    video.muted = true;
-                }
-            }
-        })(${if (enabled) "true" else "false"})"""
-        webView.evaluateJavascript(js, null)
-    }
-
     private var instagramOverlay: LinearLayout? = null
     private fun updateInstagramOverlay() {
         val overlay = instagramOverlay ?: return
@@ -1517,7 +1489,6 @@ class MainActivity : ComponentActivity() {
             setOnClickListener {
                 audio.setStreamVolume(AudioManager.STREAM_MUSIC, 0, 0)
                 slider.progress = 0
-                syncInstagramAudio(false)
             }
         }
         val sideButton = Button(this).apply {
@@ -1558,7 +1529,6 @@ class MainActivity : ComponentActivity() {
             override fun onProgressChanged(bar: android.widget.SeekBar?, value: Int, fromUser: Boolean) {
                 if (fromUser) {
                     audio.setStreamVolume(AudioManager.STREAM_MUSIC, value, 0)
-                    syncInstagramAudio(value > 0)
                 }
                 val max = audio.getStreamMaxVolume(AudioManager.STREAM_MUSIC).coerceAtLeast(1)
                 percent.text = "${value * 100 / max}%"
@@ -1593,7 +1563,6 @@ class MainActivity : ComponentActivity() {
                         val target = (initial + delta / stepHeight * max).toInt().coerceIn(0, max)
                         if (target != audio.getStreamVolume(AudioManager.STREAM_MUSIC))
                             audio.setStreamVolume(AudioManager.STREAM_MUSIC, target, 0)
-                        syncInstagramAudio(target > 0)
                         expand()
                     }
                     true
