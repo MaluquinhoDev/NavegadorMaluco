@@ -1732,6 +1732,10 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun enterPip() {
+        if (VideoPipActivity.active) {
+            Toast.makeText(this, "O vídeo já está em uma janela PiP", Toast.LENGTH_SHORT).show()
+            return
+        }
         if (!pipAvailable()) {
             Toast.makeText(this, "Este Android não oferece Picture-in-Picture", Toast.LENGTH_LONG).show()
             return
