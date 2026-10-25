@@ -208,28 +208,33 @@ class MainActivity : ComponentActivity() {
                 if (id == EditorInfo.IME_ACTION_GO) { navigate(text.toString()); true } else false
             }
         }
-        val extButton = Button(this).apply {
-            text = "Ext"
-            setOnClickListener { extLauncher.launch(Intent(this@MainActivity, ExtensionsActivity::class.java)) }
-        }
         tabsButton = Button(this).apply { text = "Abas"; setOnClickListener { showTabs() } }
         favoriteButton = Button(this).apply { text = "☆"; setOnClickListener { toggleFavorite() } }
-        val savedButton = Button(this).apply { text = "☰"; setOnClickListener { showLibrary() } }
-        // Duas linhas: a barra de URL ocupa toda a largura disponível.
-        // Os botões ficam separados para não comprimir a digitação no celular.
+        val backButton = Button(this).apply {
+            text = "‹"
+            contentDescription = "Voltar na página"
+            setOnClickListener { if (webView.canGoBack()) webView.goBack() }
+        }
+        val forwardButton = Button(this).apply {
+            text = "›"
+            contentDescription = "Avançar na página"
+            setOnClickListener { if (webView.canGoForward()) webView.goForward() }
+        }
+        val mediaButton = Button(this).apply { text = "Mídia"; setOnClickListener { showMediaMenu() } }
+        val menuButton = Button(this).apply { text = "Menu"; setOnClickListener { showMainMenu() } }
+        // Navegação frequente em uma linha; endereço na linha superior.
         val actions = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
-            addView(favoriteButton, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
-            addView(tabsButton, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
-            addView(savedButton, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
-            addView(extButton, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
+            listOf(backButton, forwardButton, tabsButton, mediaButton, menuButton).forEach {
+                addView(it, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
+            }
         }
         browserBar = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             addView(urlBar, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
             addView(actions, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
         }
-        statusView = TextView(this).apply { textSize = 12f; visibility = View.GONE; setPadding(16, 4, 16, 4) }
+                statusView = TextView(this).apply { textSize = 12f; visibility = View.GONE; setPadding(16, 4, 16, 4) }
         statusDefaultColor = statusView.currentTextColor
         webHost = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         val root = LinearLayout(this).apply {
@@ -617,21 +622,68 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    private fun showMainMenu() {
+        AlertDialog.Builder(this).setTitle("NavegadorMaluco")
+            .setItems(arrayOf("Biblioteca", "Mídia", "Ferramentas", "Favoritar / desfavoritar")) { _, which ->
+                when (which) {
+                    0 -> showLibrary()
+                    1 -> showMediaMenu()
+                    2 -> showToolsMenu()
+                    3 -> toggleFavorite()
+                }
+            }.show()
+    }
+
     private fun showLibrary() {
-        val audioLabel = "Áudio em segundo plano: " + (if (backgroundAudioEnabled) "ligado" else "desligado")
         AlertDialog.Builder(this).setTitle("Biblioteca")
-            .setItems(arrayOf("Favoritos", "Histórico", audioLabel, "Vídeo em janela flutuante (PiP)", "Player nativo: abrir URL de mídia", "Player nativo: tentar mídia da página", "Vídeos detectados", "Media3: retomar na página", "Player nativo: abrir vídeo", "▶ Reproduzir mídia desta página")) { _, which ->
+            .setItems(arrayOf("Favoritos", "Histórico")) { _, which ->
                 when (which) {
                     0 -> showSavedPages(true)
                     1 -> showSavedPages(false)
-                    2 -> toggleBackgroundAudio()
+                }
+            }.show()
+    }
+
+    private fun showMediaMenu() {
+        AlertDialog.Builder(this).setTitle("Mídia")
+            .setItems(arrayOf(
+                "▶ Reproduzir mídia desta página",
+                "Vídeos detectados",
+                "Abrir player nativo",
+                "Janela flutuante (PiP)",
+                "Mais opções de mídia"
+            )) { _, which ->
+                when (which) {
+                    0 -> playPageMediaDirectly()
+                    1 -> showRequestMediaCandidates()
+                    2 -> showNativeVideoPlayer()
                     3 -> enterPip()
-                    4 -> promptNativeMediaUrl()
-                    5 -> tryNativeMediaFromPage()
-                    6 -> showRequestMediaCandidates()
-                    7 -> returnMedia3ToPage()
-                    8 -> showNativeVideoPlayer()
-                    9 -> playPageMediaDirectly()
+                    4 -> showMediaOptions()
+                }
+            }.show()
+    }
+
+    private fun showMediaOptions() {
+        val audioLabel = "Áudio da WebView em segundo plano: " +
+            (if (backgroundAudioEnabled) "ligado" else "desligado")
+        AlertDialog.Builder(this).setTitle("Opções de mídia")
+            .setItems(arrayOf(audioLabel, "Abrir URL de mídia", "Tentar mídia da página",
+                "Retomar reprodução na página")) { _, which ->
+                when (which) {
+                    0 -> toggleBackgroundAudio()
+                    1 -> promptNativeMediaUrl()
+                    2 -> tryNativeMediaFromPage()
+                    3 -> returnMedia3ToPage()
+                }
+            }.show()
+    }
+
+    private fun showToolsMenu() {
+        AlertDialog.Builder(this).setTitle("Ferramentas")
+            .setItems(arrayOf("Extensões", "Opções avançadas de mídia")) { _, which ->
+                when (which) {
+                    0 -> extLauncher.launch(Intent(this, ExtensionsActivity::class.java))
+                    1 -> showMediaOptions()
                 }
             }.show()
     }
