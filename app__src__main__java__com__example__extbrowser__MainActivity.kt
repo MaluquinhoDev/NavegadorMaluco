@@ -1092,13 +1092,25 @@ class MainActivity : ComponentActivity() {
                     const traceRemoval=(method,node)=>{
                         if(!focused||!node||
                             !(node===focused||(node.contains&&node.contains(focused))))return;
-                        const names=(new Error().stack||'').split('\n').slice(2,8)
+                        const frames=(new Error().stack||'').split('\n').slice(2,10)
                             .map(line=>{
                                 const m=line.match(/^\s*at\s+([^\s(]+)/);
-                                return m?m[1].replace(/[^\w.$<>-]/g,'').slice(0,60):'anonymous';
+                                const fn=m?m[1].replace(/[^\w.$<>-]/g,'').slice(0,60):'anonymous';
+                                // Apenas arquivo e posição. Descarta host, caminho, query e hash.
+                                const where=line.match(/(?:https?:\/\/[^\s)]+|<anonymous>):(\d+):(\d+)/);
+                                let source='indisponível';
+                                if(where){
+                                    const url=where[0].slice(0,-where[1].length-where[2].length-2);
+                                    try {
+                                        const file=new URL(url).pathname.split('/').pop()||'script';
+                                        source=file.replace(/[^A-Za-z0-9._-]/g,'').slice(0,56);
+                                    }catch(_){source='script';}
+                                    source+=':'+where[1]+':'+where[2];
+                                }
+                                return {fn,source};
                             });
                         trace.events.push({t:Date.now()%600000,method,
-                            removedTag:node.nodeName||'?',functions:names});
+                            removedTag:node.nodeName||'?',functions:frames.map(f=>f.fn),frames});
                         if(trace.events.length>12)trace.events.shift();
                     };
                     const removeChild=Node.prototype.removeChild;
@@ -1525,7 +1537,8 @@ class MainActivity : ComponentActivity() {
                 "Área visual estável · Seu Imposto",
                 "Experimento de eventos resize · Seu Imposto",
                 "Rastrear remoção do formulário · Seu Imposto",
-                "Bloqueio experimental do FORM · Seu Imposto")) { _, which ->
+                "Bloqueio experimental do FORM · Seu Imposto",
+                "Diagnóstico de origem · sem bloqueios")) { _, which ->
                 when (which) {
                     0 -> extLauncher.launch(Intent(this, ExtensionsActivity::class.java).apply {
                         putExtra("attention_current_page", webView.url ?: tabs[activeIndex].url)
@@ -1542,6 +1555,7 @@ class MainActivity : ComponentActivity() {
                     10 -> showSeuImpostoResizeExperiment()
                     11 -> toggleSeuImpostoRemovalTrace()
                     12 -> toggleSeuImpostoFormGuard()
+                    13 -> startSeuImpostoOriginTrace()
                 }
             }.show()
     }
@@ -1696,6 +1710,23 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    private fun startSeuImpostoOriginTrace() {
+        if (!isSeuImposto(webView.url)) {
+            Toast.makeText(this, "Abra seuimposto.com antes do diagnóstico", Toast.LENGTH_LONG).show()
+            return
+        }
+        webView.evaluateJavascript("""(function(){
+            sessionStorage.setItem('__nmTraceFormRemoval','1');
+            sessionStorage.setItem('__nmGuardFormRemoval','0');
+            sessionStorage.setItem('__nmResizeProbeMode','normal');
+            return true;
+        })()""") {
+            Toast.makeText(this, "Rastreamento de origem ligado, sem bloqueios",
+                Toast.LENGTH_LONG).show()
+            webView.reload()
+        }
+    }
+
     private fun toggleSeuImpostoKeyboardCompat() {
         if (!isSeuImposto(webView.url)) {
             Toast.makeText(this, "Abra seuimposto.com antes deste teste", Toast.LENGTH_LONG).show()
@@ -1797,6 +1828,13 @@ class MainActivity : ComponentActivity() {
                         "método=${e.optString("method")} " +
                         "nó=${e.optString("removedTag")}")
                     appendLine("  funções=${e.optJSONArray("functions")?.toString() ?: "[]"}")
+                    val frames = e.optJSONArray("frames")
+                    if (frames != null) {
+                        for (j in 0 until frames.length()) {
+                            val frame = frames.optJSONObject(j) ?: continue
+                            appendLine("  origem=${frame.optString("fn")} @ ${frame.optString("source")}")
+                        }
+                    }
                 }
                 appendLine("Compatibilidade teclado: " +
                     getSharedPreferences("seuimposto_diagnostic", MODE_PRIVATE)
