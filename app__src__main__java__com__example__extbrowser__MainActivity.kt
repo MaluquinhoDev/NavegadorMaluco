@@ -1470,6 +1470,8 @@ class MainActivity : ComponentActivity() {
             filling = !filling
             aspectButton.text = if (filling) "Preencher" else "Ajustar"
             updateVideoAspect()
+            // Confere de novo depois que a SurfaceView atualizar o enquadramento.
+            panel.postDelayed({ if (!closed) enforceAttentionForPlayerControls() }, 250L)
         }
         val hideControls = Runnable { if (!closed && player?.isPlaying == true &&
             !seeking && !isInPictureInPictureMode) outer.visibility = View.GONE }
@@ -1603,11 +1605,15 @@ class MainActivity : ComponentActivity() {
             }
         }
         rotate.setOnClickListener {
+            enforceAttentionForPlayerControls()
             requestedOrientation = if (resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE)
                 android.content.pm.ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
             else android.content.pm.ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
         }
-        fullscreenButton.setOnClickListener { setVideoFullscreen(!videoFullscreen) }
+        fullscreenButton.setOnClickListener {
+            enforceAttentionForPlayerControls()
+            setVideoFullscreen(!videoFullscreen)
+        }
         pipButton.setOnClickListener {
             if (player == null) Toast.makeText(this, "Player ainda conectando", Toast.LENGTH_SHORT).show()
             else enterPip()
