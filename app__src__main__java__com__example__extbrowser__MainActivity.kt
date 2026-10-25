@@ -530,6 +530,12 @@ class MainActivity : ComponentActivity() {
                 if (showingIme) lastSeuImpostoImeOpenAt = SystemClock.elapsedRealtime()
                 site?.let { recordSiteDiagnostic(it,
                     "IME ${if (showingIme) "aberto" else "fechado"} · altura ${ime.bottom}") }
+                site?.let { current ->
+                    current.post {
+                        recordSiteDiagnostic(current,
+                            "Layout após IME · raiz=${v.height} · WebView=${current.height}")
+                    }
+                }
                 lastSeuImpostoImeVisible = showingIme
             }
             // Experimento reversível: deixa o ajuste de altura da janela cuidar
@@ -621,7 +627,9 @@ class MainActivity : ComponentActivity() {
                             const entry={t:Date.now()%600000,event:kind,tag:el&&el.tagName||'',
                                 type:el&&el.type||'',
                                 viewport:window.visualViewport?Math.round(visualViewport.height):null,
-                                screen:innerHeight,...details};
+                                screen:innerHeight,
+                                viewportOffset:window.visualViewport?Math.round(visualViewport.offsetTop):null,
+                                documentHeight:document.documentElement.clientHeight,...details};
                             audit.logs.push(entry);
                             if(audit.logs.length>60)audit.logs.shift();
                         };
@@ -780,6 +788,7 @@ class MainActivity : ComponentActivity() {
                             attributes:true,attributeFilter:['disabled','readonly','aria-disabled','inert']});
                         if(window.visualViewport)
                             visualViewport.addEventListener('resize',()=>add('viewport-resize',document.activeElement));
+                        window.addEventListener('resize',()=>add('window-resize',document.activeElement));
                         add('monitor-start',document.activeElement);
                     })()""", null)
                 }
@@ -1317,7 +1326,7 @@ class MainActivity : ComponentActivity() {
             .setItems(arrayOf("Extensões", "Opções avançadas de mídia",
                 "Aparência · claro/escuro", "Modo de exibição do site",
                 "Diagnóstico · Seu Imposto", "Teste de teclado · Seu Imposto",
-                "Recuperação de foco · Seu Imposto")) { _, which ->
+                "Recuperação de foco · Seu Imposto", "Teclado · teste HTML isolado")) { _, which ->
                 when (which) {
                     0 -> extLauncher.launch(Intent(this, ExtensionsActivity::class.java).apply {
                         putExtra("attention_current_page", webView.url ?: tabs[activeIndex].url)
@@ -1328,8 +1337,46 @@ class MainActivity : ComponentActivity() {
                     4 -> showSeuImpostoDiagnostic()
                     5 -> toggleSeuImpostoKeyboardCompat()
                     6 -> toggleSeuImpostoFocusRecovery()
+                    7 -> openIsolatedKeyboardTest()
                 }
             }.show()
+    }
+
+    private fun openIsolatedKeyboardTest() {
+        if (!BrowserTabPolicy.canCreate(tabs.size)) {
+            Toast.makeText(this, "Limite de abas atingido", Toast.LENGTH_LONG).show()
+            return
+        }
+        newTab("about:blank")
+        val html = """<!doctype html><html lang="pt-br"><head>
+            <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+            <title>Teste isolado · teclado</title>
+            <style>body{font:16px sans-serif;margin:20px;background:#f5f6f8;color:#111}
+            input,textarea{box-sizing:border-box;width:100%;font:18px sans-serif;
+            padding:14px;margin:10px 0;border:1px solid #777;border-radius:8px}
+            pre{white-space:pre-wrap;overflow-wrap:anywhere;background:#e6e8ec;padding:12px;
+            min-height:130px;font:12px monospace}</style></head><body>
+            <h2>Teste HTML isolado</h2>
+            <p>Digite nos campos. Nenhum conteúdo é registrado ou enviado.</p>
+            <input type="text" aria-label="Campo simples" placeholder="Campo de texto">
+            <textarea aria-label="Área de texto" placeholder="Área de texto"></textarea>
+            <h3>Eventos do teclado</h3><pre id="events"></pre>
+            <script>
+            const events=document.getElementById('events');
+            const started=Date.now();
+            const log=(kind)=>{
+                const viewport=window.visualViewport?Math.round(visualViewport.height):null;
+                const active=document.activeElement;
+                events.textContent+=(Date.now()-started)+'ms '+kind+' viewport='+viewport+
+                    ' janela='+innerHeight+' foco='+(active?active.tagName:'nenhum')+'\n';
+            };
+            document.addEventListener('focusin',()=>log('focusin'),true);
+            document.addEventListener('focusout',()=>log('focusout'),true);
+            if(window.visualViewport)
+                visualViewport.addEventListener('resize',()=>log('viewport-resize'));
+            log('início');
+            </script></body></html>"""
+        webView.loadDataWithBaseURL(null, html, "text/html", "UTF-8", null)
     }
 
     private fun toggleSeuImpostoFocusRecovery() {
@@ -1423,6 +1470,8 @@ class MainActivity : ComponentActivity() {
                     appendLine("- t=${e.optString("t")} ${e.optString("event")} ${e.optString("tag")}" +
                         " tipo=${e.optString("type")} viewport=${e.optString("viewport")}" +
                         " janela=${e.optString("screen")}" +
+                        " docAltura=${e.optString("documentHeight")}" +
+                        " deslocamento=${e.optString("viewportOffset")}" +
                         (if (e.has("connected"))
                             " conectado=${e.optString("connected")}" +
                             " habilitado=${!e.optBoolean("disabled")}" +
