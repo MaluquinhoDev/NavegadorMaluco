@@ -834,6 +834,32 @@ class MainActivity : ComponentActivity() {
         }.start()
     }
 
+    private fun showPlayerHistory() {
+        val entries = PlayerHistory(this).list()
+        if (entries.isEmpty()) {
+            Toast.makeText(this, "Nenhum vídeo no histórico ainda", Toast.LENGTH_SHORT).show()
+            return
+        }
+        val labels = entries.map { e ->
+            val seconds = e.positionMs / 1000L
+            "${e.title} · ${seconds / 60}m ${seconds % 60}s"
+        }.toTypedArray()
+        AlertDialog.Builder(this).setTitle("Histórico do player")
+            .setItems(labels) { _, selected ->
+                val entry = entries[selected]
+                Attention.checkNavigation(entry.page)?.let { verdict ->
+                    Toast.makeText(this, "Controle de Atenção: " + verdict.reason,
+                        Toast.LENGTH_LONG).show()
+                    return@setItems
+                }
+                // URLs de mídia podem expirar. Reabre a página original para extrair
+                // uma fonte nova; a posição é restaurada ao escolher a reprodução.
+                newTab(entry.page)
+                Toast.makeText(this, "Escolha a mídia da página para retomar de onde parou",
+                    Toast.LENGTH_LONG).show()
+            }.setNegativeButton("Fechar", null).show()
+    }
+
     private fun showMediaMenu() {
         AlertDialog.Builder(this).setTitle("Mídia")
             .setItems(arrayOf(
@@ -843,6 +869,7 @@ class MainActivity : ComponentActivity() {
                 "YouTube · extrair formatos",
                 "Abrir player nativo",
                 "Janela flutuante (PiP)",
+                "Histórico do player",
                 "Mais opções de mídia"
             )) { _, which ->
                 when (which) {
@@ -852,7 +879,8 @@ class MainActivity : ComponentActivity() {
                     3 -> showYouTubeExtractor()
                     4 -> showNativeVideoPlayer()
                     5 -> enterPip()
-                    6 -> showMediaOptions()
+                    6 -> showPlayerHistory()
+                    7 -> showMediaOptions()
                 }
             }.show()
     }
@@ -1655,9 +1683,12 @@ class MainActivity : ComponentActivity() {
                             .setIsPlayable(true)
                             .setExtras(mediaInfo).build())
                         .build()
-                    controller.setMediaItem(item)
+                    // Ao escolher novamente o vídeo da página, prioriza o tempo
+                    // já transferido da WebView; caso contrário recupera histórico.
+                    val savedPosition = PlayerHistory(this).position(sourceView.url ?: "")
+                    val resumeAt = if (position > 0L) position else savedPosition
+                    controller.setMediaItem(item, resumeAt.coerceAtLeast(0L))
                     controller.prepare()
-                    if (position > 0L) controller.seekTo(position)
                     controller.play()
                     // A seleção da fonte abre o vídeo; não exige voltar à Biblioteca.
                     showNativeVideoPlayer()
