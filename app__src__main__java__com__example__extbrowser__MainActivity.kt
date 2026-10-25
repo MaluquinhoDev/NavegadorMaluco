@@ -253,14 +253,22 @@ class MainActivity : ComponentActivity() {
                 "(function(){return Array.from(document.querySelectorAll('video,audio')).some(v=>!v.paused&&!v.ended)})()"
             ) { value ->
                 if (isFinishing || isDestroyed || tabs.none { it.view === view }) return@evaluateJavascript
-                if (value != "true") return@evaluateJavascript
-                // Usa apenas uma fonte por domínio para não duplicar o tempo diário.
+                // Verifica bloqueio mesmo que a reprodução tenha sido pausada
+                // temporariamente. Bloqueio não pode depender do estado Play.
+                val existingBlock = Attention.checkNavigation(page)
+                if (value != "true" && existingBlock == null) return@evaluateJavascript
                 if (!chargedDomains.add(domain)) return@evaluateJavascript
-                val verdict = Attention.backgroundTabPlaybackTick(page, elapsed)
+                val verdict = existingBlock ?: Attention.backgroundTabPlaybackTick(page, elapsed)
                 if (verdict != null) {
                     view.evaluateJavascript(
-                        "(function(){document.querySelectorAll('video,audio').forEach(v=>v.pause())})()", null
+                        "(function(){document.querySelectorAll('video,audio').forEach(v=>{v.pause();v.removeAttribute('autoplay')})})()", null
                     )
+                    // A aba deixa de oferecer controles da página bloqueada.
+                    if (view.url == page) {
+                        view.stopLoading()
+                        view.loadDataWithBaseURL(null, blockHtmlFor(verdict),
+                            "text/html", "utf-8", null)
+                    }
                     android.util.Log.i("Attention", "Mídia HTML5 pausada em aba de segundo plano: " +
                         verdict.site.domain)
                 }
@@ -1547,6 +1555,11 @@ class MainActivity : ComponentActivity() {
         val u = Uri.parse(url)
         if (u.scheme !in listOf("http", "https") || u.host.isNullOrBlank()) return
         val sourceView = webView
+        Attention.checkNavigation(sourceView.url ?: "")?.let { blocked ->
+            Toast.makeText(this, "Controle de Atenção: " + blocked.reason, Toast.LENGTH_LONG).show()
+            showBlocked(blocked)
+            return
+        }
         val quotedUrl = org.json.JSONObject.quote(url)
         val probe = """(function(){
             const target = $quotedUrl;
