@@ -129,7 +129,40 @@ class MainActivity : ComponentActivity() {
         fileCallback = null
     }
 
-    companion object { private const val HOME = "https://www.wikipedia.org"; private const val MAX_TABS = 6 }
+    companion object {
+        private const val HOME = "https://www.wikipedia.org"
+        private const val MAX_TABS = 6
+        const val ACTION_OPEN_MEDIA_PLAYER = "com.example.extbrowser.OPEN_MEDIA_PLAYER"
+    }
+
+    /** A notificação Media3 abre a sessão já existente, sem reiniciar o streaming. */
+    private fun openPlayerFromMediaNotification(intent: Intent?) {
+        if (intent?.action != ACTION_OPEN_MEDIA_PLAYER || !loaded) return
+        intent.action = Intent.ACTION_MAIN  // evita reabrir em alterações da Activity
+        val future = MediaController.Builder(this,
+            SessionToken(this, ComponentName(this, Media3PlaybackService::class.java))
+        ).buildAsync()
+        future.addListener({
+            try {
+                val controller = future.get()
+                if (!isFinishing && !isDestroyed && controller.currentMediaItem != null) {
+                    showNativeVideoPlayer()
+                } else if (!isFinishing && !isDestroyed) {
+                    Toast.makeText(this, "Nenhuma reprodução ativa para retomar", Toast.LENGTH_SHORT).show()
+                }
+            } catch (e: Exception) {
+                android.util.Log.w("NavegadorMedia3", "Não foi possível abrir sessão da notificação", e)
+            } finally {
+                MediaController.releaseFuture(future)
+            }
+        }, androidx.core.content.ContextCompat.getMainExecutor(this))
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        openPlayerFromMediaNotification(intent)
+    }
 
     private val ticker = object : Runnable {
         override fun run() {
@@ -222,6 +255,7 @@ class MainActivity : ComponentActivity() {
         showActive()
         initial.forEachIndexed { index, url -> if (index == activeIndex) tabs[index].view.loadUrl(url) }
         loaded = true
+        openPlayerFromMediaNotification(intent)
 
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
             override fun handleOnBackPressed() {
