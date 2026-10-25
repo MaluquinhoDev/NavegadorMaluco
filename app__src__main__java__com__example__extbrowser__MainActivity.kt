@@ -605,7 +605,9 @@ class MainActivity : ComponentActivity() {
                 .ifEmpty { detected }
                 .distinct()
             when (sources.size) {
-                0 -> Toast.makeText(this,
+                0 -> if (youtubeVideoId(current.url) != null) {
+                    showYouTubeDetectedNotice()
+                } else Toast.makeText(this,
                     "Nenhuma mídia detectada nesta página. Abra o vídeo na página e tente novamente.",
                     Toast.LENGTH_LONG).show()
                 1 -> startMedia3(sources.single())
@@ -748,6 +750,31 @@ class MainActivity : ComponentActivity() {
     }
 
     /** Fontes observadas pela WebView; nenhuma foi previamente validada. */
+    /** Identifica páginas de vídeo do YouTube, não URLs diretas para o Media3. */
+    private fun youtubeVideoId(pageUrl: String?): String? {
+        val uri = runCatching { Uri.parse(pageUrl ?: return null) }.getOrNull() ?: return null
+        if (uri.scheme != "https") return null
+        val host = uri.host?.lowercase(java.util.Locale.ROOT) ?: return null
+        val id = when {
+            host == "youtu.be" || host == "www.youtu.be" -> uri.pathSegments.firstOrNull()
+            host == "youtube.com" || host.endsWith(".youtube.com") -> when {
+                uri.path == "/watch" -> uri.getQueryParameter("v")
+                uri.pathSegments.firstOrNull() in listOf("shorts", "live", "embed") ->
+                    uri.pathSegments.getOrNull(1)
+                else -> null
+            }
+            else -> null
+        }
+        return id?.takeIf { it.matches(Regex("[A-Za-z0-9_-]{11}")) }
+    }
+
+    private fun showYouTubeDetectedNotice() {
+        AlertDialog.Builder(this).setTitle("Vídeo do YouTube detectado")
+            .setMessage("Esta aba contém um vídeo do YouTube. Ele usa o player próprio do site, e não uma URL de mídia direta compatível com nosso Media3.\n\nVocê pode assistir normalmente na WebView e usar a tela cheia do player do YouTube.")
+            .setPositiveButton("Voltar ao vídeo") { _, _ -> webView.requestFocus() }
+            .setNegativeButton("Fechar", null).show()
+    }
+
     private fun showRequestMediaCandidates() {
         scanDeclaredMedia(webView) { showDetectedMediaDialog() }
     }
@@ -755,6 +782,10 @@ class MainActivity : ComponentActivity() {
     private fun showDetectedMediaDialog() {
         val found = synchronized(mediaCandidateLock) {
             mediaCandidates[webView]?.toList().orEmpty().reversed()
+        }
+        if (found.isEmpty() && youtubeVideoId(webView.url) != null) {
+            showYouTubeDetectedNotice()
+            return
         }
         if (found.isEmpty()) {
             AlertDialog.Builder(this).setTitle("Vídeos detectados")
