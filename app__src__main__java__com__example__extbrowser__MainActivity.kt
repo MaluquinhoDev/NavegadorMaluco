@@ -731,7 +731,8 @@ class MainActivity : ComponentActivity() {
             runOnUiThread {
                 if (isFinishing || isDestroyed || current !== webView || current.url != page)
                     return@runOnUiThread
-                result.onSuccess { sources ->
+                result.onSuccess { extracted ->
+                    val sources = MediaSourceCatalog.ordered(extracted)
                     if (sources.isEmpty()) {
                         AlertDialog.Builder(this).setTitle("Extrator YouTube")
                             .setMessage("Nenhuma fonte disponível para este vídeo.")
@@ -740,7 +741,10 @@ class MainActivity : ComponentActivity() {
                     }
                     val labels = sources.map { it.label +
                         (if (it.playable) "" else " · exige áudio separado") }.toTypedArray()
-                    AlertDialog.Builder(this).setTitle("YouTube · ${sources.size} formato(s)")
+                    AlertDialog.Builder(this)
+                        .setTitle("YouTube · ${sources.size} formato(s)")
+                        .setMessage(MediaSourceCatalog.summary(sources) +
+                            "\n\nSelecione uma fonte. Vídeos sem áudio exigem trilha separada.")
                         .setItems(labels) { _, i ->
                             val selected = sources[i]
                             if (selected.playable) startMedia3(selected.url)
