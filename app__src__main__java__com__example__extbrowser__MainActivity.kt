@@ -1725,38 +1725,6 @@ class MainActivity : ComponentActivity() {
                     }.show()
             }
         }
-        val siteAudioButton = Button(this).apply {
-            text = "Som do vídeo"
-            contentDescription = "Ativar ou silenciar o vídeo ativo"
-            setOnClickListener {
-                val url = webView.url
-                val host = websiteHost(url)
-                if ((host != "instagram.com" && host?.endsWith(".instagram.com") != true) ||
-                    siteDisplayMode(url) != "hybrid" ||
-                    Attention.checkNavigation(url ?: "") != null) return@setOnClickListener
-                webView.evaluateJavascript("""(function(){
-                    const clips=[...document.querySelectorAll('video')]
-                        .filter(v=>!v.paused&&!v.ended)
-                        .map(v=>{
-                            const r=v.getBoundingClientRect();
-                            const w=Math.max(0,Math.min(r.right,innerWidth)-Math.max(0,r.left));
-                            const h=Math.max(0,Math.min(r.bottom,innerHeight)-Math.max(0,r.top));
-                            return {v,area:w*h};
-                        }).filter(x=>x.area>0).sort((a,b)=>b.area-a.area);
-                    if(!clips.length)return 'missing';
-                    const v=clips[0].v;
-                    v.muted=!v.muted;
-                    return v.muted?'muted':'sound';
-                })()""") { result ->
-                    when(result?.trim('"')) {
-                        "muted" -> text = "Ativar som do vídeo"
-                        "sound" -> text = "Silenciar vídeo"
-                        else -> Toast.makeText(this@MainActivity,
-                            "Nenhum vídeo ativo visível", Toast.LENGTH_SHORT).show()
-                    }
-                }
-            }
-        }
         val debugSection = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             visibility = View.GONE
@@ -1817,7 +1785,6 @@ class MainActivity : ComponentActivity() {
         })
         detail.addView(percent, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
         detail.addView(slider, LinearLayout.LayoutParams(MATCH_PARENT, dp(48)))
-        detail.addView(siteAudioButton, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
         detail.addView(muteButton, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
         detail.addView(sideButton, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
         detail.addView(debugToggle, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
