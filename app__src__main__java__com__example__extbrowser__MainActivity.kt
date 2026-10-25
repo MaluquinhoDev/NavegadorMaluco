@@ -1475,11 +1475,20 @@ class MainActivity : ComponentActivity() {
                         v.pause();
                         return JSON.stringify({status:v.paused?'paused':'ignored'});
                     }
-                    try{
-                        const p=v.play();
-                        if(p&&typeof p.catch==='function')p.catch(()=>{});
+                    const probe={video:v,result:'pending',error:''};
+                    window.__nmPlayProbe=probe;
+                    try {
+                        const promise=v.play();
+                        if(promise && typeof promise.then==='function'){
+                            promise.then(()=>{probe.result='resolved';},
+                                e=>{probe.result='rejected';probe.error=e&&e.name?e.name:'unknown';});
+                        } else {
+                            probe.result='no_promise';
+                        }
                         return JSON.stringify({status:'requested_play'});
-                    }catch(e){
+                    } catch(e) {
+                        probe.result='threw';
+                        probe.error=e&&e.name?e.name:'unknown';
                         return JSON.stringify({status:'denied'});
                     }
                 })()""") { raw ->
@@ -1495,24 +1504,30 @@ class MainActivity : ComponentActivity() {
                         "requested_play" -> page.postDelayed({
                             if (page !== webView) return@postDelayed
                             page.evaluateJavascript("""(function(){
-                                const videos=[...document.querySelectorAll('video')]
-                                    .map(v=>{const r=v.getBoundingClientRect();
-                                        const w=Math.max(0,Math.min(r.right,innerWidth)-Math.max(r.left,0));
-                                        const h=Math.max(0,Math.min(r.bottom,innerHeight)-Math.max(r.top,0));
-                                        const cx=(Math.max(0,r.left)+Math.min(innerWidth,r.right))/2;
-                                        const cy=(Math.max(0,r.top)+Math.min(innerHeight,r.bottom))/2;
-                                        const distance=Math.abs(cx-innerWidth/2)/Math.max(1,innerWidth)+
-                                            Math.abs(cy-innerHeight/2)/Math.max(1,innerHeight);
-                                        return {v,score:w*h/(1+distance)};
-                                    }).filter(x=>x.score>0).sort((a,b)=>b.score-a.score);
-                                return videos.length?(videos[0].v.paused?'paused':'playing'):'missing';
+                                const probe=window.__nmPlayProbe;
+                                if(!probe||!probe.video.isConnected)
+                                    return JSON.stringify({status:'changed'});
+                                return JSON.stringify({
+                                    status:probe.video.paused?'paused':'playing',
+                                    promise:probe.result,error:probe.error,
+                                    readyState:probe.video.readyState
+                                });
                             })()""") { observed ->
-                                if (observed?.trim('"') != "playing")
-                                    Toast.makeText(this@MainActivity,
-                                        "O Instagram não retomou a reprodução",
-                                        Toast.LENGTH_SHORT).show()
+                                val info = runCatching {
+                                    org.json.JSONObject(org.json.JSONArray("[$observed]").getString(0))
+                                }.getOrNull()
+                                if (info?.optString("status") != "playing") {
+                                    val message = when (info?.optString("promise")) {
+                                        "rejected", "threw" -> "Play recusado: ${info.optString("error")}"
+                                        "resolved" -> "Play aceito, mas Instagram pausou o vídeo"
+                                        else -> if (info?.optString("status") == "changed")
+                                            "Instagram substituiu o vídeo"
+                                        else "Vídeo permanece pausado (Play pendente)"
+                                    }
+                                    Toast.makeText(this@MainActivity, message, Toast.LENGTH_LONG).show()
+                                }
                             }
-                        }, 400L)
+                        }, 700L)
                     }
                 }
             }
