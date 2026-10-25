@@ -229,6 +229,45 @@ class MainActivity : ComponentActivity() {
         openPlayerFromMediaNotification(intent)
     }
 
+    // Mantém o Controle de Atenção nas abas HTML5 que reproduzem em segundo plano.
+    // Monitoramento de melhor esforço: somente vídeo/áudio acessível pela própria
+    // página; frames de outras origens não são inspecionados.
+    private val backgroundMediaSeen = java.util.WeakHashMap<WebView, Long>()
+    private fun checkBackgroundTabMedia() {
+        if (!backgroundAudioEnabled || tabs.size < 2) {
+            backgroundMediaSeen.clear()
+            return
+        }
+        val now = android.os.SystemClock.elapsedRealtime()
+        // Evita cobrar simultaneamente duas abas do mesmo domínio no mesmo ciclo.
+        val chargedDomains = HashSet<String>()
+        tabs.forEachIndexed { index, tab ->
+            if (index == activeIndex) return@forEachIndexed
+            val view = tab.view
+            val page = view.url ?: return@forEachIndexed
+            if (Attention.status(page) == null) return@forEachIndexed
+            val domain = android.net.Uri.parse(page).host ?: return@forEachIndexed
+            val previous = backgroundMediaSeen.put(view, now)
+            val elapsed = if (previous == null) 0L else (now - previous).coerceIn(0L, 5000L)
+            view.evaluateJavascript(
+                "(function(){return Array.from(document.querySelectorAll('video,audio')).some(v=>!v.paused&&!v.ended)})()"
+            ) { value ->
+                if (isFinishing || isDestroyed || tabs.none { it.view === view }) return@evaluateJavascript
+                if (value != "true") return@evaluateJavascript
+                // Usa apenas uma fonte por domínio para não duplicar o tempo diário.
+                if (!chargedDomains.add(domain)) return@evaluateJavascript
+                val verdict = Attention.backgroundTabPlaybackTick(page, elapsed)
+                if (verdict != null) {
+                    view.evaluateJavascript(
+                        "(function(){document.querySelectorAll('video,audio').forEach(v=>v.pause())})()", null
+                    )
+                    android.util.Log.i("Attention", "Mídia HTML5 pausada em aba de segundo plano: " +
+                        verdict.site.domain)
+                }
+            }
+        }
+    }
+
     private val ticker = object : Runnable {
         override fun run() {
             if (tabs.isNotEmpty()) {
@@ -237,6 +276,7 @@ class MainActivity : ComponentActivity() {
                 else if (webView.url != servedBlockUrl) showBlocked(verdict)
                 updateStatus()
             }
+            checkBackgroundTabMedia()
             handler.postDelayed(this, 5000)
         }
     }
