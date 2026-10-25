@@ -105,6 +105,23 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    /** Evita que a superfície do vídeo capture o arrasto vertical no Instagram híbrido.
+     * Não intercepta eventos JavaScript nem altera os botões da página.
+     */
+    private fun improveInstagramVideoScroll(view: WebView, url: String) {
+        val host = websiteHost(url)
+        if ((host != "instagram.com" && host != "www.instagram.com" &&
+                host?.endsWith(".instagram.com") != true) ||
+            siteDisplayMode(url) != "hybrid") return
+        view.evaluateJavascript("""(function(){
+            if (document.getElementById('nm-instagram-scroll-style')) return;
+            const style = document.createElement('style');
+            style.id = 'nm-instagram-scroll-style';
+            style.textContent = 'video { touch-action: pan-y !important; }';
+            (document.head || document.documentElement).appendChild(style);
+        })()""", null)
+    }
+
     private fun showSiteDisplayModes() {
         val currentUrl = webView.url ?: tabs.getOrNull(activeIndex)?.url
         val host = websiteHost(currentUrl)
@@ -539,6 +556,7 @@ class MainActivity : ComponentActivity() {
                 t.url = url
                 if (v === webView) { updateFavorite(); persistTabs() }
                 scanDeclaredMedia(v)
+                improveInstagramVideoScroll(v, url)
             }
             override fun doUpdateVisitedHistory(v: WebView, url: String, isReload: Boolean) {
                 if (!isReload && (url.startsWith("https://") || url.startsWith("http://")))
