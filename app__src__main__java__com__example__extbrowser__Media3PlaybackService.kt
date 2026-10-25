@@ -1,6 +1,9 @@
 package com.example.extbrowser
 
 import android.net.Uri
+import android.os.Handler
+import android.os.Looper
+import android.os.SystemClock
 import android.util.Log
 import android.webkit.CookieManager
 import android.webkit.WebSettings
@@ -21,6 +24,26 @@ class Media3PlaybackService : MediaSessionService() {
     companion object { private const val TAG = "NavegadorMedia3" }
     private var player: ExoPlayer? = null
     private var session: MediaSession? = null
+    private val attentionHandler = Handler(Looper.getMainLooper())
+    private var lastMediaTickMs = 0L
+    private val attentionCheck = object : Runnable {
+        override fun run() {
+            val exo = player ?: return
+            val pageUrl = exo.currentMediaItem?.mediaMetadata?.extras
+                ?.getString("nm_page_origin")
+            val now = SystemClock.elapsedRealtime()
+            val delta = if (exo.isPlaying && lastMediaTickMs > 0L)
+                (now - lastMediaTickMs).coerceIn(0L, 1500L) else 0L
+            lastMediaTickMs = now
+            val verdict = Attention.mediaPlaybackTick(pageUrl, delta)
+            if (verdict != null && (exo.playWhenReady || exo.isPlaying)) {
+                exo.pause()
+                Log.i(TAG, "Controle de Atenção interrompeu mídia: " +
+                    verdict.site.domain + " (" + verdict.reason + ")")
+            }
+            attentionHandler.postDelayed(this, 1000L)
+        }
+    }
 
     private fun safeHost(uri: Uri?): String = uri?.host ?: "desconhecido"
 
@@ -42,6 +65,7 @@ class Media3PlaybackService : MediaSessionService() {
 
     override fun onCreate() {
         super.onCreate()
+        Attention.init(this)
         val http = DefaultHttpDataSource.Factory()
             .setUserAgent(WebSettings.getDefaultUserAgent(this))
         val dataSource = DefaultDataSource.Factory(this, http)
@@ -49,6 +73,8 @@ class Media3PlaybackService : MediaSessionService() {
         val exo = ExoPlayer.Builder(this).setMediaSourceFactory(mediaSources).build()
         exo.addListener(object : Player.Listener {
             override fun onMediaItemTransition(item: MediaItem?, reason: Int) {
+                Attention.mediaPlaybackReset()
+                lastMediaTickMs = SystemClock.elapsedRealtime()
                 val origin = item?.mediaMetadata?.extras?.getString("nm_page_origin") ?: ""
                 val mediaUri = item?.localConfiguration?.uri
                 val page = runCatching { Uri.parse(origin) }.getOrNull()
@@ -119,6 +145,8 @@ class Media3PlaybackService : MediaSessionService() {
             }
         })
         player = exo
+        lastMediaTickMs = SystemClock.elapsedRealtime()
+        attentionHandler.post(attentionCheck)
         val openPlayer = android.content.Intent(this, MainActivity::class.java).apply {
             action = MainActivity.ACTION_OPEN_MEDIA_PLAYER
             flags = android.content.Intent.FLAG_ACTIVITY_CLEAR_TOP or
@@ -137,6 +165,8 @@ class Media3PlaybackService : MediaSessionService() {
     override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaSession? = session
 
     override fun onDestroy() {
+        attentionHandler.removeCallbacks(attentionCheck)
+        Attention.mediaPlaybackReset()
         session?.release()
         session = null
         player?.release()
