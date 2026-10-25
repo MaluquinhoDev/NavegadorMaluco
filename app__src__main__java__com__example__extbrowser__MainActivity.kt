@@ -294,9 +294,21 @@ class MainActivity : ComponentActivity() {
                 addView(it, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
             }
         }
+        val reloadButton = Button(this).apply {
+            text = "↻"
+            contentDescription = "Recarregar página atual"
+            setOnClickListener {
+                if (tabs.isNotEmpty()) webView.reload()
+            }
+        }
+        val addressRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            addView(urlBar, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
+            addView(reloadButton, LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT))
+        }
         browserBar = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            addView(urlBar, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
+            addView(addressRow, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
             addView(actions, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
         }
                 statusView = TextView(this).apply { textSize = 12f; visibility = View.GONE; setPadding(16, 4, 16, 4) }
