@@ -149,10 +149,39 @@ class MainActivity : ComponentActivity() {
         }
     }
     private fun detectedMediaRank(url: String): Int = when (detectedMediaKind(url)) {
-        "Vídeo direto" -> 0
-        "HLS · playlist" -> 1
-        "DASH · manifesto" -> 2
+        "HLS · playlist" -> 0
+        "DASH · manifesto" -> 1
+        "Vídeo direto" -> 2
         else -> 3
+    }
+
+    private fun isStreamingManifest(url: String): Boolean =
+        detectedMediaKind(url) in listOf("HLS · playlist", "DASH · manifesto")
+
+    /** Mostra fontes de streaming explicitamente observadas, nunca segmentos isolados. */
+    private fun showStreamingManifests() {
+        val current = webView
+        scanDeclaredMedia(current) {
+            if (current !== webView || isFinishing || isDestroyed) return@scanDeclaredMedia
+            val manifests = synchronized(mediaCandidateLock) {
+                mediaCandidates[current]?.toList().orEmpty().reversed()
+            }.filter(::isStreamingManifest).distinct().take(30)
+            if (manifests.isEmpty()) {
+                AlertDialog.Builder(this).setTitle("HLS / DASH")
+                    .setMessage("Nenhum manifesto .m3u8 ou .mpd foi observado nesta página. " +
+                        "Isso não significa ausência de vídeo: players MSE/blob podem usar " +
+                        "requisições sem extensões. Não é seguro tratar segmentos como playlists.")
+                    .setPositiveButton("OK", null).show()
+            } else {
+                val labels = manifests.map { url ->
+                    "${detectedMediaKind(url)} · ${Uri.parse(url).host ?: "servidor desconhecido"}"
+                }.toTypedArray()
+                AlertDialog.Builder(this)
+                    .setTitle("Manifestos HLS / DASH (${manifests.size})")
+                    .setItems(labels) { _, index -> startMedia3(manifests[index]) }
+                    .setNegativeButton("Cancelar", null).show()
+            }
+        }
     }
 
     // O Android devolve aqui o arquivo escolhido em formulários <input type="file">.
@@ -647,6 +676,7 @@ class MainActivity : ComponentActivity() {
             val sources = detected.filter { detectedMediaKind(it) != "Áudio" }
                 .ifEmpty { detected }
                 .distinct()
+                .sortedBy(::detectedMediaRank)
             when (sources.size) {
                 0 -> if (youtubeVideoId(current.url) != null) {
                     showYouTubeDetectedNotice()
@@ -694,6 +724,7 @@ class MainActivity : ComponentActivity() {
             .setItems(arrayOf(
                 "▶ Reproduzir mídia desta página",
                 "Vídeos detectados",
+                "Manifestos HLS / DASH",
                 "Abrir player nativo",
                 "Janela flutuante (PiP)",
                 "Mais opções de mídia"
@@ -701,9 +732,10 @@ class MainActivity : ComponentActivity() {
                 when (which) {
                     0 -> playPageMediaDirectly()
                     1 -> showRequestMediaCandidates()
-                    2 -> showNativeVideoPlayer()
-                    3 -> enterPip()
-                    4 -> showMediaOptions()
+                    2 -> showStreamingManifests()
+                    3 -> showNativeVideoPlayer()
+                    4 -> enterPip()
+                    5 -> showMediaOptions()
                 }
             }.show()
     }
