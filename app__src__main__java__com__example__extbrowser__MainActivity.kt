@@ -829,10 +829,30 @@ class MainActivity : ComponentActivity() {
                 if (el.videoWidth > 0 && el.videoHeight > 0) withDimensions++;
                 if (el.buffered && el.buffered.length > 0) buffered++;
             }
+            const primary = videos[0] || audios[0] || null;
+            // Somente métricas numéricas e estados padronizados. Nenhum endereço é exposto.
+            const state = primary ? {
+                ready: primary.readyState,
+                network: primary.networkState,
+                duration: Number.isFinite(primary.duration) ?
+                    Math.round(primary.duration) : -1,
+                current: Math.round(primary.currentTime || 0),
+                seekable: primary.seekable.length,
+                bufferAhead: (() => {
+                    for (let i = 0; i < primary.buffered.length; i++) {
+                        if (primary.buffered.start(i) <= primary.currentTime &&
+                            primary.buffered.end(i) >= primary.currentTime)
+                            return Math.round(primary.buffered.end(i) - primary.currentTime);
+                    }
+                    return 0;
+                })(),
+                width: primary.videoWidth || 0,
+                height: primary.videoHeight || 0
+            } : null;
             return JSON.stringify({video:videos.length,audio:audios.length,iframes:frames,
                 playing:playing,paused:paused,dimensions:withDimensions,buffered:buffered,
                 blob:protocols.blob,https:protocols.https,
-                other:protocols.other,empty:protocols.empty});
+                other:protocols.other,empty:protocols.empty,state:state});
         })()"""
         view.evaluateJavascript(js) { result ->
             val summary = runCatching {
@@ -843,7 +863,15 @@ class MainActivity : ComponentActivity() {
                     "Estado: ${data.optInt("playing")} reproduzindo, ${data.optInt("paused")} pausado(s)\n" +
                     "Fonte: ${data.optInt("blob")} blob, ${data.optInt("https")} HTTPS, " +
                     "${data.optInt("empty")} vazia, ${data.optInt("other")} outra(s)\n" +
-                    "Com dimensões: ${data.optInt("dimensions")}; com buffer: ${data.optInt("buffered")}"
+                    "Com dimensões: ${data.optInt("dimensions")}; com buffer: ${data.optInt("buffered")}" +
+                    data.optJSONObject("state")?.let { st ->
+                        "\\nreadyState=${st.optInt("ready")}; networkState=${st.optInt("network")}" +
+                            "\\nposição=${st.optInt("current")}s; duração=${st.optInt("duration")}s " +
+                            "(-1 = desconhecida/ao vivo)" +
+                            "\\nbuffer à frente=${st.optInt("bufferAhead")}s; " +
+                            "intervalos seekable=${st.optInt("seekable")}" +
+                            "\\nresolução=${st.optInt("width")}x${st.optInt("height")}"
+                    }.orEmpty()
             }.getOrElse { "Estados do player indisponíveis neste documento." }
             onResult(summary)
         }
