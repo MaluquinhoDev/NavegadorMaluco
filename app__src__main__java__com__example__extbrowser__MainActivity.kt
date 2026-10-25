@@ -29,6 +29,7 @@ import android.os.SystemClock
 import android.text.InputType
 import android.view.View
 import android.view.MotionEvent
+import android.view.inputmethod.InputMethodManager
 import android.media.AudioManager
 import android.view.ViewGroup.LayoutParams.MATCH_PARENT
 import android.view.ViewGroup.LayoutParams.WRAP_CONTENT
@@ -67,6 +68,7 @@ class MainActivity : ComponentActivity() {
     private val tabs = mutableListOf<Tab>()
     private val siteDiagnostics = WeakHashMap<WebView, MutableList<String>>()
     private var lastSeuImpostoImeVisible: Boolean? = null
+    private var lastSeuImpostoImeOpenAt = 0L
     private fun isSeuImposto(url: String?): Boolean = websiteHost(url) == "seuimposto.com" ||
         websiteHost(url) == "www.seuimposto.com"
     private fun safeDiagnosticPath(uri: Uri): String {
@@ -525,6 +527,7 @@ class MainActivity : ComponentActivity() {
             val site = tabs.getOrNull(activeIndex)?.view
             val currentSite = site?.let { isSeuImposto(it.url) } == true
             if (currentSite && lastSeuImpostoImeVisible != showingIme) {
+                if (showingIme) lastSeuImpostoImeOpenAt = SystemClock.elapsedRealtime()
                 site?.let { recordSiteDiagnostic(it,
                     "IME ${if (showingIme) "aberto" else "fechado"} · altura ${ime.bottom}") }
                 lastSeuImpostoImeVisible = showingIme
@@ -642,6 +645,7 @@ class MainActivity : ComponentActivity() {
                             if(audit.attempts.length>=2)return;
                             audit.attempts.push(now);
                             const oldRect=el.getBoundingClientRect();
+                            const oldParent=el.parentElement;
                             const oldCenter={x:(oldRect.left+oldRect.right)/2,
                                 y:(oldRect.top+oldRect.bottom)/2};
                             let observer=null;
@@ -655,7 +659,9 @@ class MainActivity : ComponentActivity() {
                                 if(active&&active!==document.body&&active!==document.documentElement){
                                     stop();return;
                                 }
-                                if(!window.visualViewport||visualViewport.height>innerHeight-120){
+                                if(!window.visualViewport||
+                                    (visualViewport.height>innerHeight-120&&
+                                     Date.now()-audit.lastBlurAt>350)){
                                     stop();return;
                                 }
                                 let target=el.isConnected?el:null;
@@ -663,19 +669,22 @@ class MainActivity : ComponentActivity() {
                                     const matches=[...document.querySelectorAll('input,textarea,[contenteditable="true"]')]
                                         .filter(x=>x!==el&&x.tagName===el.tagName&&
                                             (x.type||'')===(el.type||''));
-                                    target=matches.find(x=>{
+                                    target=matches.find(x=>oldParent&&oldParent.isConnected&&
+                                        oldParent.contains(x))||matches.find(x=>{
                                         const r=x.getBoundingClientRect();
                                         return r.width>0&&r.height>0&&
-                                            Math.abs((r.left+r.right)/2-oldCenter.x)<140&&
-                                            Math.abs((r.top+r.bottom)/2-oldCenter.y)<140;
+                                            Math.abs((r.left+r.right)/2-oldCenter.x)<180&&
+                                            Math.abs((r.top+r.bottom)/2-oldCenter.y)<400;
                                     })||null;
                                 }
                                 if(!target)return;
                                 stop();
                                 try{target.focus({preventScroll:true});
-                                    add(document.activeElement===target?
-                                        (target===el?'focus-restored':'replacement-focused'):
-                                        'focus-rejected',target);
+                                    if(document.activeElement===target){
+                                        add(target===el?'focus-restored':'replacement-focused',target);
+                                        if(window.__nmFocusBridge)
+                                            window.__nmFocusBridge.postMessage('focus-restored');
+                                    }else add('focus-rejected',target);
                                 }catch(_){add('focus-rejected',target);}
                             };
                             setTimeout(()=>{
@@ -881,7 +890,34 @@ class MainActivity : ComponentActivity() {
             enqueueDownload(url, userAgent, contentDisposition, mimeType)
         }
         setupExtensions(view)
+        setupSeuImpostoFocusBridge(view)
         return view
+    }
+
+    private fun setupSeuImpostoFocusBridge(view: WebView) {
+        if (!WebViewFeature.isFeatureSupported(WebViewFeature.WEB_MESSAGE_LISTENER)) return
+        WebViewCompat.addWebMessageListener(view, "__nmFocusBridge",
+            setOf("https://seuimposto.com", "https://www.seuimposto.com"),
+            object : WebViewCompat.WebMessageListener {
+                override fun onPostMessage(v: WebView, message: WebMessageCompat,
+                                           sourceOrigin: Uri, isMainFrame: Boolean,
+                                           replyProxy: JavaScriptReplyProxy) {
+                    if (!isMainFrame || !isSeuImposto(v.url) ||
+                        !isSeuImposto(sourceOrigin.toString()) ||
+                        message.data != "focus-restored" || tabs.getOrNull(activeIndex)?.view !== v ||
+                        !getSharedPreferences("seuimposto_diagnostic", MODE_PRIVATE)
+                            .getBoolean("focus_recovery", true) ||
+                        SystemClock.elapsedRealtime() - lastSeuImpostoImeOpenAt > 1500L) return
+                    v.postDelayed({
+                        if (tabs.getOrNull(activeIndex)?.view !== v || !isSeuImposto(v.url))
+                            return@postDelayed
+                        v.requestFocus()
+                        val imm = getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
+                        val requested = imm.showSoftInput(v, InputMethodManager.SHOW_IMPLICIT)
+                        recordSiteDiagnostic(v, "IME reabertura solicitada · $requested")
+                    }, 60L)
+                }
+            })
     }
 
     private fun exitFullscreen() {
