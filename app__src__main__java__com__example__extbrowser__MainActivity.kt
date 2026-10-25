@@ -1647,6 +1647,81 @@ class MainActivity : ComponentActivity() {
                 }
             }
         }
+        val experimentalAudioButton = Button(this).apply {
+            text = "Teste de áudio (desligado)"
+            contentDescription = "Experimento manual e isolado de áudio no vídeo ativo"
+            setOnClickListener {
+                val currentUrl = webView.url
+                val host = websiteHost(currentUrl)
+                if ((host != "instagram.com" && host?.endsWith(".instagram.com") != true) ||
+                    siteDisplayMode(currentUrl) != "hybrid" ||
+                    Attention.checkNavigation(currentUrl ?: "") != null) {
+                    Toast.makeText(this@MainActivity, "Experimento indisponível neste momento",
+                        Toast.LENGTH_SHORT).show()
+                    return@setOnClickListener
+                }
+                AlertDialog.Builder(this@MainActivity)
+                    .setTitle("Experimento de áudio · Instagram")
+                    .setMessage("Essa função é opcional e fica desligada até você confirmar. " +
+                        "Ela tenta alterar apenas o mute do vídeo HTML5 que está tocando e " +
+                        "mais visível, sem iniciar ou pausar vídeos. O Instagram pode rejeitar a alteração.")
+                    .setNegativeButton("Cancelar", null)
+                    .setPositiveButton("Testar agora") { _, _ ->
+                        webView.evaluateJavascript("""(function(){
+                            const candidates=[...document.querySelectorAll('video')]
+                                .filter(v=>!v.paused&&!v.ended)
+                                .map(v=>{
+                                    const r=v.getBoundingClientRect();
+                                    const w=Math.max(0,Math.min(r.right,innerWidth)-Math.max(0,r.left));
+                                    const h=Math.max(0,Math.min(r.bottom,innerHeight)-Math.max(0,r.top));
+                                    return {v,area:w*h};
+                                }).filter(x=>x.area>0).sort((a,b)=>b.area-a.area);
+                            if(!candidates.length)return JSON.stringify({status:'no_active'});
+                            const v=candidates[0].v, before=v.muted;
+                            v.muted=!before;
+                            window.__nmAudioProbe={video:v,expected:!before,before:before};
+                            return JSON.stringify({status:'attempted',before:before,after:v.muted});
+                        })()""") { raw ->
+                            val first = runCatching {
+                                org.json.JSONObject(org.json.JSONArray("[$raw]").getString(0))
+                            }.getOrNull()
+                            if (first?.optString("status") != "attempted") {
+                                Toast.makeText(this@MainActivity,
+                                    "Não foi encontrado vídeo ativo e visível",
+                                    Toast.LENGTH_SHORT).show()
+                                return@evaluateJavascript
+                            }
+                            webView.postDelayed({
+                                if (webView.url != currentUrl) return@postDelayed
+                                webView.evaluateJavascript("""(function(){
+                                    const p=window.__nmAudioProbe;
+                                    if(!p||!p.video.isConnected)return JSON.stringify({status:'changed_video'});
+                                    return JSON.stringify({status:'checked',before:p.before,
+                                        expected:p.expected,actual:p.video.muted,
+                                        paused:p.video.paused});
+                                })()""") { checked ->
+                                    val data = runCatching {
+                                        org.json.JSONObject(org.json.JSONArray("[$checked]").getString(0))
+                                    }.getOrNull()
+                                    val maintained = data?.optString("status") == "checked" &&
+                                        data.optBoolean("actual") == data.optBoolean("expected")
+                                    val message = if (data?.optString("status") != "checked")
+                                        "O vídeo ativo mudou antes da verificação."
+                                    else if (maintained)
+                                        "O estado HTML5 foi mantido após 500 ms. " +
+                                            "Isso ainda não garante que a interface do Instagram reconheceu o comando."
+                                    else
+                                        "O Instagram ou a página reverteu o estado de áudio solicitado."
+                                    AlertDialog.Builder(this@MainActivity)
+                                        .setTitle("Resultado do experimento")
+                                        .setMessage(message)
+                                        .setPositiveButton("Fechar", null).show()
+                                }
+                            }, 500L)
+                        }
+                    }.show()
+            }
+        }
         val sideButton = Button(this).apply {
             text = "↔"
             contentDescription = "Mover controles para a outra lateral"
@@ -1700,6 +1775,7 @@ class MainActivity : ComponentActivity() {
         detail.addView(sideButton, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
         detail.addView(debugButton, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
         detail.addView(eventMonitorButton, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
+        detail.addView(experimentalAudioButton, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
         val stepHeight = dp(160).toFloat()
         var startY = 0f
         var initial = 0
