@@ -2059,7 +2059,7 @@ class MainActivity : ComponentActivity() {
         }
         // Modo Tranquilo: apenas estado estável, sem relógio progressivo.
         // O bloqueio e a contabilização continuam sob responsabilidade de Attention.
-        val blocked = Attention.checkNavigation(page) != null
+        val blocked = page?.let { Attention.checkNavigation(it) } != null
         statusView.text = if (blocked)
             "☕ ${st.site.domain} · sessão concluída. Hora de descansar."
         else "✓ ${st.site.domain} · Controle de Atenção ativo"
