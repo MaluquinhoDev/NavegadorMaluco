@@ -1420,7 +1420,6 @@ class MainActivity : ComponentActivity() {
     }
     private val playerDisplay = PlayerDisplayCoordinator()
     private var instagramOverlay: LinearLayout? = null
-    private var instagramOverlaySide = 1
     private fun updateInstagramOverlay() {
         val overlay = instagramOverlay ?: return
         val url = tabs.getOrNull(activeIndex)?.view?.url ?: tabs.getOrNull(activeIndex)?.url
@@ -1502,7 +1501,14 @@ class MainActivity : ComponentActivity() {
                 updateInstagramOverlay()
             }
         }
-        val hideDetails = Runnable { detail.visibility = View.GONE }
+        fun setExpanded(expanded: Boolean) {
+            detail.visibility = if (expanded) View.VISIBLE else View.GONE
+            (column.layoutParams as? FrameLayout.LayoutParams)?.let { params ->
+                params.width = dp(if (expanded) 160 else 60)
+                column.layoutParams = params
+            }
+        }
+        val hideDetails = Runnable { setExpanded(false) }
         fun refreshVolume() {
             val max = audio.getStreamMaxVolume(AudioManager.STREAM_MUSIC).coerceAtLeast(1)
             val current = audio.getStreamVolume(AudioManager.STREAM_MUSIC)
@@ -1515,7 +1521,7 @@ class MainActivity : ComponentActivity() {
         }
         fun expand() {
             refreshVolume()
-            detail.visibility = View.VISIBLE
+            setExpanded(true)
             handler.removeCallbacks(hideDetails)
             handler.postDelayed(hideDetails, 3500L)
         }
@@ -1575,7 +1581,7 @@ class MainActivity : ComponentActivity() {
         column.addView(pauseButton, LinearLayout.LayoutParams(MATCH_PARENT, dp(48)))
         column.addView(volumeButton, LinearLayout.LayoutParams(MATCH_PARENT, dp(48)))
         column.addView(detail, LinearLayout.LayoutParams(dp(152), WRAP_CONTENT))
-        playerLayer.addView(column, FrameLayout.LayoutParams(dp(160), WRAP_CONTENT,
+        playerLayer.addView(column, FrameLayout.LayoutParams(dp(60), WRAP_CONTENT,
             android.view.Gravity.END or android.view.Gravity.CENTER_VERTICAL))
         instagramOverlay = column
         updateInstagramOverlay()
