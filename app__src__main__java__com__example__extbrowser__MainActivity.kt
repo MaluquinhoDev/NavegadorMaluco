@@ -1426,7 +1426,12 @@ class MainActivity : ComponentActivity() {
                     val daily = if (status.site.dailyMinutes > 0)
                         "${AttentionLogic.formatTime(status.usedSeconds)} de ${status.site.dailyMinutes} min hoje"
                     else "Sem limite diário"
-                    val left = if (remaining != null)
+                    val pauseRemaining = Attention.pauseRemainingSeconds(page)
+                    val left = if (pauseRemaining > 0L)
+                        "Pausa restante: ${AttentionLogic.formatTime(pauseRemaining)}"
+                    else if (Attention.checkNavigation(page ?: "") != null)
+                        "Acesso limitado. Confira o horário ou limite diário."
+                    else if (remaining != null)
                         "Tempo disponível: ${AttentionLogic.formatTime(remaining)}"
                     else "Sem limite de tempo para a sessão"
                     "${status.site.domain}\n$daily\n$left"
@@ -1494,8 +1499,10 @@ class MainActivity : ComponentActivity() {
                     }
                     if (ended) {
                         handler.removeCallbacks(hideAttentionReminder)
-                        attentionBanner.text =
-                            "☕ Controle de Atenção · limite atingido. Reprodução indisponível até o fim da pausa."
+                        val pauseRemaining = Attention.pauseRemainingSeconds(attentionPage)
+                        attentionBanner.text = if (pauseRemaining > 0L)
+                            "☕ Pausa em andamento · faltam ${AttentionLogic.formatTime(pauseRemaining)}"
+                        else "☕ Controle de Atenção · acesso temporariamente limitado."
                         attentionBanner.visibility = View.VISIBLE
                     } else if (nearEnd && !attentionReminderShown &&
                         c.currentMediaItem != null && c.isPlaying) {
