@@ -283,6 +283,23 @@ object Attention {
         return navigationBlock(site)
     }
 
+    /** Tempo disponível da sessão de mídia do site, com limites diário e por sessão. */
+    @Synchronized
+    fun mediaRemainingSeconds(pageUrl: String?): Long? {
+        val host = pageUrl?.let { AttentionLogic.hostOf(it) } ?: return null
+        val site = findSite(host) ?: return null
+        if (navigationBlock(site) != null) return 0L
+        val daily = if (site.dailyMinutes > 0)
+            (site.dailyMinutes * 60_000L - usedMs(site.id)).coerceAtLeast(0L)
+        else Long.MAX_VALUE
+        val session = if (site.sessionMinutes > 0)
+            (site.sessionMinutes * 60_000L -
+                (if (mediaSiteId == site.id) mediaSessionMs else 0L)).coerceAtLeast(0L)
+        else Long.MAX_VALUE
+        val left = minOf(daily, session)
+        return if (left == Long.MAX_VALUE) null else (left + 999L) / 1000L
+    }
+
     @Synchronized
     fun mediaPlaybackReset() {
         mediaSiteId = null
