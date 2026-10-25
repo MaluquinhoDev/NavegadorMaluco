@@ -1469,8 +1469,8 @@ class MainActivity : ComponentActivity() {
                 }
                 Toast.makeText(this@MainActivity, "⏯ Comando recebido",
                     Toast.LENGTH_SHORT).show()
-                // O feed costuma manter outros vídeos tocando fora da publicação
-                // principal. Priorizar o vídeo maior, não outro que esteja tocando.
+                // Reutiliza a publicação identificada pelo botão de áudio enquanto
+                // ela continuar visível. Não escreve em muted nem em volume.
                 val page = webView
                 page.evaluateJavascript("""(function(){
                     const videos=[...document.querySelectorAll('video')]
@@ -1487,25 +1487,50 @@ class MainActivity : ComponentActivity() {
                             return {v,area,score:area/(1+distance)};
                         }).filter(x=>x.area>0).sort((a,b)=>b.score-a.score);
                     if(!videos.length)return JSON.stringify({status:'missing'});
-                    const v=videos[0].v;
+                    const shared=window.__nmInstagramActiveVideo;
+                    const selected=videos.find(x=>x.v===shared);
+                    const v=(selected||videos[0]).v;
+                    window.__nmInstagramActiveVideo=v;
+                    const audit=window.__nmInstagramPlaybackAudit||
+                        (window.__nmInstagramPlaybackAudit={next:1,ids:new WeakMap(),logs:[]});
+                    if(!audit.ids.has(v))audit.ids.set(v,audit.next++);
+                    const id=audit.ids.get(v);
+                    const snapshot=()=>({paused:v.paused,muted:v.muted,volume:v.volume,
+                        connected:v.isConnected,readyState:v.readyState,currentTime:v.currentTime});
+                    const entry={id,at:Date.now(),action:v.paused?'play':'pause',
+                        before:snapshot(),promise:'not_called',error:'',errorMessage:'',
+                        visibility:document.visibilityState,
+                        userActivation:navigator.userActivation?navigator.userActivation.isActive:null,
+                        after:null,replaced:false};
+                    audit.logs.push(entry);
+                    if(audit.logs.length>40)audit.logs.shift();
+                    const finish=()=>{entry.after=snapshot();entry.replaced=!v.isConnected||
+                        window.__nmInstagramActiveVideo!==v;};
+                    setTimeout(finish,700);
                     if(!v.paused){
-                        v.pause();
-                        return JSON.stringify({status:v.paused?'paused':'ignored'});
+                        try{v.pause();entry.promise='not_applicable';}
+                        catch(e){entry.error=e&&e.name||'unknown';}
+                        return JSON.stringify({status:v.paused?'paused':'ignored',id});
                     }
-                    const probe={video:v,result:'pending',error:''};
+                    const probe={video:v,result:'pending',error:'',id};
                     window.__nmPlayProbe=probe;
                     try {
                         const promise=v.play();
                         if(promise && typeof promise.then==='function'){
-                            promise.then(()=>{probe.result='resolved';},
-                                e=>{probe.result='rejected';probe.error=e&&e.name?e.name:'unknown';});
+                            promise.then(()=>{probe.result='resolved';entry.promise='resolved';},
+                                e=>{probe.result='rejected';probe.error=e&&e.name?e.name:'unknown';
+                                    entry.promise='rejected';entry.error=probe.error;
+                                    entry.errorMessage=e&&e.message||'';});
                         } else {
                             probe.result='no_promise';
+                            entry.promise='no_promise';
                         }
-                        return JSON.stringify({status:'requested_play'});
+                        return JSON.stringify({status:'requested_play',id});
                     } catch(e) {
                         probe.result='threw';
                         probe.error=e&&e.name?e.name:'unknown';
+                        entry.promise='threw';entry.error=probe.error;
+                        entry.errorMessage=e&&e.message||'';
                         return JSON.stringify({status:'denied'});
                     }
                 })()""") { raw ->
@@ -1679,15 +1704,18 @@ class MainActivity : ComponentActivity() {
                     if(window.nmVideoAudit){
                         const state=window.nmVideoAudit;
                         clearInterval(state.interval);
-                        const result=JSON.stringify(state.logs);
+                        const commands=(window.__nmInstagramPlaybackAudit||{}).logs||[];
+                        const result=JSON.stringify({events:state.logs,commands});
                         delete window.nmVideoAudit;
                         return result;
                     }
-                    const state={started:Date.now(),logs:[],ids:new WeakMap(),next:1,last:new Map()};
+                    const sharedIds={next:1,ids:new WeakMap(),logs:[]};
+                    const state={started:Date.now(),logs:[],last:new Map()};
                     window.nmVideoAudit=state;
+                    window.__nmInstagramPlaybackAudit=sharedIds;
                     const identity=v=>{
-                        if(!state.ids.has(v))state.ids.set(v,state.next++);
-                        return state.ids.get(v);
+                        if(!sharedIds.ids.has(v))sharedIds.ids.set(v,sharedIds.next++);
+                        return sharedIds.ids.get(v);
                     };
                     const snapshot=v=>{
                         const r=v.getBoundingClientRect();
@@ -1726,8 +1754,9 @@ class MainActivity : ComponentActivity() {
                         org.json.JSONArray("[$raw]").getString(0)
                     }.getOrDefault("Sem dados")
                     val message = if (output == "started") {
-                        "Monitor iniciado. Feche esta janela, toque no controle original " +
-                            "de áudio do Instagram e abra Monitorar som novamente."
+                        "Monitor iniciado por 30 segundos. Use Play/Pause e o botão de " +
+                            "som; depois toque em Monitorar / parar para copiar os eventos " +
+                            "e os comandos com estado anterior/posterior do mesmo vídeo."
                     } else output
                     AlertDialog.Builder(this@MainActivity)
                         .setTitle("Monitor por vídeo · Instagram")
@@ -1769,6 +1798,8 @@ class MainActivity : ComponentActivity() {
                         }).filter(x=>x.area>0).sort((a,b)=>b.area-a.area);
                     if(!candidates.length)return JSON.stringify({status:'no_playing'});
                     const v=candidates[0].v;
+                    // Apenas compartilha a identidade; o algoritmo de áudio permanece intacto.
+                    window.__nmInstagramActiveVideo=v;
                     if(v.muted)v.muted=false;
                     window.__nmAudioProbe={video:v,expected:false};
                     return JSON.stringify({status:'attempted',muted:v.muted});
