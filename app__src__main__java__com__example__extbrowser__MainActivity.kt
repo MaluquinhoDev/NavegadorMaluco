@@ -1781,11 +1781,11 @@ class MainActivity : ComponentActivity() {
         fun setExpanded(expanded: Boolean) {
             detail.visibility = if (expanded) View.VISIBLE else View.GONE
             (column.layoutParams as? FrameLayout.LayoutParams)?.let { params ->
-                params.width = dp(if (expanded) 160 else 60)
+                params.width = dp(if (expanded) 224 else 60)
                 column.layoutParams = params
             }
         }
-        val hideDetails = Runnable { setExpanded(false) }
+        val hideDetails = Runnable { if (debugSection.visibility != View.VISIBLE) setExpanded(false) }
         fun refreshVolume() {
             val max = audio.getStreamMaxVolume(AudioManager.STREAM_MUSIC).coerceAtLeast(1)
             val current = audio.getStreamVolume(AudioManager.STREAM_MUSIC)
@@ -1865,7 +1865,7 @@ class MainActivity : ComponentActivity() {
         }
         column.addView(pauseButton, LinearLayout.LayoutParams(MATCH_PARENT, dp(48)))
         column.addView(volumeButton, LinearLayout.LayoutParams(MATCH_PARENT, dp(48)))
-        column.addView(detail, LinearLayout.LayoutParams(dp(152), WRAP_CONTENT))
+        column.addView(detail, LinearLayout.LayoutParams(dp(216), WRAP_CONTENT))
         playerLayer.addView(column, FrameLayout.LayoutParams(dp(60), WRAP_CONTENT,
             android.view.Gravity.END or android.view.Gravity.CENTER_VERTICAL))
         instagramOverlay = column
