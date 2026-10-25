@@ -865,12 +865,12 @@ class MainActivity : ComponentActivity() {
                     "${data.optInt("empty")} vazia, ${data.optInt("other")} outra(s)\n" +
                     "Com dimensões: ${data.optInt("dimensions")}; com buffer: ${data.optInt("buffered")}" +
                     data.optJSONObject("state")?.let { st ->
-                        "\\nreadyState=${st.optInt("ready")}; networkState=${st.optInt("network")}" +
-                            "\\nposição=${st.optInt("current")}s; duração=${st.optInt("duration")}s " +
+                        "\nreadyState=${st.optInt("ready")}; networkState=${st.optInt("network")}" +
+                            "\nposição=${st.optInt("current")}s; duração=${st.optInt("duration")}s " +
                             "(-1 = desconhecida/ao vivo)" +
-                            "\\nbuffer à frente=${st.optInt("bufferAhead")}s; " +
+                            "\nbuffer à frente=${st.optInt("bufferAhead")}s; " +
                             "intervalos seekable=${st.optInt("seekable")}" +
-                            "\\nresolução=${st.optInt("width")}x${st.optInt("height")}"
+                            "\nresolução=${st.optInt("width")}x${st.optInt("height")}"
                     }.orEmpty()
             }.getOrElse { "Estados do player indisponíveis neste documento." }
             onResult(summary)
