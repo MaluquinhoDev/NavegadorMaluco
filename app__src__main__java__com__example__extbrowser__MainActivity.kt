@@ -1798,49 +1798,57 @@ class MainActivity : ComponentActivity() {
                         Toast.LENGTH_SHORT).show()
                     return@setOnClickListener
                 }
-                // Primeiro conserva a seleção original de vídeos em reprodução.
-                // Para um vídeo pausado, reutiliza o vídeo ativo ou escolhe o maior
-                // vídeo visível. O controle não dispara play() nem pause().
+                // A preferência explícita persiste até o próximo toque no botão.
+                // O monitor acompanha trocas de vídeo sem iniciar reprodução.
                 val page = webView
                 page.evaluateJavascript("""(function(){
-                    const candidates=[...document.querySelectorAll('video')]
-                        .filter(v=>!v.ended)
-                        .map(v=>{
-                            const r=v.getBoundingClientRect();
-                            const w=Math.max(0,Math.min(r.right,innerWidth)-Math.max(0,r.left));
-                            const h=Math.max(0,Math.min(r.bottom,innerHeight)-Math.max(0,r.top));
-                            return {v,area:w*h};
-                        }).filter(x=>x.area>0).sort((a,b)=>b.area-a.area);
-                    if(!candidates.length)return JSON.stringify({status:'missing'});
-                    const playing=candidates.find(x=>!x.v.paused);
-                    const shared=candidates.find(x=>x.v===window.__nmInstagramActiveVideo);
-                    const v=(shared||playing||candidates[0]).v;
-                    window.__nmInstagramActiveVideo=v;
-                    // Cancela a intenção anterior ao alternar ou trocar de vídeo.
+                    const pick=()=>{
+                        const candidates=[...document.querySelectorAll('video')]
+                            .filter(v=>!v.ended)
+                            .map(v=>{
+                                const r=v.getBoundingClientRect();
+                                const w=Math.max(0,Math.min(r.right,innerWidth)-Math.max(0,r.left));
+                                const h=Math.max(0,Math.min(r.bottom,innerHeight)-Math.max(0,r.top));
+                                return {v,area:w*h};
+                            }).filter(x=>x.area>0).sort((a,b)=>b.area-a.area);
+                        const playing=candidates.find(x=>!x.v.paused);
+                        return (playing||candidates[0]||{}).v;
+                    };
+                    const existing=window.__nmInstagramAudioState;
+                    const v=pick();
+                    if(!v&&!existing)return JSON.stringify({status:'missing'});
                     if(window.__nmInstagramAudioResumeCleanup)
                         window.__nmInstagramAudioResumeCleanup();
                     window.__nmInstagramAudioResumeCleanup=null;
-                    const expected=!v.muted;
-                    v.muted=expected;
-                    // O Instagram pode impor muted=true na transição para playing.
-                    // Uma ativação explícita feita enquanto pausado autoriza UMA
-                    // reaplicação após o evento playing, sem chamar play() e sem loop.
-                    if(!expected&&v.paused){
-                        const onPlaying=()=>{
-                            v.removeEventListener('playing',onPlaying);
-                            if(window.__nmInstagramAudioResumeCleanup===cleanup)
-                                window.__nmInstagramAudioResumeCleanup=null;
-                            setTimeout(()=>{
-                                if(v.isConnected&&window.__nmInstagramActiveVideo===v&&
-                                    !v.paused&&v.muted)v.muted=false;
-                            },200);
-                        };
-                        const cleanup=()=>v.removeEventListener('playing',onPlaying);
-                        window.__nmInstagramAudioResumeCleanup=cleanup;
-                        v.addEventListener('playing',onPlaying,{once:true});
+                    if(existing&&existing.interval)clearInterval(existing.interval);
+                    // Usa a intenção anterior, e não o valor de muted que o
+                    // Instagram pode ter revertido desde o último clique.
+                    const soundOn=existing?!existing.soundOn:!!(v&&v.muted);
+                    const state={soundOn,interval:null,checks:0,reassertions:0};
+                    window.__nmInstagramAudioState=state;
+                    const apply=()=>{
+                        if(window.__nmInstagramAudioState!==state)return;
+                        if(document.visibilityState==='hidden')return;
+                        const active=pick();
+                        if(!active)return;
+                        window.__nmInstagramActiveVideo=active;
+                        state.checks++;
+                        if(soundOn&&active.muted){
+                            active.muted=false;
+                            state.reassertions++;
+                        }
+                    };
+                    if(v){
+                        window.__nmInstagramActiveVideo=v;
+                        v.muted=!soundOn;
                     }
-                    window.__nmAudioProbe={video:v,expected};
-                    return JSON.stringify({status:'attempted',muted:v.muted,paused:v.paused});
+                    if(soundOn){
+                        state.interval=setInterval(apply,750);
+                        apply();
+                    }
+                    window.__nmAudioProbe={video:v,expected:!soundOn};
+                    return JSON.stringify({status:'attempted',soundOn,
+                        muted:v?v.muted:null,paused:v?v.paused:null});
                 })()""") { raw ->
                     val result = runCatching {
                         org.json.JSONObject(org.json.JSONArray("[$raw]").getString(0))
@@ -1851,19 +1859,28 @@ class MainActivity : ComponentActivity() {
                             Toast.LENGTH_LONG).show()
                         return@evaluateJavascript
                     }
+                    val soundEnabled = result.optBoolean("soundOn")
+                    text = if (soundEnabled) "🔊" else "🔇"
+                    contentDescription = if (soundEnabled)
+                        "Som ligado; tocar para silenciar e parar acompanhamento"
+                    else "Som silenciado; tocar para ativar acompanhamento"
                     page.postDelayed({
                         if (page !== webView || page.url != currentUrl) return@postDelayed
                         page.evaluateJavascript("""(function(){
+                            const state=window.__nmInstagramAudioState;
                             const p=window.__nmAudioProbe;
-                            if(!p||!p.video.isConnected)return 'changed';
-                            return p.video.muted===p.expected?
-                                (p.video.muted?'muted':'sound'):'reverted';
+                            if(!state||!p)return 'changed';
+                            return JSON.stringify({status:state.soundOn?'sound':'muted',
+                                reassertions:state.reassertions,
+                                activeConnected:!!(p.video&&p.video.isConnected)});
                         })()""") { observed ->
-                            val message = when (observed?.trim('"')) {
-                                "sound" -> "Som ativado no vídeo (não altera Play/Pause)"
-                                "muted" -> "Som silenciado no vídeo (não altera Play/Pause)"
-                                "reverted" -> "Instagram reverteu a alteração de som"
-                                else -> "Vídeo foi substituído pelo Instagram"
+                            val report = runCatching {
+                                org.json.JSONObject(org.json.JSONArray("[$observed]").getString(0))
+                            }.getOrNull()
+                            val message = when (report?.optString("status")) {
+                                "sound" -> "Som ligado: acompanhamento ativo para vídeos do feed"
+                                "muted" -> "Som silenciado: acompanhamento desativado"
+                                else -> "Não foi possível confirmar o estado do áudio"
                             }
                             Toast.makeText(this@MainActivity, message,
                                 Toast.LENGTH_SHORT).show()
