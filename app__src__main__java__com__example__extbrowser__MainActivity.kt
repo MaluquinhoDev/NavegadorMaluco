@@ -92,7 +92,7 @@ class MainActivity : ComponentActivity() {
         synchronized(siteDiagnostics) {
             val events = siteDiagnostics[view] ?: return
             if (events.size >= 60) events.removeAt(0)
-            events.add(event)
+            events.add("t=${System.currentTimeMillis() % 600000} · $event")
         }
     }
     // WebViews em espera pelo transporte de uma nova janela.
@@ -614,7 +614,7 @@ class MainActivity : ComponentActivity() {
                         const recoveryEnabled=$recoverFocus;
                         window.__nmKeyboardAudit=audit;
                         const add=(kind,el)=>{
-                            const entry={event:kind,tag:el&&el.tagName||'',
+                            const entry={t:Date.now()%600000,event:kind,tag:el&&el.tagName||'',
                                 type:el&&el.type||'',
                                 viewport:window.visualViewport?Math.round(visualViewport.height):null,
                                 screen:innerHeight};
@@ -633,14 +633,50 @@ class MainActivity : ComponentActivity() {
                             audit.attempts=audit.attempts.filter(t=>now-t<10000);
                             if(audit.attempts.length>=2)return;
                             audit.attempts.push(now);
-                            setTimeout(()=>{
+                            const oldRect=el.getBoundingClientRect();
+                            const oldCenter={x:(oldRect.left+oldRect.right)/2,
+                                y:(oldRect.top+oldRect.bottom)/2};
+                            let observer=null;
+                            let timeout=null;
+                            let finished=false;
+                            const stop=()=>{finished=true;if(observer)observer.disconnect();
+                                if(timeout)clearTimeout(timeout);};
+                            const restore=()=>{
+                                if(finished)return;
                                 const active=document.activeElement;
-                                if(!el.isConnected){add('input-replaced',el);return;}
-                                if(active&&active!==document.body&&active!==document.documentElement)return;
-                                if(!window.visualViewport||visualViewport.height>innerHeight-120)return;
-                                try{el.focus({preventScroll:true});
-                                    add(document.activeElement===el?'focus-restored':'focus-rejected',el);
-                                }catch(_){add('focus-rejected',el);}
+                                if(active&&active!==document.body&&active!==document.documentElement){
+                                    stop();return;
+                                }
+                                if(!window.visualViewport||visualViewport.height>innerHeight-120){
+                                    stop();return;
+                                }
+                                let target=el.isConnected?el:null;
+                                if(!target){
+                                    const matches=[...document.querySelectorAll('input,textarea,[contenteditable="true"]')]
+                                        .filter(x=>x!==el&&x.tagName===el.tagName&&
+                                            (x.type||'')===(el.type||''));
+                                    target=matches.find(x=>{
+                                        const r=x.getBoundingClientRect();
+                                        return r.width>0&&r.height>0&&
+                                            Math.abs((r.left+r.right)/2-oldCenter.x)<140&&
+                                            Math.abs((r.top+r.bottom)/2-oldCenter.y)<140;
+                                    })||null;
+                                }
+                                if(!target)return;
+                                stop();
+                                try{target.focus({preventScroll:true});
+                                    add(document.activeElement===target?
+                                        (target===el?'focus-restored':'replacement-focused'):
+                                        'focus-rejected',target);
+                                }catch(_){add('focus-rejected',target);}
+                            };
+                            setTimeout(()=>{
+                                if(!el.isConnected)add('input-replaced',el);
+                                restore();
+                                if(finished)return;
+                                observer=new MutationObserver(restore);
+                                observer.observe(document.body,{childList:true,subtree:true});
+                                timeout=setTimeout(()=>{stop();add('recovery-timeout',el);},350);
                             },0);
                         },true);
                         if(window.visualViewport)
@@ -1253,7 +1289,7 @@ class MainActivity : ComponentActivity() {
                 val keyboardEvents = data?.optJSONArray("keyboardEvents")
                 for (i in 0 until (keyboardEvents?.length() ?: 0)) {
                     val e = keyboardEvents?.optJSONObject(i) ?: continue
-                    appendLine("- ${e.optString("event")} ${e.optString("tag")}" +
+                    appendLine("- t=${e.optString("t")} ${e.optString("event")} ${e.optString("tag")}" +
                         " tipo=${e.optString("type")} viewport=${e.optString("viewport")}" +
                         " janela=${e.optString("screen")}")
                 }
