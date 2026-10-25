@@ -1074,25 +1074,36 @@ class MainActivity : ComponentActivity() {
             } catch(_) {}
             // Experimento opt-in: identifica qual rotina chama a remoção do FORM.
             // Registra apenas nomes de funções; nunca texto, valores ou URLs de scripts.
-            const trace={enabled:false,guardEnabled:false,guardBlocked:0,events:[]};
+            const trace={enabled:false,guardEnabled:false,subtreeGuard:false,
+                guardBlocked:0,events:[],lastWindowResize:0,lastVisualResize:0,
+                lastFocus:0};
             window.__nmRemovalTrace=trace;
             try {
                 trace.enabled=sessionStorage.getItem('__nmTraceFormRemoval')==='1';
                 trace.guardEnabled=sessionStorage.getItem('__nmGuardFormRemoval')==='1';
-                if(trace.enabled||trace.guardEnabled){
+                trace.subtreeGuard=sessionStorage.getItem('__nmGuardChatSubtree')==='1';
+                if(trace.enabled||trace.guardEnabled||trace.subtreeGuard){
                     let focused=null;
-                    let focusGuardUsed=false;
+                    let focusGuardUsed=0;
+                    window.addEventListener('resize',()=>{
+                        trace.lastWindowResize=Date.now();
+                    },true);
+                    if(window.visualViewport)
+                        visualViewport.addEventListener('resize',()=>{
+                            trace.lastVisualResize=Date.now();
+                        },true);
                     document.addEventListener('focusin',e=>{
                         if(e.target&&e.target.matches&&
                             e.target.matches('input,textarea,[contenteditable="true"]')){
                             focused=e.target;
-                            focusGuardUsed=false;
+                            focusGuardUsed=0;
+                            trace.lastFocus=Date.now();
                         }
                     },true);
                     const traceRemoval=(method,node)=>{
                         if(!focused||!node||
                             !(node===focused||(node.contains&&node.contains(focused))))return;
-                        const frames=(new Error().stack||'').split('\n').slice(2,10)
+                        const frames=(new Error().stack||'').split('\n').slice(2,26)
                             .map(line=>{
                                 const m=line.match(/^\s*at\s+([^\s(]+)/);
                                 const fn=m?m[1].replace(/[^\w.$<>-]/g,'').slice(0,60):'anonymous';
@@ -1110,24 +1121,36 @@ class MainActivity : ComponentActivity() {
                                 return {fn,source};
                             });
                         trace.events.push({t:Date.now()%600000,method,
-                            removedTag:node.nodeName||'?',functions:frames.map(f=>f.fn),frames});
-                        if(trace.events.length>12)trace.events.shift();
+                            removedTag:node.nodeName||'?',functions:frames.map(f=>f.fn),frames,
+                            msSinceFocus:trace.lastFocus?Date.now()-trace.lastFocus:null,
+                            msSinceWindowResize:trace.lastWindowResize?
+                                Date.now()-trace.lastWindowResize:null,
+                            msSinceVisualResize:trace.lastVisualResize?
+                                Date.now()-trace.lastVisualResize:null,
+                            activeTag:document.activeElement?.tagName||'',
+                            viewport:window.visualViewport?
+                                Math.round(visualViewport.height):null});
+                        if(trace.events.length>16)trace.events.shift();
                     };
                     const removeChild=Node.prototype.removeChild;
                     Node.prototype.removeChild=function(node){
                         traceRemoval('removeChild',node);
-                        // Um único bloqueio por foco: teste controlado, não correção geral.
+                        // Bloqueio de formulário, ou de formulário e SECTION no modo
+                        // ampliado. Limite de quatro para não travar a aplicação.
                         const viewport=window.visualViewport;
-                        if(trace.guardEnabled&&!focusGuardUsed&&
-                            node&&node.nodeName==='FORM'&&focused&&
+                        const allowed=node&&(node.nodeName==='FORM'||
+                            (trace.subtreeGuard&&node.nodeName==='SECTION'));
+                        if((trace.guardEnabled||trace.subtreeGuard)&&focusGuardUsed<
+                            (trace.subtreeGuard?4:1)&&allowed&&focused&&
                             node.contains&&node.contains(focused)&&
                             document.activeElement===focused&&
                             viewport&&viewport.height<innerHeight-100){
-                            focusGuardUsed=true;
+                            focusGuardUsed++;
                             trace.guardBlocked++;
                             trace.events.push({t:Date.now()%600000,
-                                method:'removeChild-BLOQUEADO',removedTag:'FORM',functions:[]});
-                            if(trace.events.length>12)trace.events.shift();
+                                method:'removeChild-BLOQUEADO',removedTag:node.nodeName,
+                                functions:[]});
+                            if(trace.events.length>16)trace.events.shift();
                             return node;
                         }
                         return removeChild.apply(this,arguments);
@@ -1538,7 +1561,8 @@ class MainActivity : ComponentActivity() {
                 "Experimento de eventos resize · Seu Imposto",
                 "Rastrear remoção do formulário · Seu Imposto",
                 "Bloqueio experimental do FORM · Seu Imposto",
-                "Diagnóstico de origem · sem bloqueios")) { _, which ->
+                "Diagnóstico de origem · sem bloqueios",
+                "Proteção experimental FORM + SECTION")) { _, which ->
                 when (which) {
                     0 -> extLauncher.launch(Intent(this, ExtensionsActivity::class.java).apply {
                         putExtra("attention_current_page", webView.url ?: tabs[activeIndex].url)
@@ -1556,6 +1580,7 @@ class MainActivity : ComponentActivity() {
                     11 -> toggleSeuImpostoRemovalTrace()
                     12 -> toggleSeuImpostoFormGuard()
                     13 -> startSeuImpostoOriginTrace()
+                    14 -> toggleSeuImpostoSubtreeGuard()
                 }
             }.show()
     }
@@ -1718,10 +1743,30 @@ class MainActivity : ComponentActivity() {
         webView.evaluateJavascript("""(function(){
             sessionStorage.setItem('__nmTraceFormRemoval','1');
             sessionStorage.setItem('__nmGuardFormRemoval','0');
+            sessionStorage.setItem('__nmGuardChatSubtree','0');
             sessionStorage.setItem('__nmResizeProbeMode','normal');
             return true;
         })()""") {
             Toast.makeText(this, "Rastreamento de origem ligado, sem bloqueios",
+                Toast.LENGTH_LONG).show()
+            webView.reload()
+        }
+    }
+
+    private fun toggleSeuImpostoSubtreeGuard() {
+        if (!isSeuImposto(webView.url)) {
+            Toast.makeText(this, "Abra seuimposto.com antes deste teste", Toast.LENGTH_LONG).show()
+            return
+        }
+        webView.evaluateJavascript("""(function(){
+            const enabled=sessionStorage.getItem('__nmGuardChatSubtree')==='1';
+            sessionStorage.setItem('__nmGuardChatSubtree',enabled?'0':'1');
+            sessionStorage.setItem('__nmGuardFormRemoval','0');
+            sessionStorage.setItem('__nmTraceFormRemoval','1');
+            sessionStorage.setItem('__nmResizeProbeMode','normal');
+            return enabled?'desligada':'ligada';
+        })()""") { raw ->
+            Toast.makeText(this, "Proteção de FORM e SECTION · ${raw.trim('"')}",
                 Toast.LENGTH_LONG).show()
             webView.reload()
         }
@@ -1790,6 +1835,7 @@ class MainActivity : ComponentActivity() {
                 resizeBlockedVisual:resizeProbe.blockedVisual||0,
                 removalTraceEnabled:!!removalTrace.enabled,
                 formGuardEnabled:!!removalTrace.guardEnabled,
+                subtreeGuardEnabled:!!removalTrace.subtreeGuard,
                 formGuardBlocked:removalTrace.guardBlocked||0,
                 removalTraceEvents:removalTrace.events||[],
                 activeTag:document.activeElement&&document.activeElement.tagName,
@@ -1820,6 +1866,7 @@ class MainActivity : ComponentActivity() {
                     .forEach { appendLine("$it: ${data?.optString(it, "indisponível") ?: "indisponível"}") }
                 appendLine("Rastreamento de remoções: ${data?.optString("removalTraceEnabled", "false")}")
                 appendLine("Bloqueio experimental FORM: ${data?.optString("formGuardEnabled", "false")}")
+                appendLine("Proteção FORM + SECTION: ${data?.optString("subtreeGuardEnabled", "false")}")
                 appendLine("Remoções impedidas: ${data?.optString("formGuardBlocked", "0")}")
                 val removalEvents = data?.optJSONArray("removalTraceEvents")
                 for (i in 0 until (removalEvents?.length() ?: 0)) {
@@ -1827,6 +1874,12 @@ class MainActivity : ComponentActivity() {
                     appendLine("- remoção t=${e.optString("t")} " +
                         "método=${e.optString("method")} " +
                         "nó=${e.optString("removedTag")}")
+                    if (e.has("msSinceFocus"))
+                        appendLine("  contexto focoHá=${e.optString("msSinceFocus")}ms " +
+                            "resizeJanelaHá=${e.optString("msSinceWindowResize")}ms " +
+                            "resizeVisualHá=${e.optString("msSinceVisualResize")}ms " +
+                            "focoAtual=${e.optString("activeTag")} " +
+                            "viewport=${e.optString("viewport")}")
                     appendLine("  funções=${e.optJSONArray("functions")?.toString() ?: "[]"}")
                     val frames = e.optJSONArray("frames")
                     if (frames != null) {
