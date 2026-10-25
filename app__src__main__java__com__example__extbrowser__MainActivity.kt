@@ -823,7 +823,7 @@ class MainActivity : ComponentActivity() {
             setBackgroundColor(0x55000000)
         }
         val surface = android.view.SurfaceView(this)
-        panel.addView(surface, FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT))
+        panel.addView(surface, FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT, android.view.Gravity.CENTER))
         val info = TextView(this).apply {
             text = "Conectando ao player..."
             setTextColor(android.graphics.Color.WHITE)
@@ -864,10 +864,41 @@ class MainActivity : ComponentActivity() {
         var closed = false
         var videoFullscreen = false
         val originalOrientation = requestedOrientation
+        var videoWidth = 0
+        var videoHeight = 0
+        var filling = false
+        fun updateVideoAspect() {
+            val width = panel.width
+            val height = panel.height
+            if (width <= 0 || height <= 0 || videoWidth <= 0 || videoHeight <= 0) return
+            val ratio = videoWidth.toFloat() / videoHeight
+            val boxRatio = width.toFloat() / height
+            val targetWidth = if ((ratio > boxRatio) != filling) width else (height * ratio).toInt()
+            val targetHeight = if ((ratio > boxRatio) != filling) (width / ratio).toInt() else height
+            surface.layoutParams = FrameLayout.LayoutParams(
+                targetWidth.coerceAtLeast(1), targetHeight.coerceAtLeast(1), android.view.Gravity.CENTER)
+        }
+        panel.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ -> updateVideoAspect() }
+        val aspectButton = Button(this).apply { text = "Ajustar" }
+        navControls.addView(aspectButton, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
+        aspectButton.setOnClickListener {
+            filling = !filling
+            aspectButton.text = if (filling) "Preencher" else "Ajustar"
+            updateVideoAspect()
+        }
+        val hideControls = Runnable { if (!closed && player?.isPlaying == true &&
+            !seeking && !isInPictureInPictureMode) outer.visibility = View.GONE }
+        fun showControls() {
+            if (!isInPictureInPictureMode) outer.visibility = View.VISIBLE
+            handler.removeCallbacks(hideControls)
+            if (!videoFullscreen && player?.isPlaying == true)
+                handler.postDelayed(hideControls, 3500L)
+        }
         fun setVideoFullscreen(enabled: Boolean) {
             videoFullscreen = enabled
             val visibility = if (enabled) View.GONE else View.VISIBLE
             outer.visibility = visibility
+            if (!enabled) showControls()
             playerIsImmersive = enabled
             window.decorView.systemUiVisibility = if (enabled)
                 (View.SYSTEM_UI_FLAG_FULLSCREEN or View.SYSTEM_UI_FLAG_HIDE_NAVIGATION or
@@ -876,7 +907,11 @@ class MainActivity : ComponentActivity() {
                 else 0
             fullscreenButton.text = if (enabled) "Sair tela cheia" else "Tela cheia"
         }
-        surface.setOnClickListener { if (videoFullscreen) setVideoFullscreen(false) else outer.visibility = View.VISIBLE }
+        surface.setOnClickListener { showControls() }
+        outer.setOnClickListener { if (outer.visibility == View.VISIBLE) {
+            outer.visibility = View.GONE
+            handler.removeCallbacks(hideControls)
+        } else showControls() }
 
         val update = object : Runnable {
             override fun run() {
@@ -898,12 +933,18 @@ class MainActivity : ComponentActivity() {
                     info.text = if (total > 0L) "${clock(pos)} / ${clock(total)}"
                         else "Áudio/vídeo nativo · ${clock(pos)}"
                     play.text = if (c.isPlaying) "Pausar" else "Reproduzir"
+                    if (c.isPlaying && outer.visibility == View.VISIBLE &&
+                        !handler.hasCallbacks(hideControls) && !videoFullscreen)
+                        handler.postDelayed(hideControls, 3500L)
                     handler.postDelayed(this, 500L)
                 }
             }
         }
         progress.setOnSeekBarChangeListener(object : android.widget.SeekBar.OnSeekBarChangeListener {
-            override fun onStartTrackingTouch(seekBar: android.widget.SeekBar?) { seeking = true }
+            override fun onStartTrackingTouch(seekBar: android.widget.SeekBar?) {
+                seeking = true
+                handler.removeCallbacks(hideControls)
+            }
             override fun onStopTrackingTouch(seekBar: android.widget.SeekBar?) {
                 val c = player
                 if (c != null && c.duration > 0L &&
@@ -911,6 +952,7 @@ class MainActivity : ComponentActivity() {
                     c.seekTo(c.duration * progress.progress / 1000L)
                 }
                 seeking = false
+                showControls()
             }
             override fun onProgressChanged(seekBar: android.widget.SeekBar?, p: Int, fromUser: Boolean) {}
         })
@@ -940,6 +982,7 @@ class MainActivity : ComponentActivity() {
             if (!closed) {
                 closed = true
                 handler.removeCallbacks(update)
+                handler.removeCallbacks(hideControls)
                 player?.let { c -> runCatching { c.clearVideoSurfaceView(surface) } }
                 MediaController.releaseFuture(future)
                 playerLayer.removeView(panel)
@@ -961,6 +1004,22 @@ class MainActivity : ComponentActivity() {
                     val c = future.get()
                     player = c
                     c.setVideoSurfaceView(surface)
+                    val sizeListener = object : androidx.media3.common.Player.Listener {
+                        override fun onVideoSizeChanged(size: androidx.media3.common.VideoSize) {
+                            if (size.width > 0 && size.height > 0) {
+                                videoWidth = (size.width * size.pixelWidthHeightRatio).toInt().coerceAtLeast(1)
+                                videoHeight = size.height
+                                updateVideoAspect()
+                            }
+                        }
+                    }
+                    c.addListener(sizeListener)
+                    val initialSize = c.videoSize
+                    if (initialSize.width > 0 && initialSize.height > 0) {
+                        videoWidth = (initialSize.width * initialSize.pixelWidthHeightRatio).toInt().coerceAtLeast(1)
+                        videoHeight = initialSize.height
+                        updateVideoAspect()
+                    }
                     handler.post(update)
                 } catch (e: Exception) {
                     info.text = "Não foi possível conectar ao player."
