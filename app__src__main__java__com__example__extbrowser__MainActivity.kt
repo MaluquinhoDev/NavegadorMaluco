@@ -86,6 +86,12 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun configureSiteDisplay(view: WebView, url: String?) {
+        // Exceção restrita ao Instagram híbrido: permite play() disparado
+        // pelo controle nativo, que não é reconhecido como gesto DOM da página.
+        val host = websiteHost(url)
+        val instagram = host == "instagram.com" || host?.endsWith(".instagram.com") == true
+        view.settings.mediaPlaybackRequiresUserGesture =
+            !(instagram && siteDisplayMode(url) == "hybrid")
         when (siteDisplayMode(url)) {
             "desktop", "hybrid" -> {
                 // Apenas a identificação desktop; o modo híbrido mantém viewport
@@ -524,6 +530,11 @@ class MainActivity : ComponentActivity() {
         WebView.setWebContentsDebuggingEnabled((applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) != 0)
         view.webViewClient = object : WebViewClient() {
             override fun onPageStarted(v: WebView, url: String, favicon: Bitmap?) {
+                val pageHost = websiteHost(url)
+                val instagramHybrid = (pageHost == "instagram.com" ||
+                    pageHost?.endsWith(".instagram.com") == true) &&
+                    siteDisplayMode(url) == "hybrid"
+                v.settings.mediaPlaybackRequiresUserGesture = !instagramHybrid
                 // Alguns fluxos de login do X usam cookies entre domínios.
                 // Restrição mantida para outras páginas e sem alterar o User-Agent.
                 val host = runCatching { Uri.parse(url).host?.lowercase() }.getOrNull()
