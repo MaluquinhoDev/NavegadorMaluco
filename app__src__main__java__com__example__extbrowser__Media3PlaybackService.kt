@@ -36,10 +36,15 @@ class Media3PlaybackService : MediaSessionService() {
                 (now - lastMediaTickMs).coerceIn(0L, 1500L) else 0L
             lastMediaTickMs = now
             val verdict = Attention.mediaPlaybackTick(pageUrl, delta)
-            if (verdict != null && (exo.playWhenReady || exo.isPlaying)) {
-                exo.pause()
-                Log.i(TAG, "Controle de Atenção interrompeu mídia: " +
-                    verdict.site.domain + " (" + verdict.reason + ")")
+            if (verdict != null) {
+                // Parar e retirar a fonte da sessão impede Play/Seek/Próximo na
+                // notificação, mini-player ou PiP de reativarem mídia bloqueada.
+                if (exo.mediaItemCount > 0) {
+                    exo.stop()
+                    exo.clearMediaItems()
+                    Log.i(TAG, "Controle de Atenção encerrou sessão Media3: " +
+                        verdict.site.domain + " (" + verdict.reason + ")")
+                }
             }
             attentionHandler.postDelayed(this, 1000L)
         }
