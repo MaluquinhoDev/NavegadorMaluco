@@ -1947,11 +1947,11 @@ class MainActivity : ComponentActivity() {
             const resizeProbe=window.__nmResizeProbe||{};
             const removalTrace=window.__nmRemovalTrace||{};
             // Resource Timing é observacional: não intercepta fetch/XHR nem lê mensagens.
-            const chatRequests=performance.getEntriesByType('resource').filter(entry=>{
+            const allChatRequests=performance.getEntriesByType('resource').filter(entry=>{
                 try{const u=new URL(entry.name);return u.origin===location.origin&&
                     (u.pathname==='/api/chat/eu'||u.pathname==='/api/chat/sala');}
                 catch(_){return false;}
-            }).slice(-35).map(entry=>({
+            }).slice(-100).map(entry=>({
                 route:new URL(entry.name).pathname==='/api/chat/sala'?'sala':'eu',
                 started:Math.round((performance.timeOrigin+entry.startTime)%600000),
                 finished:Math.round((performance.timeOrigin+entry.responseEnd)%600000),
@@ -1959,6 +1959,26 @@ class MainActivity : ComponentActivity() {
                 duration:Math.round(entry.duration),
                 initiator:entry.initiatorType||'?'
             }));
+            const chatRequests=allChatRequests.slice(-35);
+            const delta=(later,earlier)=>(later-earlier+600000)%600000;
+            const correlations=(audit?audit.logs:[])
+                .filter(e=>e.event==='focused-node-removal').slice(-12)
+                .map(e=>{
+                    const viewport=(audit?audit.logs:[]).filter(x=>
+                        x.event==='viewport-resize'&&delta(e.t,x.t)<=2000)
+                        .sort((a,b)=>delta(e.t,a.t)-delta(e.t,b.t))[0];
+                    const prior=allChatRequests.filter(x=>x.route==='sala'&&
+                        delta(e.t,x.finished)<=1500)
+                        .sort((a,b)=>delta(e.t,a.finished)-delta(e.t,b.finished))[0];
+                    const next=allChatRequests.filter(x=>x.route==='sala'&&
+                        delta(x.started,e.t)<=1500)
+                        .sort((a,b)=>delta(a.started,e.t)-delta(b.started,e.t))[0];
+                    return {t:e.t,
+                        afterViewportMs:viewport?delta(e.t,viewport.t):null,
+                        afterSalaResponseMs:prior?delta(e.t,prior.finished):null,
+                        priorSalaHttp:prior?prior.status:null,
+                        beforeNextSalaRequestMs:next?delta(next.started,e.t):null};
+                });
             return JSON.stringify({
                 title:document.title,
                 blockedText:text.includes('Não deu para abrir a apuração neste navegador'),
@@ -1983,7 +2003,8 @@ class MainActivity : ComponentActivity() {
                 formGuardBlocked:removalTrace.guardBlocked||0,
                 removalTraceEvents:removalTrace.events||[],
                 activeTag:document.activeElement&&document.activeElement.tagName,
-                keyboardEvents:audit?audit.logs:[],chatRequests:chatRequests
+                keyboardEvents:audit?audit.logs:[],chatRequests:chatRequests,
+                correlations:correlations
             });
         })()"""
         page.evaluateJavascript(script) { raw ->
@@ -2085,6 +2106,20 @@ class MainActivity : ComponentActivity() {
                         "HTTP=${if (status == 0) "indisponível" else status.toString()} " +
                         "duração=${e.optString("duration")}ms " +
                         "origem=${e.optString("initiator")}")
+                }
+                appendLine("Correlação temporal · viewport × sala × remoção:")
+                val correlations = data?.optJSONArray("correlations")
+                if (correlations == null || correlations.length() == 0)
+                    appendLine("- Nenhuma remoção correlacionável registrada")
+                for (i in 0 until (correlations?.length() ?: 0)) {
+                    val e = correlations?.optJSONObject(i) ?: continue
+                    fun interval(key: String): String =
+                        if (e.isNull(key)) "—" else "${e.optLong(key)}ms"
+                    appendLine("- remoção t=${e.optString("t")} " +
+                        "desdeViewport=${interval("afterViewportMs")} " +
+                        "desdeRespostaSala=${interval("afterSalaResponseMs")} " +
+                        "HTTPsala=${if (e.isNull("priorSalaHttp")) "—" else e.optInt("priorSalaHttp")} " +
+                        "atéPróximaConsulta=${interval("beforeNextSalaRequestMs")}")
                 }
                 appendLine("Eventos de carregamento (${events.size}):")
                 events.forEach { appendLine("- $it") }
