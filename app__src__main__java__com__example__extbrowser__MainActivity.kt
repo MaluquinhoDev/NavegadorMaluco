@@ -1568,17 +1568,8 @@ class MainActivity : ComponentActivity() {
         AlertDialog.Builder(this).setTitle("Ferramentas")
             .setItems(arrayOf("Extensões", "Opções avançadas de mídia",
                 "Aparência · claro/escuro", "Modo de exibição do site",
-                "Diagnóstico · Seu Imposto", "Teste de teclado · Seu Imposto",
-                "Recuperação de foco · Seu Imposto", "Teclado · teste HTML isolado",
-                "Teclado sem redimensionamento · Seu Imposto",
-                "Área visual estável · Seu Imposto",
-                "Experimento de eventos resize · Seu Imposto",
-                "Rastrear remoção do formulário · Seu Imposto",
-                "Bloqueio experimental do FORM · Seu Imposto",
-                "Diagnóstico de origem · sem bloqueios",
-                "Proteção experimental FORM + SECTION",
-                "Digitar no chat pelo Android · Seu Imposto",
-                "Comparar UA WebView/Chrome/Firefox · Seu Imposto")) { _, which ->
+                "Seu Imposto · chat e diagnóstico",
+                "Teclado · teste HTML isolado")) { _, which ->
                 when (which) {
                     0 -> extLauncher.launch(Intent(this, ExtensionsActivity::class.java).apply {
                         putExtra("attention_current_page", webView.url ?: tabs[activeIndex].url)
@@ -1586,19 +1577,52 @@ class MainActivity : ComponentActivity() {
                     1 -> showMediaOptions()
                     2 -> showThemePicker()
                     3 -> showSiteDisplayModes()
-                    4 -> showSeuImpostoDiagnostic()
-                    5 -> toggleSeuImpostoKeyboardCompat()
-                    6 -> toggleSeuImpostoFocusRecovery()
-                    7 -> openIsolatedKeyboardTest()
-                    8 -> toggleSeuImpostoKeyboardPan()
-                    9 -> toggleSeuImpostoViewportOverlay()
-                    10 -> showSeuImpostoResizeExperiment()
-                    11 -> toggleSeuImpostoRemovalTrace()
-                    12 -> toggleSeuImpostoFormGuard()
-                    13 -> startSeuImpostoOriginTrace()
-                    14 -> toggleSeuImpostoSubtreeGuard()
-                    15 -> showSeuImpostoNativeChatInput()
-                    16 -> toggleSeuImpostoPlainChromeUa()
+                    4 -> showSeuImpostoToolsMenu()
+                    5 -> openIsolatedKeyboardTest()
+                }
+            }.show()
+    }
+
+    private fun showSeuImpostoToolsMenu() {
+        AlertDialog.Builder(this).setTitle("Seu Imposto · chat")
+            .setItems(arrayOf(
+                "Diagnóstico · resumo, foco e rede",
+                "Digitar mensagem pelo Android",
+                "Rastrear origem da reconstrução (sem bloqueios)",
+                "Comparar WebView, Chrome e Firefox",
+                "Experimentos anteriores · teclado e DOM"
+            )) { _, selected ->
+                when (selected) {
+                    0 -> showSeuImpostoDiagnostic()
+                    1 -> showSeuImpostoNativeChatInput()
+                    2 -> startSeuImpostoOriginTrace()
+                    3 -> toggleSeuImpostoPlainChromeUa()
+                    4 -> showSeuImpostoLegacyTests()
+                }
+            }.show()
+    }
+
+    private fun showSeuImpostoLegacyTests() {
+        AlertDialog.Builder(this).setTitle("Testes anteriores · experimentais")
+            .setItems(arrayOf(
+                "Compatibilidade de teclado · legado",
+                "Recuperação automática de foco · legado",
+                "Janela sem redimensionamento · adjustPan",
+                "VirtualKeyboard overlaysContent",
+                "Bloquear eventos resize · experimento",
+                "Rastreamento simples de remoções",
+                "Bloquear apenas FORM · experimento",
+                "Bloquear FORM + SECTION · experimento"
+            )) { _, selected ->
+                when (selected) {
+                    0 -> toggleSeuImpostoKeyboardCompat()
+                    1 -> toggleSeuImpostoFocusRecovery()
+                    2 -> toggleSeuImpostoKeyboardPan()
+                    3 -> toggleSeuImpostoViewportOverlay()
+                    4 -> showSeuImpostoResizeExperiment()
+                    5 -> toggleSeuImpostoRemovalTrace()
+                    6 -> toggleSeuImpostoFormGuard()
+                    7 -> toggleSeuImpostoSubtreeGuard()
                 }
             }.show()
     }
@@ -2066,9 +2090,116 @@ class MainActivity : ComponentActivity() {
                 events.forEach { appendLine("- $it") }
                 appendLine("Não inclui mensagens, cookies, URLs completas ou dados do chat.")
             }
+            val keyboardEvents = data?.optJSONArray("keyboardEvents")
+            val removed = (0 until (keyboardEvents?.length() ?: 0)).count { index ->
+                keyboardEvents?.optJSONObject(index)?.optString("event") ==
+                    "focused-node-removal"
+            }
+            val focusAttempts = (0 until (keyboardEvents?.length() ?: 0)).count { index ->
+                keyboardEvents?.optJSONObject(index)?.optString("event") == "focusin" &&
+                    keyboardEvents?.optJSONObject(index)?.optString("tag") == "INPUT"
+            }
+            val http503 = events.filter { "HTTP 503" in it }
+            val chatRequests = data?.optJSONArray("chatRequests")
+            val chatFailures = (0 until (chatRequests?.length() ?: 0)).count { index ->
+                (chatRequests?.optJSONObject(index)?.optInt("status") ?: 0) >= 500
+            }
+            val keyboardTimeline = (0 until (keyboardEvents?.length() ?: 0)).mapNotNull { index ->
+                keyboardEvents?.optJSONObject(index)
+            }
+            val firstRemovalIndex = keyboardTimeline.indexOfFirst {
+                it.optString("event") == "focused-node-removal"
+            }
+            val resizeToRemovalMs = if (firstRemovalIndex >= 0) {
+                val precedingResize = keyboardTimeline.take(firstRemovalIndex).lastOrNull {
+                    it.optString("event") == "viewport-resize"
+                }
+                val from = precedingResize?.optLong("t", -1) ?: -1L
+                val to = keyboardTimeline[firstRemovalIndex].optLong("t", -1)
+                if (from >= 0 && to >= from) to - from else null
+            } else null
+            val overview = buildString {
+                appendLine("SEU IMPOSTO · RESUMO")
+                appendLine("Motor: ${packageInfo?.versionName ?: "indisponível"}")
+                appendLine("Identificação: ${seuImpostoUaProbe()}")
+                appendLine("Focos em INPUT registrados: $focusAttempts")
+                appendLine("Remoções do elemento focado: $removed")
+                appendLine("Viewport → primeira remoção: " +
+                    (resizeToRemovalMs?.let { "${it}ms" } ?: "sem correlação registrada"))
+                appendLine("Erros HTTP 503 observados: ${http503.size}")
+                appendLine("Falhas 5xx nas chamadas de chat monitoradas: $chatFailures")
+                appendLine("Entrada Android: disponível no menu anterior")
+                appendLine()
+                appendLine("LEITURA DOS RESULTADOS")
+                appendLine(if (removed > 0)
+                    "O site removeu um elemento de entrada durante o teste. " +
+                        "A substituição do formulário é a causa imediata mais bem documentada " +
+                        "da perda de foco."
+                    else "Nenhuma remoção de campo foi registrada nesta janela de eventos. " +
+                        "Isso não comprova que o problema desapareceu.")
+                appendLine(if (http503.isNotEmpty())
+                    "Há respostas 503 de subrecursos. Não atribua a elas a perda de foco " +
+                        "sem correlação temporal."
+                    else "Nenhum HTTP 503 foi registrado nesta janela de eventos.")
+                appendLine()
+                appendLine("CONFIGURAÇÃO ATIVA")
+                appendLine("Pan: ${seuImpostoPanEnabled()}; " +
+                    "resize: ${data?.optString("resizeProbeMode", "?")}; " +
+                    "guarda FORM: ${data?.optString("formGuardEnabled", "?")}; " +
+                    "guarda SECTION: ${data?.optString("subtreeGuardEnabled", "?")}")
+                appendLine("Cookies extras: " +
+                    CookieManager.getInstance().acceptThirdPartyCookies(page))
+                appendLine()
+                appendLine("Os dados não incluem mensagens ou identificadores de sessão.")
+            }
+            val focusDetails = buildString {
+                appendLine("FOCO, TECLADO E DOM")
+                appendLine(report.substringAfter("Rastreamento de remoções:")
+                    .substringBefore("Compatibilidade teclado:"))
+                appendLine(report.substringAfter("Eventos de foco/teclado:")
+                    .substringBefore("Linha do tempo da API de chat"))
+            }
+            val networkDetails = buildString {
+                appendLine("REDE E REQUISIÇÕES")
+                appendLine(report.substringAfter("Linha do tempo da API de chat (Resource Timing):"))
+            }
+            val sections = linkedMapOf("Resumo" to overview, "Foco" to focusDetails,
+                "Rede" to networkDetails, "Completo" to report)
+            val density = resources.displayMetrics.density
+            val container = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                setPadding((12 * density).toInt(), (8 * density).toInt(),
+                    (12 * density).toInt(), (8 * density).toInt())
+            }
+            val sectionButtons = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+            }
+            val textPanel = TextView(this).apply {
+                textSize = 13f
+                setTextIsSelectable(true)
+                text = overview
+                setPadding(4, (8 * density).toInt(), 4, (8 * density).toInt())
+            }
+            val scroll = ScrollView(this).apply {
+                addView(textPanel)
+            }
+            sections.forEach { (label, content) ->
+                sectionButtons.addView(Button(this).apply {
+                    text = label
+                    textSize = 11f
+                    isAllCaps = false
+                    setOnClickListener {
+                        textPanel.text = content
+                        scroll.scrollTo(0, 0)
+                    }
+                }, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
+            }
+            container.addView(sectionButtons)
+            container.addView(scroll, LinearLayout.LayoutParams(MATCH_PARENT,
+                (440 * density).toInt()))
             AlertDialog.Builder(this)
                 .setTitle("Diagnóstico · Seu Imposto")
-                .setMessage(report)
+                .setView(container)
                 .setPositiveButton("Fechar", null)
                 .setNegativeButton(if (CookieManager.getInstance().acceptThirdPartyCookies(page))
                     "Desligar cookies extras" else "Testar cookies extras") { _, _ ->
