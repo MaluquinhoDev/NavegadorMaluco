@@ -1494,6 +1494,85 @@ class MainActivity : ComponentActivity() {
         // O diagnóstico confirmou vídeo visível com muted=true e volume HTML5=100%.
         // A ação é explícita: não liga o áudio automaticamente ao arrastar a barra,
         // não dispara play e não interfere nos cliques ou no scroll do Instagram.
+        // Depuração somente leitura: não altera muted, volume, reprodução nem eventos.
+        val debugButton = Button(this).apply {
+            text = "Depurar vídeo"
+            contentDescription = "Inspecionar estado de áudio e reprodução do Instagram"
+            setOnClickListener {
+                val currentUrl = webView.url
+                val host = websiteHost(currentUrl)
+                if ((host != "instagram.com" && host?.endsWith(".instagram.com") != true) ||
+                    siteDisplayMode(currentUrl) != "hybrid") {
+                    Toast.makeText(this@MainActivity, "Disponível no Instagram híbrido",
+                        Toast.LENGTH_SHORT).show()
+                    return@setOnClickListener
+                }
+                val maxVolume = audio.getStreamMaxVolume(AudioManager.STREAM_MUSIC).coerceAtLeast(1)
+                val volumeAndroid = 100 * audio.getStreamVolume(AudioManager.STREAM_MUSIC) / maxVolume
+                val diagnosticScript = """(function(){
+                    const clips=[...document.querySelectorAll('video')];
+                    const visible=clips.map((v,index)=>{
+                        const rect=v.getBoundingClientRect();
+                        const width=Math.max(0,Math.min(rect.right,innerWidth)-Math.max(rect.left,0));
+                        const height=Math.max(0,Math.min(rect.bottom,innerHeight)-Math.max(rect.top,0));
+                        return {v,index,area:width*height};
+                    }).filter(x=>x.area>0).sort((a,b)=>b.area-a.area);
+                    const item=visible[0],v=item&&item.v;
+                    return JSON.stringify({
+                        total:clips.length,visible:visible.length,selected:item?item.index:-1,
+                        paused:v?v.paused:null,muted:v?v.muted:null,
+                        defaultMuted:v?v.defaultMuted:null,
+                        volume:v?Math.round(v.volume*100):null,
+                        readyState:v?v.readyState:null,
+                        currentTime:v?Math.round(v.currentTime*10)/10:null,
+                        ended:v?v.ended:null,frames:document.querySelectorAll('iframe').length
+                    });
+                })()"""
+                fun parseResult(raw: String?): org.json.JSONObject? = runCatching {
+                    org.json.JSONObject(org.json.JSONArray("[$raw]").getString(0))
+                }.getOrNull()
+                webView.evaluateJavascript(diagnosticScript) { firstRaw ->
+                    val first = parseResult(firstRaw)
+                    // Um segundo retrato permite distinguir vídeo parado e reprodução real.
+                    webView.postDelayed({
+                        if (webView.url != currentUrl) return@postDelayed
+                        webView.evaluateJavascript(diagnosticScript) { lastRaw ->
+                            val latest = parseResult(lastRaw)
+                            fun field(key: String) = latest?.optString(key, "indisponível") ?: "indisponível"
+                            val before = first?.optDouble("currentTime", Double.NaN) ?: Double.NaN
+                            val after = latest?.optDouble("currentTime", Double.NaN) ?: Double.NaN
+                            val report = buildString {
+                                appendLine("Depuração Instagram · modo híbrido")
+                                appendLine("Volume Android: $volumeAndroid%")
+                                appendLine("Vídeos DOM: ${field("total")}; visíveis: ${field("visible")}")
+                                appendLine("Índice do vídeo visível: ${field("selected")}")
+                                appendLine("Pausado: ${field("paused")}; finalizado: ${field("ended")}")
+                                appendLine("Mute HTML5: ${field("muted")}")
+                                appendLine("Mute padrão: ${field("defaultMuted")}")
+                                appendLine("Volume HTML5: ${field("volume")}%")
+                                appendLine("ReadyState: ${field("readyState")}")
+                                appendLine("Iframes: ${field("frames")}")
+                                appendLine("Tempo do vídeo: ${field("currentTime")} s")
+                                appendLine("Avançou em 1 segundo: " +
+                                    if (before.isNaN() || after.isNaN()) "indisponível"
+                                    else if (after > before) "sim" else "não")
+                                appendLine("Nota: inspeção de vídeos no documento principal apenas.")
+                            }
+                            AlertDialog.Builder(this@MainActivity)
+                                .setTitle("Modo de depuração · Instagram")
+                                .setMessage(report)
+                                .setPositiveButton("Fechar", null)
+                                .setNeutralButton("Copiar") { _, _ ->
+                                    val clipboard = getSystemService(Context.CLIPBOARD_SERVICE)
+                                        as android.content.ClipboardManager
+                                    clipboard.setPrimaryClip(android.content.ClipData.newPlainText(
+                                        "Depuração Instagram", report))
+                                }.show()
+                        }
+                    }, 1000L)
+                }
+            }
+        }
         val sideButton = Button(this).apply {
             text = "↔"
             contentDescription = "Mover controles para a outra lateral"
@@ -1545,6 +1624,7 @@ class MainActivity : ComponentActivity() {
         detail.addView(slider, LinearLayout.LayoutParams(MATCH_PARENT, dp(48)))
         detail.addView(muteButton, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
         detail.addView(sideButton, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
+        detail.addView(debugButton, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
         val stepHeight = dp(160).toFloat()
         var startY = 0f
         var initial = 0
