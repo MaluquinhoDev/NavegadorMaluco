@@ -875,8 +875,11 @@ class MainActivity : ComponentActivity() {
             val boxRatio = width.toFloat() / height
             val targetWidth = if ((ratio > boxRatio) != filling) width else (height * ratio).toInt()
             val targetHeight = if ((ratio > boxRatio) != filling) (width / ratio).toInt() else height
-            surface.layoutParams = FrameLayout.LayoutParams(
-                targetWidth.coerceAtLeast(1), targetHeight.coerceAtLeast(1), android.view.Gravity.CENTER)
+            val w = targetWidth.coerceAtLeast(1)
+            val h = targetHeight.coerceAtLeast(1)
+            val current = surface.layoutParams
+            if (current.width != w || current.height != h)
+                surface.layoutParams = FrameLayout.LayoutParams(w, h, android.view.Gravity.CENTER)
         }
         panel.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ -> updateVideoAspect() }
         val aspectButton = Button(this).apply { text = "Ajustar" }
