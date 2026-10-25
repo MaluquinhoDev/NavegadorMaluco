@@ -757,9 +757,17 @@ class MainActivity : ComponentActivity() {
                     android.util.Log.w("NavegadorMedia3",
                         "Falha no extrator: ${err.javaClass.simpleName}")
                     AlertDialog.Builder(this).setTitle("Extrator YouTube")
-                        .setMessage("Não foi possível obter formatos deste vídeo: " +
-                            err.javaClass.simpleName +
-                            ". O YouTube pode alterar o protocolo ou restringir a reprodução.")
+                        .setMessage(when {
+                            err is java.net.SocketTimeoutException ->
+                                "A conexão demorou demais. Confira a internet e tente novamente."
+                            err is java.net.UnknownHostException ->
+                                "Não foi possível acessar o servidor. Verifique a conexão."
+                            err is java.io.IOException ->
+                                "Falha de rede ou resposta inesperada. Tente novamente."
+                            else ->
+                                "Não foi possível obter os formatos. O YouTube pode ter alterado " +
+                                    "o protocolo ou restringido este vídeo."
+                        })
                         .setPositiveButton("OK", null).show()
                 }
             }
