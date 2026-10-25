@@ -16,6 +16,17 @@ object AttentionLogic {
         return s.trim('.')
     }
 
+    /** Domínio registrável da URL, respeitando sufixos como com.br e co.uk. */
+    fun rootDomainOf(url: String?): String? {
+        val host = url?.let { hostOf(it) } ?: return null
+        return runCatching {
+            val domain = com.google.common.net.InternetDomainName.from(host)
+            if (domain.hasPublicSuffix() && domain.isUnderPublicSuffix())
+                domain.topPrivateDomain().toString()
+            else null
+        }.getOrNull()
+    }
+
     /** O domínio atual pertence ao configurado? (youtube.com casa com music.youtube.com) */
     fun domainMatches(current: String, configured: String): Boolean {
         val c = normalizeDomain(current)
