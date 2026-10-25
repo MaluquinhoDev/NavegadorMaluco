@@ -881,6 +881,31 @@ class MainActivity : ComponentActivity() {
                     " · ${request.method} ${request.url.host ?: "?"}${safeDiagnosticPath(request.url)}" +
                     " · MIME ${errorResponse.mimeType ?: "?"}" +
                     " · Retry-After ${if (hasRetryAfter) "presente" else "ausente"}")
+                // Fotografia somente de estado, sem capturar texto, corpo da requisição ou cookies.
+                // Ajuda a distinguir falha do servidor de desabilitação do campo na interface.
+                if (isSeuImposto(v.url) && request.url.host == "seuimposto.com" &&
+                    request.url.path == "/api/chat/eu" && errorResponse.statusCode == 503) {
+                    v.post {
+                        if (!isSeuImposto(v.url)) return@post
+                        v.evaluateJavascript("""(function(){
+                            const fields=[...document.querySelectorAll('input,textarea,[contenteditable="true"]')];
+                            const visible=fields.filter(el=>{const r=el.getBoundingClientRect();
+                                return r.width>0&&r.height>0;});
+                            return JSON.stringify({visible:visible.length,
+                                disabled:visible.filter(el=>el.disabled).length,
+                                active:document.activeElement&&document.activeElement.tagName||'',
+                                viewport:window.visualViewport?Math.round(visualViewport.height):null});
+                        })()""") { raw ->
+                            val state = runCatching {
+                                org.json.JSONObject(org.json.JSONArray("[$raw]").getString(0))
+                            }.getOrNull() ?: return@evaluateJavascript
+                            recordSiteDiagnostic(v, "Chat 503 · DOM visíveis=${state.optInt("visible")} " +
+                                "desabilitados=${state.optInt("disabled")} " +
+                                "foco=${state.optString("active")} " +
+                                "viewport=${state.optString("viewport")}")
+                        }
+                    }
+                }
             }
             override fun onReceivedError(v: WebView, request: WebResourceRequest,
                                          error: WebResourceError) {
@@ -1434,6 +1459,17 @@ class MainActivity : ComponentActivity() {
             const body=document.body;
             const text=body?body.innerText||'':'';
             const audit=window.__nmKeyboardAudit;
+            // Resource Timing é observacional: não intercepta fetch/XHR nem lê mensagens.
+            const chatRequests=performance.getEntriesByType('resource').filter(entry=>{
+                try{const u=new URL(entry.name);return u.origin===location.origin&&
+                    u.pathname==='/api/chat/eu';}catch(_){return false;}
+            }).slice(-25).map(entry=>({
+                started:Math.round((performance.timeOrigin+entry.startTime)%600000),
+                finished:Math.round((performance.timeOrigin+entry.responseEnd)%600000),
+                status:Number(entry.responseStatus)||0,
+                duration:Math.round(entry.duration),
+                initiator:entry.initiatorType||'?'
+            }));
             return JSON.stringify({
                 title:document.title,
                 blockedText:text.includes('Não deu para abrir a apuração neste navegador'),
@@ -1446,7 +1482,7 @@ class MainActivity : ComponentActivity() {
                 cryptoSubtle:!!(window.crypto&&crypto.subtle),
                 webRTC:typeof RTCPeerConnection!=='undefined',
                 activeTag:document.activeElement&&document.activeElement.tagName,
-                keyboardEvents:audit?audit.logs:[]
+                keyboardEvents:audit?audit.logs:[],chatRequests:chatRequests
             });
         })()"""
         page.evaluateJavascript(script) { raw ->
@@ -1495,6 +1531,19 @@ class MainActivity : ComponentActivity() {
                     if (e.has("ariaDisabled") || e.has("previousDisabled"))
                         appendLine("  ariaDisabled=${e.optString("ariaDisabled", "?")}" +
                             " disabledAnterior=${e.optString("previousDisabled", "?")}")
+                }
+                appendLine("Linha do tempo da API de chat (Resource Timing):")
+                val chatRequests = data?.optJSONArray("chatRequests")
+                if (chatRequests == null || chatRequests.length() == 0)
+                    appendLine("- Nenhuma chamada registrada pelo navegador")
+                for (i in 0 until (chatRequests?.length() ?: 0)) {
+                    val e = chatRequests?.optJSONObject(i) ?: continue
+                    val status = e.optInt("status")
+                    appendLine("- início=${e.optString("started")} " +
+                        "fim=${e.optString("finished")} " +
+                        "HTTP=${if (status == 0) "indisponível" else status.toString()} " +
+                        "duração=${e.optString("duration")}ms " +
+                        "origem=${e.optString("initiator")}")
                 }
                 appendLine("Eventos de carregamento (${events.size}):")
                 events.forEach { appendLine("- $it") }
