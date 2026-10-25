@@ -1491,6 +1491,49 @@ class MainActivity : ComponentActivity() {
                 slider.progress = 0
             }
         }
+        // O diagnóstico confirmou vídeo visível com muted=true e volume HTML5=100%.
+        // A ação é explícita: não liga o áudio automaticamente ao arrastar a barra,
+        // não dispara play e não interfere nos cliques ou no scroll do Instagram.
+        val siteSoundButton = Button(this).apply {
+            text = "Ativar som do vídeo"
+            contentDescription = "Ativar ou silenciar o vídeo visível do Instagram"
+            setOnClickListener {
+                val url = webView.url
+                val host = websiteHost(url)
+                if ((host != "instagram.com" && host?.endsWith(".instagram.com") != true) ||
+                    siteDisplayMode(url) != "hybrid" ||
+                    Attention.checkNavigation(url ?: "") != null) {
+                    Toast.makeText(this@MainActivity,
+                        "Áudio indisponível neste site ou durante o bloqueio",
+                        Toast.LENGTH_SHORT).show()
+                    return@setOnClickListener
+                }
+                webView.evaluateJavascript("""(function(){
+                    const visible=[...document.querySelectorAll('video')].map(v=>{
+                        const r=v.getBoundingClientRect();
+                        const w=Math.max(0,Math.min(r.right,innerWidth)-Math.max(0,r.left));
+                        const h=Math.max(0,Math.min(r.bottom,innerHeight)-Math.max(0,r.top));
+                        return {v,area:w*h};
+                    }).filter(x=>x.area>0).sort((a,b)=>b.area-a.area);
+                    const video=visible.length?visible[0].v:null;
+                    if(!video)return 'no_video';
+                    video.muted=!video.muted;
+                    return video.muted?'muted':'sound';
+                })()""") { result ->
+                    when (result?.trim('"')) {
+                        "sound" -> {
+                            text = "Silenciar vídeo"
+                            Toast.makeText(this@MainActivity,
+                                "Som do vídeo ativado", Toast.LENGTH_SHORT).show()
+                        }
+                        "muted" -> text = "Ativar som do vídeo"
+                        else -> Toast.makeText(this@MainActivity,
+                            "Vídeo não acessível nesta página",
+                            Toast.LENGTH_SHORT).show()
+                    }
+                }
+            }
+        }
         val diagnosticButton = Button(this).apply {
             text = "Diagnóstico"
             contentDescription = "Diagnosticar som do vídeo do Instagram sem alterar reprodução"
@@ -1604,6 +1647,7 @@ class MainActivity : ComponentActivity() {
         detail.addView(percent, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
         detail.addView(slider, LinearLayout.LayoutParams(MATCH_PARENT, dp(48)))
         detail.addView(muteButton, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
+        detail.addView(siteSoundButton, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
         detail.addView(sideButton, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
         detail.addView(diagnosticButton, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
         val stepHeight = dp(160).toFloat()
