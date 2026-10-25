@@ -1573,6 +1573,44 @@ class MainActivity : ComponentActivity() {
                 }
             }
         }
+        val eventMonitorButton = Button(this).apply {
+            text = "Monitorar som"
+            setOnClickListener {
+                webView.evaluateJavascript("""(function(){
+                    if(!window.nmEvents){
+                        const m={items:[],start:Date.now()};
+                        window.nmEvents=m;
+                        const record=e=>{
+                            const v=e.target;
+                            if(v.tagName!=='VIDEO')return;
+                            m.items.push([Date.now()-m.start,e.type,v.muted,
+                                Math.round(v.volume*100),v.paused]);
+                            if(m.items.length>60)m.items.shift();
+                        };
+                        ['volumechange','play','pause','playing']
+                            .forEach(t=>document.addEventListener(t,record,true));
+                        return 'started';
+                    }
+                    return JSON.stringify(window.nmEvents.items);
+                })()""") { result ->
+                    val output = runCatching {
+                        org.json.JSONArray("[$result]").getString(0)
+                    }.getOrDefault("Sem dados")
+                    AlertDialog.Builder(this@MainActivity)
+                        .setTitle("Monitor Instagram")
+                        .setMessage(if (output == "started")
+                            "Monitor ativado. Use o botão original de áudio do Instagram e toque em Monitorar som novamente."
+                            else output)
+                        .setPositiveButton("Fechar", null)
+                        .setNeutralButton("Copiar") { _, _ ->
+                            val clipboard = getSystemService(Context.CLIPBOARD_SERVICE)
+                                as android.content.ClipboardManager
+                            clipboard.setPrimaryClip(android.content.ClipData.newPlainText(
+                                "Eventos Instagram", output))
+                        }.show()
+                }
+            }
+        }
         val sideButton = Button(this).apply {
             text = "↔"
             contentDescription = "Mover controles para a outra lateral"
@@ -1625,6 +1663,7 @@ class MainActivity : ComponentActivity() {
         detail.addView(muteButton, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
         detail.addView(sideButton, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
         detail.addView(debugButton, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
+        detail.addView(eventMonitorButton, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
         val stepHeight = dp(160).toFloat()
         var startY = 0f
         var initial = 0
