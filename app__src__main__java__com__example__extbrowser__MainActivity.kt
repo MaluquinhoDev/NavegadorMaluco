@@ -1575,38 +1575,74 @@ class MainActivity : ComponentActivity() {
         }
         val eventMonitorButton = Button(this).apply {
             text = "Monitorar som"
+            contentDescription = "Iniciar ou ler depuração passiva por vídeo"
             setOnClickListener {
+                val host = websiteHost(webView.url)
+                if ((host != "instagram.com" && host?.endsWith(".instagram.com") != true) ||
+                    siteDisplayMode(webView.url) != "hybrid") {
+                    Toast.makeText(this@MainActivity, "Abra o Instagram híbrido", Toast.LENGTH_SHORT).show()
+                    return@setOnClickListener
+                }
                 webView.evaluateJavascript("""(function(){
-                    if(!window.nmEvents){
-                        const m={items:[],start:Date.now()};
-                        window.nmEvents=m;
-                        const record=e=>{
-                            const v=e.target;
-                            if(v.tagName!=='VIDEO')return;
-                            m.items.push([Date.now()-m.start,e.type,v.muted,
-                                Math.round(v.volume*100),v.paused]);
-                            if(m.items.length>60)m.items.shift();
-                        };
-                        ['volumechange','play','pause','playing']
-                            .forEach(t=>document.addEventListener(t,record,true));
-                        return 'started';
+                    if(window.nmVideoAudit){
+                        const state=window.nmVideoAudit;
+                        const result=JSON.stringify(state.logs);
+                        return result;
                     }
-                    return JSON.stringify(window.nmEvents.items);
-                })()""") { result ->
+                    const state={started:Date.now(),logs:[],ids:new WeakMap(),next:1,last:new Map()};
+                    window.nmVideoAudit=state;
+                    const identity=v=>{
+                        if(!state.ids.has(v))state.ids.set(v,state.next++);
+                        return state.ids.get(v);
+                    };
+                    const snapshot=v=>{
+                        const r=v.getBoundingClientRect();
+                        const w=Math.max(0,Math.min(innerWidth,r.right)-Math.max(0,r.left));
+                        const h=Math.max(0,Math.min(innerHeight,r.bottom)-Math.max(0,r.top));
+                        return [v.muted,Math.round(v.volume*100),v.paused,Math.round(w*h),v.readyState];
+                    };
+                    const log=(kind,v)=>{
+                        const id=identity(v),now=snapshot(v);
+                        state.logs.push([Date.now()-state.started,id,kind,...now]);
+                        if(state.logs.length>100)state.logs.shift();
+                        state.last.set(id,now);
+                    };
+                    const attached=new WeakSet();
+                    const scan=()=>{
+                        document.querySelectorAll('video').forEach(v=>{
+                            const id=identity(v);
+                            if(!attached.has(v)){
+                                attached.add(v);
+                                log('detectado',v);
+                                ['volumechange','play','playing','pause','ended']
+                                    .forEach(name=>v.addEventListener(name,()=>log(name,v),{passive:true}));
+                            }
+                            const now=snapshot(v),before=state.last.get(id);
+                            if(before && (now[0]!==before[0]||now[1]!==before[1]||now[2]!==before[2]))
+                                log('mudanca',v);
+                            else state.last.set(id,now);
+                        });
+                    };
+                    scan();
+                    state.interval=setInterval(scan,250);
+                    return 'started';
+                })()""") { raw ->
                     val output = runCatching {
-                        org.json.JSONArray("[$result]").getString(0)
+                        org.json.JSONArray("[$raw]").getString(0)
                     }.getOrDefault("Sem dados")
+                    val message = if (output == "started") {
+                        "Monitor iniciado. Feche esta janela, toque no controle original " +
+                            "de áudio do Instagram e abra Monitorar som novamente."
+                    } else output
                     AlertDialog.Builder(this@MainActivity)
-                        .setTitle("Monitor Instagram")
-                        .setMessage(if (output == "started")
-                            "Monitor ativado. Use o botão original de áudio do Instagram e toque em Monitorar som novamente."
-                            else output)
+                        .setTitle("Monitor por vídeo · Instagram")
+                        .setMessage(message)
                         .setPositiveButton("Fechar", null)
                         .setNeutralButton("Copiar") { _, _ ->
                             val clipboard = getSystemService(Context.CLIPBOARD_SERVICE)
                                 as android.content.ClipboardManager
                             clipboard.setPrimaryClip(android.content.ClipData.newPlainText(
-                                "Eventos Instagram", output))
+                                "Monitor por vídeo Instagram", message))
                         }.show()
                 }
             }
