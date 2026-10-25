@@ -1480,6 +1480,15 @@ class MainActivity : ComponentActivity() {
                     if (kotlin.math.abs(distance) > 8f * resources.displayMetrics.density)
                         dragging = true
                     if (dragging) {
+                        // O Instagram pode iniciar vídeos silenciados: o volume
+                        // do Android só será ouvido se a mídia HTML5 estiver ativa.
+                        if (Attention.checkNavigation(webView.url ?: "") == null) {
+                            webView.evaluateJavascript("""(function(){
+                                const items=[...document.querySelectorAll('video')];
+                                const v=items.find(x=>!x.paused && x.getBoundingClientRect().height>0);
+                                if(v) v.muted=false;
+                            })()""", null)
+                        }
                         val max = audio.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
                         val next = (startingVolume + distance / stepHeight * max)
                             .toInt().coerceIn(0, max)
