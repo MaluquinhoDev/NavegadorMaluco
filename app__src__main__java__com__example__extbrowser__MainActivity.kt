@@ -422,6 +422,18 @@ class MainActivity : ComponentActivity() {
         setTheme(if (isDarkTheme()) android.R.style.Theme_Material_NoActionBar
             else android.R.style.Theme_Material_Light_NoActionBar)
         super.onCreate(savedInstanceState)
+        // Baseline do teste isolado: evita a dupla intervenção experimental
+        // na WebView do Seu Imposto. Migra uma única vez as opções antigas;
+        // ambas continuam reversíveis pelo menu Ferramentas.
+        getSharedPreferences("seuimposto_diagnostic", MODE_PRIVATE).let { prefs ->
+            if (!prefs.getBoolean("keyboard_baseline_migrated", false)) {
+                prefs.edit()
+                    .putBoolean("keyboard_compat", false)
+                    .putBoolean("focus_recovery", false)
+                    .putBoolean("keyboard_baseline_migrated", true)
+                    .apply()
+            }
+        }
         Attention.init(this)
         store = BrowserData(this)
         backgroundAudioEnabled = getSharedPreferences("media_options", MODE_PRIVATE)
@@ -616,7 +628,7 @@ class MainActivity : ComponentActivity() {
                 if (isSeuImposto(url)) {
                     recordSiteDiagnostic(v, "Navegação concluída")
                     val recoverFocus = getSharedPreferences("seuimposto_diagnostic", MODE_PRIVATE)
-                        .getBoolean("focus_recovery", true)
+                        .getBoolean("focus_recovery", false)
                     v.evaluateJavascript("""(function(){
                         if(window.__nmKeyboardAudit)return;
                         const audit={logs:[],attempts:[],lastFocused:null,lastBlurAt:0,
@@ -974,7 +986,7 @@ class MainActivity : ComponentActivity() {
                         !isSeuImposto(sourceOrigin.toString()) ||
                         message.data != "focus-restored" || tabs.getOrNull(activeIndex)?.view !== v ||
                         !getSharedPreferences("seuimposto_diagnostic", MODE_PRIVATE)
-                            .getBoolean("focus_recovery", true) ||
+                            .getBoolean("focus_recovery", false) ||
                         SystemClock.elapsedRealtime() - lastSeuImpostoImeOpenAt > 1500L) return
                     v.postDelayed({
                         if (tabs.getOrNull(activeIndex)?.view !== v || !isSeuImposto(v.url))
@@ -1385,7 +1397,7 @@ class MainActivity : ComponentActivity() {
             return
         }
         val prefs = getSharedPreferences("seuimposto_diagnostic", MODE_PRIVATE)
-        val enabled = !prefs.getBoolean("focus_recovery", true)
+        val enabled = !prefs.getBoolean("focus_recovery", false)
         prefs.edit().putBoolean("focus_recovery", enabled).apply()
         webView.reload()
         Toast.makeText(this,
@@ -1462,7 +1474,7 @@ class MainActivity : ComponentActivity() {
                         .getBoolean("keyboard_compat", false))
                 appendLine("Recuperação de foco: " +
                     getSharedPreferences("seuimposto_diagnostic", MODE_PRIVATE)
-                        .getBoolean("focus_recovery", true))
+                        .getBoolean("focus_recovery", false))
                 appendLine("Eventos de foco/teclado:")
                 val keyboardEvents = data?.optJSONArray("keyboardEvents")
                 for (i in 0 until (keyboardEvents?.length() ?: 0)) {
