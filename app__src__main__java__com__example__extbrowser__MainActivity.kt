@@ -1072,6 +1072,53 @@ class MainActivity : ComponentActivity() {
                 if(vk)vk.overlaysContent =
                     sessionStorage.getItem('__nmVkOverlayOff')!=='1';
             } catch(_) {}
+            // Experimento opt-in: identifica qual rotina chama a remoção do FORM.
+            // Registra apenas nomes de funções; nunca texto, valores ou URLs de scripts.
+            const trace={enabled:false,events:[]};
+            window.__nmRemovalTrace=trace;
+            try {
+                trace.enabled=sessionStorage.getItem('__nmTraceFormRemoval')==='1';
+                if(trace.enabled){
+                    let focused=null;
+                    document.addEventListener('focusin',e=>{
+                        if(e.target&&e.target.matches&&
+                            e.target.matches('input,textarea,[contenteditable="true"]'))
+                            focused=e.target;
+                    },true);
+                    const traceRemoval=(method,node)=>{
+                        if(!focused||!node||
+                            !(node===focused||(node.contains&&node.contains(focused))))return;
+                        const names=(new Error().stack||'').split('\n').slice(2,8)
+                            .map(line=>{
+                                const m=line.match(/^\s*at\s+([^\s(]+)/);
+                                return m?m[1].replace(/[^\w.$<>-]/g,'').slice(0,60):'anonymous';
+                            });
+                        trace.events.push({t:Date.now()%600000,method,
+                            removedTag:node.nodeName||'?',functions:names});
+                        if(trace.events.length>12)trace.events.shift();
+                    };
+                    const removeChild=Node.prototype.removeChild;
+                    Node.prototype.removeChild=function(node){
+                        traceRemoval('removeChild',node);
+                        return removeChild.apply(this,arguments);
+                    };
+                    const replaceChild=Node.prototype.replaceChild;
+                    Node.prototype.replaceChild=function(node,old){
+                        traceRemoval('replaceChild',old);
+                        return replaceChild.apply(this,arguments);
+                    };
+                    const remove=Element.prototype.remove;
+                    Element.prototype.remove=function(){
+                        traceRemoval('remove',this);
+                        return remove.apply(this,arguments);
+                    };
+                    const replaceWith=Element.prototype.replaceWith;
+                    Element.prototype.replaceWith=function(){
+                        traceRemoval('replaceWith',this);
+                        return replaceWith.apply(this,arguments);
+                    };
+                }
+            } catch(_) {trace.enabled=false;}
             const probe={mode:'normal',blockedWindow:0,blockedVisual:0};
             window.__nmResizeProbe=probe;
             try {
@@ -1458,7 +1505,8 @@ class MainActivity : ComponentActivity() {
                 "Recuperação de foco · Seu Imposto", "Teclado · teste HTML isolado",
                 "Teclado sem redimensionamento · Seu Imposto",
                 "Área visual estável · Seu Imposto",
-                "Experimento de eventos resize · Seu Imposto")) { _, which ->
+                "Experimento de eventos resize · Seu Imposto",
+                "Rastrear remoção do formulário · Seu Imposto")) { _, which ->
                 when (which) {
                     0 -> extLauncher.launch(Intent(this, ExtensionsActivity::class.java).apply {
                         putExtra("attention_current_page", webView.url ?: tabs[activeIndex].url)
@@ -1473,6 +1521,7 @@ class MainActivity : ComponentActivity() {
                     8 -> toggleSeuImpostoKeyboardPan()
                     9 -> toggleSeuImpostoViewportOverlay()
                     10 -> showSeuImpostoResizeExperiment()
+                    11 -> toggleSeuImpostoRemovalTrace()
                 }
             }.show()
     }
@@ -1592,6 +1641,23 @@ class MainActivity : ComponentActivity() {
             }.show()
     }
 
+    private fun toggleSeuImpostoRemovalTrace() {
+        if (!isSeuImposto(webView.url)) {
+            Toast.makeText(this, "Abra seuimposto.com antes deste diagnóstico", Toast.LENGTH_LONG).show()
+            return
+        }
+        webView.evaluateJavascript("""(function(){
+            const enabled=sessionStorage.getItem('__nmTraceFormRemoval')==='1';
+            sessionStorage.setItem('__nmTraceFormRemoval',enabled?'0':'1');
+            sessionStorage.setItem('__nmResizeProbeMode','normal');
+            return enabled?'desligado':'ligado';
+        })()""") { raw ->
+            Toast.makeText(this, "Rastreamento do formulário · ${raw.trim('"')}",
+                Toast.LENGTH_LONG).show()
+            webView.reload()
+        }
+    }
+
     private fun toggleSeuImpostoKeyboardCompat() {
         if (!isSeuImposto(webView.url)) {
             Toast.makeText(this, "Abra seuimposto.com antes deste teste", Toast.LENGTH_LONG).show()
@@ -1621,6 +1687,7 @@ class MainActivity : ComponentActivity() {
             const text=body?body.innerText||'':'';
             const audit=window.__nmKeyboardAudit;
             const resizeProbe=window.__nmResizeProbe||{};
+            const removalTrace=window.__nmRemovalTrace||{};
             // Resource Timing é observacional: não intercepta fetch/XHR nem lê mensagens.
             const chatRequests=performance.getEntriesByType('resource').filter(entry=>{
                 try{const u=new URL(entry.name);return u.origin===location.origin&&
@@ -1652,6 +1719,8 @@ class MainActivity : ComponentActivity() {
                 resizeProbeMode:resizeProbe.mode||'indisponível',
                 resizeBlockedWindow:resizeProbe.blockedWindow||0,
                 resizeBlockedVisual:resizeProbe.blockedVisual||0,
+                removalTraceEnabled:!!removalTrace.enabled,
+                removalTraceEvents:removalTrace.events||[],
                 activeTag:document.activeElement&&document.activeElement.tagName,
                 keyboardEvents:audit?audit.logs:[],chatRequests:chatRequests
             });
@@ -1678,6 +1747,15 @@ class MainActivity : ComponentActivity() {
                     "virtualKeyboardAvailable", "overlaysContent", "networkOnline", "activeTag",
                     "resizeProbeMode", "resizeBlockedWindow", "resizeBlockedVisual")
                     .forEach { appendLine("$it: ${data?.optString(it, "indisponível") ?: "indisponível"}") }
+                appendLine("Rastreamento de remoções: ${data?.optString("removalTraceEnabled", "false")}")
+                val removalEvents = data?.optJSONArray("removalTraceEvents")
+                for (i in 0 until (removalEvents?.length() ?: 0)) {
+                    val e = removalEvents?.optJSONObject(i) ?: continue
+                    appendLine("- remoção t=${e.optString("t")} " +
+                        "método=${e.optString("method")} " +
+                        "nó=${e.optString("removedTag")}")
+                    appendLine("  funções=${e.optJSONArray("functions")?.toString() ?: "[]"}")
+                }
                 appendLine("Compatibilidade teclado: " +
                     getSharedPreferences("seuimposto_diagnostic", MODE_PRIVATE)
                         .getBoolean("keyboard_compat", false))
