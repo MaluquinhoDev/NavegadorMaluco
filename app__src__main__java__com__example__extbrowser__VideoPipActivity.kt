@@ -80,6 +80,8 @@ class VideoPipActivity : Activity() {
     /** Expandir o PiP restaura diretamente o player principal, sem tela intermediária. */
     private fun restoreMainPlayer() {
         if (isFinishing || isDestroyed) return
+        // Libera a posse visual antes do onNewIntent na Activity principal.
+        active = false
         controller?.let { runCatching { it.clearVideoSurfaceView(videoSurface) } }
         val intent = Intent(this, MainActivity::class.java).apply {
             action = MainActivity.ACTION_OPEN_MEDIA_PLAYER
