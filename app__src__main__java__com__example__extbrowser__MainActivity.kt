@@ -231,6 +231,7 @@ class MainActivity : ComponentActivity() {
     // Não contorna restrições de sites nem garante execução após o Android suspender o app.
     private var backgroundAudioEnabled = false
     private var browserIsResumed = false
+    private var backgroundServiceStartPending = false
     // A notificação pode desativar o recurso enquanto a Activity ainda existe.
     // O listener mantém as abas e o monitoramento sincronizados com essa escolha.
     private val backgroundAudioPrefs by lazy {
@@ -394,6 +395,47 @@ class MainActivity : ComponentActivity() {
     // Monitoramento de melhor esforço: somente vídeo/áudio acessível pela própria
     // página; frames de outras origens não são inspecionados.
     private val backgroundMediaSeen = java.util.WeakHashMap<WebView, Long>()
+    private fun detectAudibleWebMedia() {
+        if (!backgroundAudioEnabled || tabs.isEmpty()) return
+        // Apenas elementos HTML5 audíveis; o player Media3 tem serviço próprio.
+        // Frames de terceiros e WebAudio não são inspecionáveis daqui.
+        val script = "(function(){try{return Array.from(document.querySelectorAll('audio,video'))" +
+            ".some(v=>!v.paused&&!v.ended&&!v.muted&&v.volume>0)}catch(e){return false}})()"
+        tabs.forEach { tab ->
+            val view = tab.view
+            val page = view.url ?: return@forEach
+            view.evaluateJavascript(script) { value ->
+                if (!backgroundAudioEnabled || isFinishing || isDestroyed ||
+                    tabs.none { it.view === view } || view.url != page || value != "true") {
+                    return@evaluateJavascript
+                }
+                BackgroundAudioService.markMediaObserved()
+                // A criação de um foreground service é feita somente com a
+                // Activity visível, respeitando as restrições recentes do Android.
+                if (browserIsResumed && !BackgroundAudioService.running &&
+                    !backgroundServiceStartPending) {
+                    backgroundServiceStartPending = true
+                    runCatching {
+                        androidx.core.content.ContextCompat.startForegroundService(
+                            this, Intent(this, BackgroundAudioService::class.java).apply {
+                                action = BackgroundAudioService.ACTION_MEDIA_ACTIVE
+                            })
+                    }.onFailure {
+                        android.util.Log.w("NavegadorAudio", "Falha ao iniciar serviço de mídia", it)
+                    }
+                    handler.postDelayed({ backgroundServiceStartPending = false }, 2000L)
+                }
+            }
+        }
+    }
+
+    private val audibleMediaTicker = object : Runnable {
+        override fun run() {
+            if (!browserIsResumed || !backgroundAudioEnabled || isFinishing || isDestroyed) return
+            detectAudibleWebMedia()
+            handler.postDelayed(this, 2000L)
+        }
+    }
     private fun checkBackgroundTabMedia(includeActive: Boolean = false) {
         if (!backgroundAudioEnabled || (tabs.size < 2 && !includeActive)) {
             backgroundMediaSeen.clear()
@@ -456,6 +498,7 @@ class MainActivity : ComponentActivity() {
         override fun run() {
             if (browserIsResumed || !backgroundAudioEnabled || isFinishing || isDestroyed) return
             checkBackgroundTabMedia(includeActive = true)
+            detectAudibleWebMedia()
             handler.postDelayed(this, 5000L)
         }
     }
@@ -463,6 +506,8 @@ class MainActivity : ComponentActivity() {
     private fun applyBackgroundAudioState(enabled: Boolean) {
         backgroundAudioEnabled = enabled
         if (!enabled) backgroundMediaSeen.clear()
+        handler.removeCallbacks(audibleMediaTicker)
+        if (!enabled) stopService(Intent(this, BackgroundAudioService::class.java))
         if (!loaded) return
         tabs.forEachIndexed { index, tab ->
             if (enabled || (browserIsResumed && index == activeIndex)) tab.view.onResume()
@@ -470,6 +515,7 @@ class MainActivity : ComponentActivity() {
         }
         handler.removeCallbacks(backgroundMediaTicker)
         if (enabled && !browserIsResumed) handler.post(backgroundMediaTicker)
+        if (enabled && browserIsResumed) handler.post(audibleMediaTicker)
     }
 
     private val extLauncher = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
@@ -500,11 +546,7 @@ class MainActivity : ComponentActivity() {
         store = BrowserData(this)
         backgroundAudioPrefs.registerOnSharedPreferenceChangeListener(backgroundAudioPreferenceListener)
         backgroundAudioEnabled = backgroundAudioPrefs.getBoolean("background_audio", false)
-        if (backgroundAudioEnabled) {
-            // Reestabelece a proteção do processo após recriação normal da Activity.
-            runCatching { androidx.core.content.ContextCompat.startForegroundService(
-                this, Intent(this, BackgroundAudioService::class.java)) }
-        }
+        // A configuração não inicia serviço: somente reprodução audível detectada.
         extensionManager = ExtensionManager(this).also { it.seedFromAssets() }
         extensionList = extensionManager!!.loadEnabled()
         blockerList = extensionList.flatMap { e -> e.blockRegexes.map { Blocker(e.name, Regex(it)) } }
@@ -4024,21 +4066,9 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    /** O serviço inicia por ação explícita do usuário, enquanto a Activity está visível. */
+    /** Autoriza mídia HTML5 em segundo plano; o serviço só inicia com som detectado. */
     private fun toggleBackgroundAudio() {
         val enable = !backgroundAudioEnabled
-        if (enable) {
-            try {
-                androidx.core.content.ContextCompat.startForegroundService(
-                    this, Intent(this, BackgroundAudioService::class.java)
-                )
-            } catch (e: Exception) {
-                Toast.makeText(this, "Falha ao ativar áudio: ${e.message}", Toast.LENGTH_LONG).show()
-                return
-            }
-        } else {
-            stopService(Intent(this, BackgroundAudioService::class.java))
-        }
         applyBackgroundAudioState(enable)
         backgroundAudioPrefs.edit().putBoolean("background_audio", enable).apply()
         Toast.makeText(this,
@@ -4163,11 +4193,14 @@ class MainActivity : ComponentActivity() {
         }
         handler.removeCallbacks(ticker)
         handler.post(ticker)
+        handler.removeCallbacks(audibleMediaTicker)
+        if (backgroundAudioEnabled) handler.post(audibleMediaTicker)
         handler.removeCallbacks(miniRefresh)
         handler.post(miniRefresh)
     }
     override fun onPause() {
         browserIsResumed = false
+        handler.removeCallbacks(audibleMediaTicker)
         handler.removeCallbacks(miniRefresh)
         handler.removeCallbacks(ticker)
         Attention.pause()
@@ -4184,6 +4217,7 @@ class MainActivity : ComponentActivity() {
     }
     override fun onDestroy() {
         backgroundAudioPrefs.unregisterOnSharedPreferenceChangeListener(backgroundAudioPreferenceListener)
+        handler.removeCallbacks(audibleMediaTicker)
         handler.removeCallbacks(backgroundMediaTicker)
         fileCallback?.onReceiveValue(null)
         fileCallback = null
