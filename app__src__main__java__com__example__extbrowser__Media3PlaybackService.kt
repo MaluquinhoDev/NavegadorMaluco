@@ -33,8 +33,10 @@ class Media3PlaybackService : MediaSessionService() {
         @Volatile private var liveService: Media3PlaybackService? = null
         // Somente o código HTTP, nunca endereços assinados ou cabeçalhos privados.
         @Volatile private var latestPlaybackHttpError: Int? = null
+        @Volatile private var stallNotice: String? = null
 
         fun latestPlaybackHttpStatus(): Int? = latestPlaybackHttpError
+        fun bufferingNotice(): String? = stallNotice
 
         fun stopExistingPlayback() {
             liveService?.stopAndClear()
@@ -75,6 +77,8 @@ class Media3PlaybackService : MediaSessionService() {
     }
     private val attentionHandler = Handler(Looper.getMainLooper())
     private var lastMediaTickMs = 0L
+    private var bufferingSinceMs = 0L
+    private var automaticBufferRetryUsed = false
     private val attentionCheck = object : Runnable {
         override fun run() {
             val exo = player ?: return
@@ -84,6 +88,36 @@ class Media3PlaybackService : MediaSessionService() {
             val delta = if (exo.isPlaying && lastMediaTickMs > 0L)
                 (now - lastMediaTickMs).coerceIn(0L, 1500L) else 0L
             lastMediaTickMs = now
+            // Uma tentativa limitada por item. Nunca repete em loop e não mexe
+            // em reprodução pausada, encerrada ou bloqueada pelo controle de atenção.
+            if (exo.currentMediaItem != null && exo.playWhenReady &&
+                exo.playbackState == Player.STATE_BUFFERING &&
+                Attention.checkNavigation(pageUrl ?: "") == null) {
+                if (bufferingSinceMs == 0L) bufferingSinceMs = now
+                val elapsed = now - bufferingSinceMs
+                stallNotice = when {
+                    elapsed < 8000L -> null
+                    automaticBufferRetryUsed ->
+                        "Carregamento prolongado · atualização automática já tentada"
+                    else -> "Aguardando dados da mídia · ${elapsed / 1000}s"
+                }
+                if (elapsed >= 18000L && !automaticBufferRetryUsed) {
+                    automaticBufferRetryUsed = true
+                    val position = exo.currentPosition.coerceAtLeast(0L)
+                    savePlaybackPosition(exo, interrupted = true)
+                    Log.w(TAG, "Buffering >18s: única recuperação automática; " +
+                        "posiçãoSeg=${position / 1000}; host=${safeHost(exo.currentMediaItem?.localConfiguration?.uri)}")
+                    exo.stop()
+                    exo.seekTo(position)
+                    exo.prepare()
+                    exo.play()
+                    bufferingSinceMs = now
+                    stallNotice = "Recuperação automática em andamento…"
+                }
+            } else {
+                bufferingSinceMs = 0L
+                stallNotice = null
+            }
             if (exo.currentMediaItem != null && now - lastHistorySaveMs >= 5000L) {
                 savePlaybackPosition(exo)
                 lastHistorySaveMs = now
@@ -135,6 +169,9 @@ class Media3PlaybackService : MediaSessionService() {
         exo.addListener(object : Player.Listener {
             override fun onMediaItemTransition(item: MediaItem?, reason: Int) {
                 latestPlaybackHttpError = null
+                bufferingSinceMs = 0L
+                automaticBufferRetryUsed = false
+                stallNotice = null
                 // Salva também ao trocar de item, independentemente do ticker.
                 // Mantém a sessão de atenção ao trocar de vídeo no mesmo site.
                 lastMediaTickMs = SystemClock.elapsedRealtime()
@@ -180,6 +217,8 @@ class Media3PlaybackService : MediaSessionService() {
             }
 
             override fun onPlayerError(error: PlaybackException) {
+                bufferingSinceMs = 0L
+                stallNotice = "Falha de reprodução · recuperação manual disponível"
                 var cause: Throwable? = error
                 var httpStatus: Int? = null
                 var failedUri: Uri? = null
