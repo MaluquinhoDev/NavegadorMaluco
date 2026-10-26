@@ -31,6 +31,10 @@ class Media3PlaybackService : MediaSessionService() {
         private const val TAG = "NavegadorMedia3"
         private const val ACTION_STOP_ALL = "com.example.extbrowser.MEDIA3_STOP_ALL"
         @Volatile private var liveService: Media3PlaybackService? = null
+        // Somente o código HTTP, nunca endereços assinados ou cabeçalhos privados.
+        @Volatile private var latestPlaybackHttpError: Int? = null
+
+        fun latestPlaybackHttpStatus(): Int? = latestPlaybackHttpError
 
         fun stopExistingPlayback() {
             liveService?.stopAndClear()
@@ -130,6 +134,7 @@ class Media3PlaybackService : MediaSessionService() {
         val exo = ExoPlayer.Builder(this).setMediaSourceFactory(mediaSources).build()
         exo.addListener(object : Player.Listener {
             override fun onMediaItemTransition(item: MediaItem?, reason: Int) {
+                latestPlaybackHttpError = null
                 // Salva também ao trocar de item, independentemente do ticker.
                 // Mantém a sessão de atenção ao trocar de vídeo no mesmo site.
                 lastMediaTickMs = SystemClock.elapsedRealtime()
@@ -193,6 +198,7 @@ class Media3PlaybackService : MediaSessionService() {
                     }
                     cause = cause.cause
                 }
+                latestPlaybackHttpError = httpStatus
                 val source = exo.currentMediaItem?.localConfiguration?.uri
                 Log.e(TAG, "Falha Media3: ${error.errorCodeName}; " +
                     "http=${httpStatus ?: "indisponível"}; " +
