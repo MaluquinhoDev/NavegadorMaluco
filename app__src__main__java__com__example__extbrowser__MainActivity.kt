@@ -63,6 +63,19 @@ import androidx.media3.session.MediaController
 import androidx.media3.session.SessionToken
 
 class MainActivity : ComponentActivity() {
+    companion object {
+        private const val HOME = "https://www.wikipedia.org"
+        private const val MAX_TABS = BrowserTabPolicy.MAX_TABS
+        const val ACTION_OPEN_MEDIA_PLAYER = "com.example.extbrowser.OPEN_MEDIA_PLAYER"
+        private var liveBrowser: java.lang.ref.WeakReference<MainActivity>? = null
+
+        fun stopExistingWebMedia() {
+            val activity = liveBrowser?.get() ?: return
+            if (!activity.isFinishing && !activity.isDestroyed) {
+                activity.runOnUiThread { activity.forceStopWebMedia() }
+            }
+        }
+    }
     private class Blocker(val name: String, val regex: Regex)
     private data class Tab(val view: WebView, var title: String = "Nova aba", var url: String = HOME)
 
@@ -355,12 +368,6 @@ class MainActivity : ComponentActivity() {
         fileCallback = null
     }
 
-    companion object {
-        private const val HOME = "https://www.wikipedia.org"
-        private const val MAX_TABS = BrowserTabPolicy.MAX_TABS
-        const val ACTION_OPEN_MEDIA_PLAYER = "com.example.extbrowser.OPEN_MEDIA_PLAYER"
-    }
-
     /** A notificação Media3 abre a sessão já existente, sem reiniciar o streaming. */
     private fun openPlayerFromMediaNotification(intent: Intent?) {
         if (intent?.action != ACTION_OPEN_MEDIA_PLAYER || !loaded) return
@@ -395,6 +402,38 @@ class MainActivity : ComponentActivity() {
     // Monitoramento de melhor esforço: somente vídeo/áudio acessível pela própria
     // página; frames de outras origens não são inspecionados.
     private val backgroundMediaSeen = java.util.WeakHashMap<WebView, Long>()
+    private fun forceStopWebMedia() {
+        val script = """(function(){
+            window.__nmForceMediaStop=true;
+            if(!window.__nmForceStopListener){
+                window.__nmForceStopListener=true;
+                document.addEventListener('play',function(e){
+                    const m=e.target;
+                    if(window.__nmForceMediaStop&&m instanceof HTMLMediaElement){
+                        try{m.pause();m.autoplay=false;m.loop=false;}catch(_){}
+                    }
+                },true);
+                // Um toque real na página libera uma nova reprodução intencional.
+                document.addEventListener('pointerdown',function(){
+                    window.__nmForceMediaStop=false;
+                },true);
+                document.addEventListener('keydown',function(){
+                    window.__nmForceMediaStop=false;
+                },true);
+            }
+            document.querySelectorAll('video,audio').forEach(function(m){
+                try{m.pause();m.autoplay=false;m.loop=false;
+                    m.removeAttribute('autoplay');}catch(_){}
+            });
+        })()"""
+        tabs.forEach { tab -> runCatching { tab.view.evaluateJavascript(script, null) } }
+        backgroundMediaSeen.clear()
+    }
+
+    private fun forceStopAllMediaFromMenu() {
+        StopAllMediaReceiver.stopAll(this)
+        Toast.makeText(this, "Todas as reproduções foram interrompidas", Toast.LENGTH_SHORT).show()
+    }
     /** Evita loop/auto-próximo depois que uma mídia HTML5 termina fora da tela.
      * A proteção é por documento: outras abas e players Media3 seguem independentes.
      */
@@ -588,6 +627,7 @@ class MainActivity : ComponentActivity() {
         setTheme(if (isDarkTheme()) android.R.style.Theme_Material_NoActionBar
             else android.R.style.Theme_Material_Light_NoActionBar)
         super.onCreate(savedInstanceState)
+        liveBrowser = java.lang.ref.WeakReference(this)
         // Baseline do teste isolado: evita a dupla intervenção experimental
         // na WebView do Seu Imposto. Migra uma única vez as opções antigas;
         // ambas continuam reversíveis pelo menu Ferramentas.
@@ -1559,12 +1599,14 @@ class MainActivity : ComponentActivity() {
 
     private fun showMainMenu() {
         AlertDialog.Builder(this).setTitle("NavegadorMaluco")
-            .setItems(arrayOf("Biblioteca", "Mídia", "Ferramentas", "Favoritar / desfavoritar")) { _, which ->
+            .setItems(arrayOf("Biblioteca", "Mídia", "Ferramentas", "Favoritar / desfavoritar",
+                "■ Parar todas as mídias")) { _, which ->
                 when (which) {
                     0 -> showLibrary()
                     1 -> showMediaMenu()
                     2 -> showToolsMenu()
                     3 -> toggleFavorite()
+                    4 -> forceStopAllMediaFromMenu()
                 }
             }.show()
     }
@@ -1672,7 +1714,8 @@ class MainActivity : ComponentActivity() {
                 "Abrir player nativo",
                 "Janela flutuante (PiP)",
                 "Histórico do player",
-                "Mais opções de mídia"
+                "Mais opções de mídia",
+                "■ Forçar interrupção de todas as mídias"
             )) { _, which ->
                 when (which) {
                     0 -> playPageMediaDirectly()
@@ -1683,6 +1726,7 @@ class MainActivity : ComponentActivity() {
                     5 -> enterPip()
                     6 -> showPlayerHistory()
                     7 -> showMediaOptions()
+                    8 -> forceStopAllMediaFromMenu()
                 }
             }.show()
     }
@@ -1692,12 +1736,13 @@ class MainActivity : ComponentActivity() {
             (if (backgroundAudioEnabled) "ligado" else "desligado")
         AlertDialog.Builder(this).setTitle("Opções de mídia")
             .setItems(arrayOf(audioLabel, "Abrir URL de mídia", "Tentar mídia da página",
-                "Retomar reprodução na página")) { _, which ->
+                "Retomar reprodução na página", "■ Forçar interrupção de todas as mídias")) { _, which ->
                 when (which) {
                     0 -> toggleBackgroundAudio()
                     1 -> promptNativeMediaUrl()
                     2 -> tryNativeMediaFromPage()
                     3 -> returnMedia3ToPage()
+                    4 -> forceStopAllMediaFromMenu()
                 }
             }.show()
     }
@@ -4276,6 +4321,7 @@ class MainActivity : ComponentActivity() {
         super.onPause()
     }
     override fun onDestroy() {
+        if (liveBrowser?.get() === this) liveBrowser = null
         backgroundAudioPrefs.unregisterOnSharedPreferenceChangeListener(backgroundAudioPreferenceListener)
         handler.removeCallbacks(audibleMediaTicker)
         handler.removeCallbacks(backgroundMediaTicker)
