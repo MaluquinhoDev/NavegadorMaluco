@@ -56,5 +56,8 @@
             android:name=".BackgroundAudioService"
             android:exported="false"
             android:foregroundServiceType="mediaPlayback" />
+        <receiver
+            android:name=".StopAllMediaReceiver"
+            android:exported="false" />
     </application>
 </manifest>
