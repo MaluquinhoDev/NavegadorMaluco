@@ -1662,7 +1662,10 @@ class MainActivity : ComponentActivity() {
                                 "HTTP: ${if (report.httpErrors.isEmpty()) "sem erros registrados" else report.httpErrors}. " +
                                 "O YouTube pode disponibilizar apenas formatos protegidos ou " +
                                 "incompatíveis com a extração atual.")
-                            .setPositiveButton("OK", null).show()
+                            .setPositiveButton("Examinar página") { _, _ ->
+                                inspectYouTubePageSources(current, page!!)
+                            }
+                            .setNegativeButton("Fechar", null).show()
                         return@onSuccess
                     }
                     val labels = sources.map { it.label +
@@ -1687,6 +1690,9 @@ class MainActivity : ComponentActivity() {
                             "requests=${failure?.requests ?: 0}; http=${failure?.httpErrors.orEmpty()}")
                     AlertDialog.Builder(this).setTitle("Extrator YouTube")
                         .setMessage((when {
+                            err.cause?.javaClass?.simpleName == "SignInConfirmNotBotException" ->
+                                "O YouTube exigiu confirmação antirrobô do extrator anônimo. " +
+                                    "Essa recusa não significa que a página aberta esteja bloqueada."
                             err.cause is java.net.SocketTimeoutException ->
                                 "A conexão demorou demais. Confira a internet e tente novamente."
                             err.cause is java.net.UnknownHostException ->
@@ -1701,10 +1707,109 @@ class MainActivity : ComponentActivity() {
                         }) + "\nDiagnóstico: ${failure?.requests ?: 0} requisição(ões), " +
                             "HTTP ${failure?.httpErrors.orEmpty()}, " +
                             "erro ${err.cause?.javaClass?.simpleName ?: err.javaClass.simpleName}.")
-                        .setPositiveButton("OK", null).show()
+                        .setPositiveButton("Examinar página") { _, _ ->
+                            inspectYouTubePageSources(current, page!!)
+                        }
+                        .setNegativeButton("Fechar", null).show()
                 }
             }
         }.start()
+    }
+
+    /**
+     * Segunda via de diagnóstico: inspeciona somente dados de mídia já declarados
+     * pela página visível. Não lê cookies nem busca tokens de autenticação.
+     */
+    private fun inspectYouTubePageSources(view: WebView, page: String) {
+        val script = """(function(){
+            let response = window.ytInitialPlayerResponse || null;
+            let origin = response ? 'ytInitialPlayerResponse' : 'ausente';
+            if (!response) {
+                try {
+                    const p = document.querySelector('ytd-player');
+                    if (p && typeof p.getPlayerResponse === 'function') {
+                        response = p.getPlayerResponse(); origin = 'ytd-player';
+                    }
+                } catch (e) {}
+            }
+            const sd = response && response.streamingData || {};
+            const formats = [...(sd.formats || []), ...(sd.adaptiveFormats || [])];
+            let cipher = 0, direct = 0;
+            const sources = [];
+            function add(kind, value, playable) {
+                try {
+                    if (typeof value !== 'string' || sources.length >= 30) return;
+                    const u = new URL(value, location.href);
+                    const host = u.hostname.toLowerCase();
+                    if (u.protocol !== 'https:' || !(host === 'youtube.com' ||
+                        host.endsWith('.youtube.com') || host === 'googlevideo.com' ||
+                        host.endsWith('.googlevideo.com'))) return;
+                    sources.push({kind:kind,url:u.href,playable:playable});
+                } catch(e) {}
+            }
+            add('HLS · página', sd.hlsManifestUrl, true);
+            add('DASH · página', sd.dashManifestUrl, true);
+            for (const f of formats) {
+                if (f.signatureCipher || f.cipher) cipher++;
+                if (typeof f.url !== 'string') continue;
+                direct++;
+                const mime = String(f.mimeType || '');
+                const audio = mime.startsWith('audio/') || !!f.audioQuality ||
+                    [18,22].includes(Number(f.itag));
+                const video = mime.startsWith('video/');
+                const kind = audio && video ? 'Vídeo + áudio' :
+                    audio ? 'Áudio' : 'Vídeo sem áudio';
+                add(kind+' · '+String(f.qualityLabel || f.itag || 'página'), f.url, audio);
+            }
+            return JSON.stringify({origin:origin,playability:String(response &&
+                response.playabilityStatus && response.playabilityStatus.status || 'desconhecido'),
+                total:formats.length,cipher:cipher,direct:direct,sources:sources});
+        })()"""
+        view.evaluateJavascript(script) { value ->
+            if (isFinishing || isDestroyed || webView !== view || view.url != page)
+                return@evaluateJavascript
+            val report = runCatching {
+                org.json.JSONObject(org.json.JSONArray("[$value]").getString(0))
+            }.getOrNull()
+            if (report == null) {
+                AlertDialog.Builder(this).setTitle("Diagnóstico da página")
+                    .setMessage("Não foi possível consultar os dados de reprodução da página.")
+                    .setPositiveButton("Fechar", null).show()
+                return@evaluateJavascript
+            }
+            val array = report.optJSONArray("sources") ?: org.json.JSONArray()
+            val usable = mutableListOf<YoutubeExtractor.Source>()
+            for (i in 0 until array.length()) {
+                val item = array.optJSONObject(i) ?: continue
+                val url = item.optString("url")
+                if (url.startsWith("https://")) usable += YoutubeExtractor.Source(
+                    item.optString("kind").take(80), url, item.optBoolean("playable"))
+            }
+            val summary = "Origem: ${report.optString("origin")}\n" +
+                "Estado: ${report.optString("playability")}\n" +
+                "Formatos declarados: ${report.optInt("total")}\n" +
+                "URLs diretas: ${report.optInt("direct")}\n" +
+                "Formatos com assinatura: ${report.optInt("cipher")}\n" +
+                "Fontes utilizáveis identificadas: ${usable.size}"
+            android.util.Log.i("NavegadorMedia3", "YouTubePagina: " + summary.replace('\n', ';'))
+            AlertDialog.Builder(this).setTitle("YouTube · diagnóstico da página")
+                .setMessage(summary)
+                .setPositiveButton("Ver fontes (${usable.size})") { _, _ ->
+                    if (usable.isEmpty()) {
+                        Toast.makeText(this, "Nenhuma URL direta declarada pela página.",
+                            Toast.LENGTH_LONG).show()
+                    } else {
+                        AlertDialog.Builder(this).setTitle("Formatos da página")
+                            .setItems(usable.map { it.label +
+                                (if (it.playable) "" else " · exige áudio separado") }.toTypedArray()) { _, index ->
+                                val chosen = usable[index]
+                                if (chosen.playable) verifyExtractedYouTubeSource(view, page, chosen)
+                                else Toast.makeText(this, "Áudio separado necessário.",
+                                    Toast.LENGTH_LONG).show()
+                            }.setNegativeButton("Fechar", null).show()
+                    }
+                }.setNegativeButton("Fechar", null).show()
+        }
     }
 
     /** Comprova a autorização HTTP antes de enviar uma URL temporária ao Media3. */
