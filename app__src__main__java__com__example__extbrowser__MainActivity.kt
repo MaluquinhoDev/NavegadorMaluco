@@ -3574,7 +3574,7 @@ class MainActivity : ComponentActivity() {
                 }
             }
         }
-        val experimentalAudioButton = Button(this).apply {
+        val soundToggleButton = Button(this).apply {
             text = "🔈"
             contentDescription = "Alternar som do vídeo visível sem iniciar ou pausar reprodução"
             setOnClickListener {
@@ -3583,7 +3583,7 @@ class MainActivity : ComponentActivity() {
                 if ((host != "instagram.com" && host?.endsWith(".instagram.com") != true) ||
                     siteDisplayMode(currentUrl) != "hybrid" ||
                     Attention.checkNavigation(currentUrl ?: "") != null) {
-                    Toast.makeText(this@MainActivity, "Experimento indisponível neste momento",
+                    Toast.makeText(this@MainActivity, "Controle de som indisponível neste momento",
                         Toast.LENGTH_SHORT).show()
                     return@setOnClickListener
                 }
@@ -3610,14 +3610,14 @@ class MainActivity : ComponentActivity() {
                 }
             }
         }
-        instagramAudioButton = experimentalAudioButton
+        instagramAudioButton = soundToggleButton
         refreshInstagramAudioButton()
         val debugSection = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             visibility = View.GONE
         }
         val debugToggle = Button(this).apply {
-            text = "⚙ Depuração"
+            text = "⚙ Diagnóstico avançado"
             setOnClickListener {
                 debugSection.visibility = if (debugSection.visibility == View.VISIBLE)
                     View.GONE else View.VISIBLE
@@ -3732,7 +3732,7 @@ class MainActivity : ComponentActivity() {
             }
         }
         column.addView(pauseButton, LinearLayout.LayoutParams(MATCH_PARENT, dp(48)))
-        column.addView(experimentalAudioButton, LinearLayout.LayoutParams(MATCH_PARENT, dp(48)))
+        column.addView(soundToggleButton, LinearLayout.LayoutParams(MATCH_PARENT, dp(48)))
         column.addView(volumeButton, LinearLayout.LayoutParams(MATCH_PARENT, dp(48)))
         scroll = object : ScrollView(this) {
             override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
@@ -4076,6 +4076,11 @@ class MainActivity : ComponentActivity() {
                     val showRecovery = !ended && c.currentMediaItem != null &&
                         (stalled || c.playerError != null)
                     recoveryRow.visibility = if (showRecovery) View.VISIBLE else View.GONE
+                    if (showRecovery && outer.visibility != View.VISIBLE &&
+                        !isInPictureInPictureMode) {
+                        outer.visibility = View.VISIBLE
+                        handler.removeCallbacks(hideControls)
+                    }
                     refreshYoutubeButton.visibility = if (showRecovery &&
                         youtubeVideoId(c.currentMediaItem?.mediaMetadata?.extras
                             ?.getString("nm_attention_page")) != null) View.VISIBLE else View.GONE
