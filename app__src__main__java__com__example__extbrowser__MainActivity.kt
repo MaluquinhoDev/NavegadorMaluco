@@ -638,6 +638,7 @@ class MainActivity : ComponentActivity() {
         setTheme(if (isDarkTheme()) android.R.style.Theme_Material_NoActionBar
             else android.R.style.Theme_Material_Light_NoActionBar)
         super.onCreate(savedInstanceState)
+        YoutubeExtractor.configure(applicationContext)
         liveBrowser = java.lang.ref.WeakReference(this)
         // Baseline do teste isolado: evita a dupla intervenção experimental
         // na WebView do Seu Imposto. Migra uma única vez as opções antigas;
