@@ -78,6 +78,7 @@ class BackgroundAudioService : Service() {
             this, 1, Intent(this, BackgroundAudioService::class.java).setAction(ACTION_STOP),
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
+        val forceStopIntent = StopAllMediaReceiver.pendingIntent(this, 107)
         val notification = Notification.Builder(this, CHANNEL)
             .setSmallIcon(android.R.drawable.ic_media_play)
             .setContentTitle("NavegadorMaluco")
@@ -85,6 +86,8 @@ class BackgroundAudioService : Service() {
             .setContentIntent(contentIntent)
             .addAction(Notification.Action.Builder(
                 android.R.drawable.ic_media_pause, "Desativar", stopIntent).build())
+            .addAction(Notification.Action.Builder(
+                android.R.drawable.ic_menu_close_clear_cancel, "Parar todas", forceStopIntent).build())
             .setOngoing(true)
             .setCategory(Notification.CATEGORY_SERVICE)
             .build()
