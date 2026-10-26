@@ -3750,6 +3750,24 @@ class MainActivity : ComponentActivity() {
         listOf(close, rotate, fullscreenButton, pipButton).forEach { navControls.addView(it,
             LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f)) }
         outer.addView(navControls)
+        // Controles de recuperação só aparecem durante espera prolongada ou falha.
+        val recoveryRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = android.view.Gravity.CENTER
+            visibility = View.GONE
+        }
+        val retryLoadButton = Button(this).apply {
+            text = "Recarregar mídia"
+            contentDescription = "Reiniciar carregamento na posição atual"
+        }
+        val refreshYoutubeButton = Button(this).apply {
+            text = "Renovar fonte YouTube"
+            contentDescription = "Obter nova URL e PO Token preservando a posição"
+            visibility = View.GONE
+        }
+        recoveryRow.addView(retryLoadButton, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
+        recoveryRow.addView(refreshYoutubeButton, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
+        outer.addView(recoveryRow, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
         outer.addView(View(this), LinearLayout.LayoutParams(1, 0, 1f))
         listOf(back, play, forward).forEach { controls.addView(it,
             LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f)) }
@@ -3786,6 +3804,7 @@ class MainActivity : ComponentActivity() {
         var lastAttentionReminderPage: String? = null
         var seeking = false
         var closed = false
+        var refreshingYoutube = false
         val hideAttentionReminder = Runnable {
             if (playerPanel === panel && !closed) attentionBanner.visibility = View.GONE
         }
@@ -3897,6 +3916,56 @@ class MainActivity : ComponentActivity() {
             handler.removeCallbacks(hideControls)
         } else showControls() }
 
+        retryLoadButton.setOnClickListener {
+            val c = player ?: return@setOnClickListener
+            if (enforceAttentionForPlayerControls() || c.currentMediaItem == null) return@setOnClickListener
+            val position = c.currentPosition.coerceAtLeast(0L)
+            c.stop()
+            c.seekTo(position)
+            c.prepare()
+            c.play()
+            playbackIssue = "Recarregando a mídia em ${position / 1000}s…"
+            showControls()
+        }
+        refreshYoutubeButton.setOnClickListener {
+            val c = player ?: return@setOnClickListener
+            val original = c.currentMediaItem ?: return@setOnClickListener
+            val page = original.mediaMetadata.extras?.getString("nm_attention_page")
+            if (youtubeVideoId(page) == null || refreshingYoutube ||
+                enforceAttentionForPlayerControls()) return@setOnClickListener
+            val previousUri = original.localConfiguration?.uri ?: return@setOnClickListener
+            refreshingYoutube = true
+            refreshYoutubeButton.isEnabled = false
+            playbackIssue = "Renovando URL e PO Token do YouTube…"
+            showControls()
+            Thread {
+                val fresh = runCatching { YoutubeExtractor.extractWithReport(page!!) }
+                runOnUiThread {
+                    if (closed || isDestroyed || isFinishing) return@runOnUiThread
+                    refreshingYoutube = false
+                    refreshYoutubeButton.isEnabled = true
+                    if (c.currentMediaItem?.localConfiguration?.uri != previousUri) return@runOnUiThread
+                    val sources = fresh.getOrNull()?.sources.orEmpty().filter { it.playable }
+                    val oldItag = previousUri.getQueryParameter("itag")
+                    val chosen = sources.firstOrNull { oldItag != null &&
+                        Uri.parse(it.url).getQueryParameter("itag") == oldItag } ?: sources.firstOrNull {
+                        it.label.startsWith("Vídeo + áudio")
+                    } ?: sources.firstOrNull()
+                    if (chosen == null) {
+                        playbackIssue = "Não foi obtida uma nova fonte autorizada."
+                    } else {
+                        val position = c.currentPosition.coerceAtLeast(0L)
+                        val renewed = original.buildUpon().setUri(chosen.url).build()
+                        c.setMediaItem(renewed, position)
+                        c.prepare()
+                        c.play()
+                        playbackIssue = "Fonte renovada · retomando em ${position / 1000}s…"
+                    }
+                    showControls()
+                }
+            }.start()
+        }
+
         val update = object : Runnable {
             override fun run() {
                 val c = player
@@ -3954,8 +4023,16 @@ class MainActivity : ComponentActivity() {
                     }
                     info.text = if (ended)
                         "Controle de Atenção: acesso temporariamente limitado"
-                    else playbackIssue ?: if (total > 0L) "${clock(pos)} / ${clock(total)}"
+                    else playbackIssue ?: Media3PlaybackService.bufferingNotice() ?:
+                        if (total > 0L) "${clock(pos)} / ${clock(total)}"
                         else "Áudio/vídeo nativo · ${clock(pos)}"
+                    val stalled = Media3PlaybackService.bufferingNotice() != null
+                    val showRecovery = !ended && c.currentMediaItem != null &&
+                        (stalled || c.playerError != null)
+                    recoveryRow.visibility = if (showRecovery) View.VISIBLE else View.GONE
+                    refreshYoutubeButton.visibility = if (showRecovery &&
+                        youtubeVideoId(c.currentMediaItem?.mediaMetadata?.extras
+                            ?.getString("nm_attention_page")) != null) View.VISIBLE else View.GONE
                     play.text = when {
                         c.playerError != null -> "Tentar novamente"
                         c.isPlaying -> "Pausar"
