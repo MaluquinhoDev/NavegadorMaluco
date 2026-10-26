@@ -77,7 +77,14 @@ class MainActivity : ComponentActivity() {
         }
     }
     private class Blocker(val name: String, val regex: Regex)
-    private data class Tab(val view: WebView, var title: String = "Nova aba", var url: String = HOME)
+    private data class Tab(
+        val view: WebView, var title: String = "Nova aba", var url: String = HOME,
+        var constellation: String = "Exploração", var lastUsed: Long = SystemClock.elapsedRealtime()
+    )
+    private data class ParkedTab(val url: String, val title: String, val constellation: String)
+    private val parkedTabs = mutableListOf<ParkedTab>()
+    private val constellations = listOf("Exploração", "Estudos", "Entretenimento", "Trabalho")
+    private val totalTabCount get() = tabs.size + parkedTabs.size
 
     private val tabs = mutableListOf<Tab>()
     private var youtubeDiagnosticsVideoId: String? = null
@@ -781,9 +788,33 @@ class MainActivity : ComponentActivity() {
         }
 
         val prefs = getSharedPreferences("tabs", MODE_PRIVATE)
-        val urls = prefs.getString("urls", "")!!.split('\n').filter { it.startsWith("https://") || it.startsWith("http://") }.take(MAX_TABS)
-        val initial = urls.ifEmpty { listOf(HOME) }
-        for (url in initial) tabs.add(Tab(createWebView(), url = url))
+        val initial = mutableListOf<String>()
+        val savedConstellations = prefs.getString("constellations_v1", null)
+        if (savedConstellations != null) {
+            runCatching {
+                val entries = org.json.JSONArray(savedConstellations)
+                for (i in 0 until minOf(entries.length(), MAX_TABS)) {
+                    val item = entries.getJSONObject(i)
+                    val url = item.optString("url", HOME)
+                    if (!url.startsWith("https://") && !url.startsWith("http://")) continue
+                    val title = item.optString("title", "Nova aba").take(100)
+                    val group = item.optString("group", "Exploração").takeIf { it in constellations } ?: "Exploração"
+                    if (item.optBoolean("live", false) && tabs.size < BrowserTabPolicy.MAX_RESIDENT_TABS) {
+                        tabs.add(Tab(createWebView(), title, url, group)); initial.add(url)
+                    } else parkedTabs.add(ParkedTab(url, title, group))
+                }
+            }.onFailure { tabs.clear(); parkedTabs.clear(); initial.clear() }
+        }
+        if (tabs.isEmpty()) {
+            val urls = prefs.getString("urls", "")!!.split('\n')
+                .filter { it.startsWith("https://") || it.startsWith("http://") }.take(MAX_TABS)
+            val first = urls.ifEmpty { listOf(HOME) }
+            for (url in first.take(BrowserTabPolicy.MAX_RESIDENT_TABS)) {
+                tabs.add(Tab(createWebView(), url = url)); initial.add(url)
+            }
+            if (savedConstellations == null)
+                urls.drop(BrowserTabPolicy.MAX_RESIDENT_TABS).forEach { parkedTabs.add(ParkedTab(it, "Nova aba", "Exploração")) }
+        }
         activeIndex = BrowserTabPolicy.restoredIndex(prefs.getInt("active", 0), tabs.size)
         showActive()
         initial.forEachIndexed { index, url -> if (index == activeIndex) tabs[index].view.loadUrl(url) }
@@ -1207,9 +1238,12 @@ class MainActivity : ComponentActivity() {
                 source: WebView?, isDialog: Boolean, isUserGesture: Boolean, resultMsg: Message?
             ): Boolean {
                 // Não permitir pop-ups automáticos nem exceder o limite de abas.
-                if (!isUserGesture || resultMsg == null || tabs.size >= MAX_TABS) {
-                    if (tabs.size >= MAX_TABS)
-                        Toast.makeText(this@MainActivity, "Limite de $MAX_TABS abas", Toast.LENGTH_SHORT).show()
+                if (!isUserGesture || resultMsg == null || totalTabCount >= MAX_TABS ||
+                    tabs.size >= BrowserTabPolicy.MAX_RESIDENT_TABS) {
+                    if (isUserGesture && resultMsg != null)
+                        Toast.makeText(this@MainActivity,
+                            "Limite de WebViews ativas. Abra Abas e hiberne uma página para liberar espaço.",
+                            Toast.LENGTH_LONG).show()
                     return false
                 }
                 val transport = resultMsg.obj as? WebView.WebViewTransport ?: return false
@@ -1531,7 +1565,8 @@ class MainActivity : ComponentActivity() {
         newView.onResume()
         if (newView.url == null && newView !in pendingPopups) newView.loadUrl(tabs[activeIndex].url)
         urlBar.setText(attentionBlockedSources[newView] ?: newView.url ?: tabs[activeIndex].url)
-        tabsButton.text = "${tabs.size} abas"
+        tabs[activeIndex].lastUsed = SystemClock.elapsedRealtime()
+        tabsButton.text = "${totalTabCount} abas"
         servedBlockUrl = null
         lastBlockMs = 0
         updateFavorite()
@@ -1540,15 +1575,75 @@ class MainActivity : ComponentActivity() {
         persistTabs()
     }
 
-    private fun newTab(url: String = HOME) {
-        if (!BrowserTabPolicy.canCreate(tabs.size)) {
-            Toast.makeText(this, "Limite de $MAX_TABS abas para reduzir uso de memória", Toast.LENGTH_LONG).show()
+    private fun newTab(url: String = HOME, onCreated: (() -> Unit)? = null) {
+        if (!BrowserTabPolicy.canCreate(totalTabCount)) {
+            Toast.makeText(this, "Limite de $MAX_TABS abas", Toast.LENGTH_LONG).show()
             return
         }
+        if (tabs.size >= BrowserTabPolicy.MAX_RESIDENT_TABS) {
+            selectTabToPark("Liberar memória para nova aba") { openNewResidentTab(url); onCreated?.invoke() }
+        } else { openNewResidentTab(url); onCreated?.invoke() }
+    }
+
+    private fun openNewResidentTab(url: String) {
         Attention.pause()
         tabs.add(Tab(createWebView(), url = url))
         activeIndex = tabs.lastIndex
         showActive()
+    }
+
+    /** Hibernar descarta o DOM e preserva endereço, título e constelação. Nunca é automático. */
+    private fun parkTab(index: Int) {
+        if (index !in tabs.indices || index == activeIndex) return
+        val tab = tabs.removeAt(index)
+        val address = attentionBlockedSources[tab.view] ?: tab.view.url ?: tab.url
+        if (address.startsWith("http://") || address.startsWith("https://")) {
+            parkedTabs.add(ParkedTab(address, tab.view.title ?: tab.title, tab.constellation))
+        } else parkedTabs.add(ParkedTab(HOME, tab.title, tab.constellation))
+        attentionBlockedSources.remove(tab.view)
+        pendingPopups.remove(tab.view)
+        synchronized(mediaCandidateLock) { mediaCandidates.remove(tab.view) }
+        tab.view.stopLoading()
+        tab.view.onPause()
+        tab.view.destroy()
+        if (index < activeIndex) activeIndex--
+        persistTabs()
+        tabsButton.text = "${totalTabCount} abas"
+    }
+
+    private fun selectTabToPark(title: String, afterPark: () -> Unit = {}) {
+        val choices = tabs.indices.filter { it != activeIndex }
+        if (choices.isEmpty()) {
+            Toast.makeText(this, "Não há aba inativa para hibernar", Toast.LENGTH_LONG).show()
+            return
+        }
+        AlertDialog.Builder(this).setTitle(title)
+            .setMessage("Hibernar libera memória, mas encerra o conteúdo e eventuais mídias dessa aba. Ao reabrir, a página será recarregada.")
+            .setItems(choices.map { "${tabs[it].constellation} · ${tabs[it].view.title ?: tabs[it].title}" }.toTypedArray()) { _, which ->
+                parkTab(choices[which]); afterPark()
+            }.setNegativeButton("Cancelar", null).show()
+    }
+
+    private fun restoreParkedTab(index: Int) {
+        if (index !in parkedTabs.indices) return
+        val restore = {
+            val stored = parkedTabs.removeAt(index)
+            tabs.add(Tab(createWebView(), stored.title, stored.url, stored.constellation))
+            activeIndex = tabs.lastIndex
+            showActive()
+        }
+        if (tabs.size >= BrowserTabPolicy.MAX_RESIDENT_TABS)
+            selectTabToPark("Escolha uma aba para hibernar") { restore() }
+        else restore()
+    }
+
+    private fun moveTabToConstellation() {
+        AlertDialog.Builder(this).setTitle("Constelação da aba atual")
+            .setItems(constellations.toTypedArray()) { _, index ->
+                tabs[activeIndex].constellation = constellations[index]
+                persistTabs()
+                Toast.makeText(this, "Movida para ${constellations[index]}", Toast.LENGTH_SHORT).show()
+            }.show()
     }
 
     private fun closeTab(index: Int) {
@@ -1565,14 +1660,34 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun showTabs() {
-        val names = tabs.mapIndexed { i, t ->
-            BrowserTabPolicy.tabLabel(i, t.title, i == activeIndex)
-        }.toTypedArray()
-        AlertDialog.Builder(this).setTitle("Abas (${tabs.size}/$MAX_TABS)")
-            .setItems(names) { _, selected -> activeIndex = selected; showActive() }
+        val liveNames = tabs.mapIndexed { i, t ->
+            "${if (i == activeIndex) "●" else "○"} ${t.constellation} · ${t.view.title ?: t.title} [ativa]"
+        }
+        val parkedNames = parkedTabs.map { "◌ ${it.constellation} · ${it.title} [hibernada]" }
+        val items = (liveNames + parkedNames).toTypedArray()
+        AlertDialog.Builder(this)
+            .setTitle("Constelações · $totalTabCount/$MAX_TABS páginas · ${tabs.size}/${BrowserTabPolicy.MAX_RESIDENT_TABS} residentes")
+            .setItems(items) { _, selected ->
+                if (selected < tabs.size) { activeIndex = selected; showActive() }
+                else restoreParkedTab(selected - tabs.size)
+            }
             .setPositiveButton("Nova aba") { _, _ -> newTab() }
-            .setNeutralButton("Fechar aba atual") { _, _ -> closeTab(activeIndex) }
-            .setNegativeButton("Cancelar", null).show()
+            .setNeutralButton("Gerenciar") { _, _ ->
+                val actions = arrayOf("Hibernar outra aba", "Mover aba atual para constelação", "Fechar aba atual", "Excluir aba hibernada")
+                AlertDialog.Builder(this).setTitle("Gerenciar constelações")
+                    .setItems(actions) { _, action ->
+                        when (action) {
+                            0 -> selectTabToPark("Hibernar aba")
+                            1 -> moveTabToConstellation()
+                            2 -> closeTab(activeIndex)
+                            3 -> AlertDialog.Builder(this).setTitle("Excluir página hibernada")
+                                .setItems(parkedTabs.map { "${it.constellation} · ${it.title}" }.toTypedArray()) { _, i ->
+                                    parkedTabs.removeAt(i); persistTabs(); tabsButton.text = "${totalTabCount} abas"
+                                }.show()
+                        }
+                    }.show()
+            }
+            .setNegativeButton("Voltar", null).show()
     }
 
     private fun toggleFavorite() {
@@ -2135,11 +2250,10 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun openIsolatedKeyboardTest() {
-        if (!BrowserTabPolicy.canCreate(tabs.size)) {
+        if (!BrowserTabPolicy.canCreate(totalTabCount)) {
             Toast.makeText(this, "Limite de abas atingido", Toast.LENGTH_LONG).show()
             return
         }
-        newTab("about:blank")
         val html = """<!doctype html><html lang="pt-br"><head>
             <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
             <title>Teste isolado · teclado</title>
@@ -2168,7 +2282,7 @@ class MainActivity : ComponentActivity() {
                 visualViewport.addEventListener('resize',()=>log('viewport-resize'));
             log('início');
             </script></body></html>"""
-        webView.loadDataWithBaseURL(null, html, "text/html", "UTF-8", null)
+        newTab("about:blank") { webView.loadDataWithBaseURL(null, html, "text/html", "UTF-8", null) }
     }
 
     private fun toggleSeuImpostoFocusRecovery() {
@@ -4649,10 +4763,22 @@ class MainActivity : ComponentActivity() {
 
     private fun persistTabs() {
         if (!loaded) return
+        val entries = org.json.JSONArray()
+        tabs.forEach { tab ->
+            val url = attentionBlockedSources[tab.view] ?: tab.view.url ?: tab.url
+            entries.put(org.json.JSONObject().put("url", url)
+                .put("title", tab.view.title ?: tab.title)
+                .put("group", tab.constellation).put("live", true))
+        }
+        parkedTabs.forEach { tab ->
+            entries.put(org.json.JSONObject().put("url", tab.url)
+                .put("title", tab.title).put("group", tab.constellation).put("live", false))
+        }
         getSharedPreferences("tabs", MODE_PRIVATE).edit()
             .putString("urls", tabs.joinToString("\n") {
                 attentionBlockedSources[it.view] ?: it.view.url ?: it.url
             })
+            .putString("constellations_v1", entries.toString())
             .putInt("active", activeIndex).apply()
     }
 
