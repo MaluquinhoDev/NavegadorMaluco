@@ -261,6 +261,9 @@ private class YoutubePoTokenProvider(private val context: android.content.Contex
             org.schabi.newpipe.extractor.services.youtube.PoTokenResult? = null
         private var stage = 0
         private var streamingToken: String? = null
+        // Estado atômico restringe chamadas inesperadas/repetidas pela ponte JavaScript.
+        // 0=início, 1=Create, 2=GenerateIT, 3=primeiro mint, 4=segundo mint, 5=fim.
+        private val bridgePhase = java.util.concurrent.atomic.AtomicInteger(0)
 
         fun run(): org.schabi.newpipe.extractor.services.youtube.PoTokenResult? {
             main.post {
@@ -281,6 +284,10 @@ private class YoutubePoTokenProvider(private val context: android.content.Contex
                     androidx.webkit.WebViewCompat.setProfile(view, "nm_botguard_isolated")
                     view.settings.javaScriptEnabled = true
                     view.settings.blockNetworkLoads = true
+                    view.settings.allowFileAccess = false
+                    view.settings.allowContentAccess = false
+                    view.settings.domStorageEnabled = false
+                    view.settings.javaScriptCanOpenWindowsAutomatically = false
                     view.settings.userAgentString = BOTGUARD_UA
                     view.addJavascriptInterface(Callbacks(), "PoBridge")
                     view.loadDataWithBaseURL(
@@ -314,6 +321,8 @@ private class YoutubePoTokenProvider(private val context: android.content.Contex
         private fun finish() { done.countDown() }
 
         private fun postChallenge(endpoint: String, data: String, action: (String) -> Unit) {
+            if ((endpoint != "Create" && endpoint != "GenerateIT") ||
+                data.length > 1024 * 1024) { finish(); return }
             Thread {
                 try {
                     val conn = (java.net.URL("https://www.youtube.com/api/jnn/v1/$endpoint")
@@ -330,7 +339,19 @@ private class YoutubePoTokenProvider(private val context: android.content.Contex
                         conn.doOutput = true
                         conn.outputStream.use { it.write(data.toByteArray(Charsets.UTF_8)) }
                         if (conn.responseCode != 200) throw IOException("BotGuard HTTP ${conn.responseCode}")
-                        val response = conn.inputStream.bufferedReader().use { it.readText() }
+                        // Não permitir respostas ilimitadas vindas do serviço remoto.
+                        val response = conn.inputStream.bufferedReader().use { reader ->
+                            val out = StringBuilder()
+                            val buffer = CharArray(8192)
+                            while (true) {
+                                val count = reader.read(buffer)
+                                if (count < 0) break
+                                if (out.length + count > 8 * 1024 * 1024)
+                                    throw IOException("BotGuard response too large")
+                                out.append(buffer, 0, count)
+                            }
+                            out.toString()
+                        }
                         main.post { action(response) }
                     } finally { conn.disconnect() }
                 } catch (_: Exception) { finish() }
@@ -343,6 +364,7 @@ private class YoutubePoTokenProvider(private val context: android.content.Contex
 
         inner class Callbacks {
             @android.webkit.JavascriptInterface fun loaded() {
+                if (!bridgePhase.compareAndSet(0, 1)) return
                 postChallenge("Create", "[\"$BOTGUARD_REQUEST_KEY\"]") { response ->
                     try {
                         val root = org.json.JSONArray(response)
@@ -372,6 +394,8 @@ private class YoutubePoTokenProvider(private val context: android.content.Contex
             }
 
             @android.webkit.JavascriptInterface fun botguard(snapshot: String) {
+                if (!bridgePhase.compareAndSet(1, 2)) return
+                if (snapshot.length > 1024 * 1024) { finish(); return }
                 val body = org.json.JSONArray().put(BOTGUARD_REQUEST_KEY).put(snapshot).toString()
                 postChallenge("GenerateIT", body) { response ->
                     try {
@@ -379,7 +403,9 @@ private class YoutubePoTokenProvider(private val context: android.content.Contex
                         val encoded = json.getString(0).replace('-', '+').replace('_', '/')
                             .replace('.', '=')
                         val bytes = android.util.Base64.decode(encoded, android.util.Base64.DEFAULT)
+                        if (bytes.size > 1024 * 1024) throw IOException("BotGuard token too large")
                         js("window.integrityToken=new Uint8Array([${bytes.joinToString(",") { (it.toInt() and 255).toString() }}]);")
+                        bridgePhase.set(3)
                         mint(visitor)
                     } catch (_: Exception) { finish() }
                 }
@@ -387,6 +413,9 @@ private class YoutubePoTokenProvider(private val context: android.content.Contex
 
             @android.webkit.JavascriptInterface fun minted(encoded: String) {
                 try {
+                    if (encoded.length > 128 * 1024) { finish(); return }
+                    val expected = if (stage == 0) 3 else 4
+                    if (!bridgePhase.compareAndSet(expected, expected + 1)) return
                     val bytes = encoded.split(',').map { it.toInt().toByte() }.toByteArray()
                     val token = android.util.Base64.encodeToString(bytes,
                         android.util.Base64.URL_SAFE or android.util.Base64.NO_WRAP or android.util.Base64.NO_PADDING)
