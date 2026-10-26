@@ -14,6 +14,10 @@ import java.io.IOException
 /** Extractor independente, sem cookies da WebView nem alteração da sessão Media3. */
 object YoutubeExtractor {
     @Volatile private var applicationContext: android.content.Context? = null
+    @Volatile var poTokenStatus: String = "Ainda não testado"
+        private set
+
+    fun recordPoTokenStatus(status: String) { poTokenStatus = status }
 
     /** O gerador WebView só é iniciado durante a extração, nunca em serviço persistente. */
     fun configure(context: android.content.Context) {
@@ -163,6 +167,7 @@ object YoutubeExtractor {
 
     /** Métricas sem URLs assinadas, cookies ou corpo das respostas. */
     fun extractWithReport(url: String): Report {
+        recordPoTokenStatus("Não solicitado nesta tentativa")
         val started = android.os.SystemClock.elapsedRealtime()
         val network = NetworkTrace()
         trace.set(network)
@@ -209,8 +214,9 @@ private class YoutubePoTokenProvider(private val context: android.content.Contex
     override fun getWebClientPoToken(videoId: String):
         org.schabi.newpipe.extractor.services.youtube.PoTokenResult? {
         if (android.os.Looper.myLooper() == android.os.Looper.getMainLooper()) return null
+        YoutubeExtractor.recordPoTokenStatus("Gerando PO Token WEB…")
         return synchronized(this) {
-            runCatching {
+            val tokenResult = runCatching {
                 val info = org.schabi.newpipe.extractor.services.youtube.InnertubeClientRequestInfo.ofWebClient()
                 info.clientInfo.clientVersion =
                     org.schabi.newpipe.extractor.services.youtube.YoutubeParsingHelper.getClientVersion()
@@ -225,6 +231,9 @@ private class YoutubePoTokenProvider(private val context: android.content.Contex
             }.onFailure {
                 android.util.Log.w("YoutubePoToken", "Token WEB indisponível: ${it.javaClass.simpleName}")
             }.getOrNull()
+            YoutubeExtractor.recordPoTokenStatus(if (tokenResult == null)
+                "Falha na geração do PO Token WEB" else "PO Token WEB gerado")
+            tokenResult
         }
     }
 
