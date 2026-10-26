@@ -25,6 +25,10 @@ class AttentionActivity : ComponentActivity() {
     private lateinit var startEt: EditText
     private lateinit var endEt: EditText
     private lateinit var list: LinearLayout
+    private lateinit var taskList: LinearLayout
+    private lateinit var rewardStatus: TextView
+    private lateinit var taskTitle: EditText
+    private lateinit var taskMinutes: EditText
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -41,6 +45,27 @@ class AttentionActivity : ComponentActivity() {
             text = "Conta o uso do site monitorado na tela e a reprodução de mídia detectada, inclusive em segundo plano."
             textSize = 13f
             setPadding(0, 0, 0, dp(12))
+        })
+
+        content.addView(TextView(this).apply {
+            text = "Checklist e recompensas"
+            textSize = 18f
+            setPadding(0, dp(8), 0, dp(8))
+        })
+        rewardStatus = TextView(this).apply { textSize = 15f }
+        content.addView(rewardStatus)
+        taskList = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        content.addView(taskList)
+        taskTitle = field(content, "Nova tarefa", "Estudar por 30 minutos", InputType.TYPE_CLASS_TEXT, "")
+        taskMinutes = field(content, "Recompensa (1 a 60 minutos)", "15", InputType.TYPE_CLASS_NUMBER, "15")
+        content.addView(Button(this).apply {
+            text = "Adicionar tarefa"
+            setOnClickListener {
+                val minutes = taskMinutes.text.toString().toIntOrNull() ?: 0
+                if (AttentionRewards.add(taskTitle.text.toString(), minutes)) {
+                    taskTitle.setText(""); render()
+                } else Toast.makeText(this@AttentionActivity, "Informe uma tarefa e de 1 a 60 minutos.", Toast.LENGTH_LONG).show()
+            }
         })
 
         // Mostrar o estado atual antes do formulário evita que a lista fique
@@ -167,6 +192,29 @@ class AttentionActivity : ComponentActivity() {
     }
 
     private fun render() {
+        rewardStatus.text = "Banco: ${AttentionRewards.balance()} min · ganho restante hoje: ${AttentionRewards.earnedRemaining()} min (máximo 60/dia)"
+        taskList.removeAllViews()
+        for (task in AttentionRewards.tasks()) {
+            val completed = task.completedDay == java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US).format(java.util.Date())
+            val row = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(0, dp(5), 0, dp(5)) }
+            row.addView(TextView(this).apply {
+                text = (if (completed) "✓ " else "○ ") + task.title + " · +${task.minutes} min"
+            })
+            row.addView(Button(this).apply {
+                text = if (completed) "Concluída hoje" else "Concluir tarefa"
+                isEnabled = !completed
+                setOnClickListener {
+                    val granted = AttentionRewards.complete(task.id)
+                    Toast.makeText(this@AttentionActivity, if (granted > 0) "+$granted minutos no banco" else "Limite de recompensas atingido", Toast.LENGTH_SHORT).show()
+                    render()
+                }
+            })
+            row.addView(Button(this).apply {
+                text = "Excluir tarefa"
+                setOnClickListener { AttentionRewards.remove(task.id); render() }
+            })
+            taskList.addView(row)
+        }
         list.removeAllViews()
         val sites = Attention.sites()
         if (sites.isEmpty()) {
@@ -193,6 +241,16 @@ class AttentionActivity : ComponentActivity() {
             })
             card.addView(TextView(this).apply { text = "$daily · $session · $hours" })
             card.addView(TextView(this).apply { text = "Uso hoje: $used" })
+            card.addView(TextView(this).apply {
+                text = "Créditos resgatados hoje: ${AttentionRewards.allocatedMinutes(s.id)} min"
+            })
+            card.addView(Button(this).apply {
+                text = "Resgatar 5 minutos para ${s.domain}"
+                isEnabled = AttentionRewards.balance() >= 5 && s.dailyMinutes > 0
+                setOnClickListener {
+                    if (AttentionRewards.redeem(s.id, 5)) render()
+                }
+            })
             card.addView(Button(this).apply {
                 text = "Remover"
                 setOnClickListener { confirmRemove(s) }
