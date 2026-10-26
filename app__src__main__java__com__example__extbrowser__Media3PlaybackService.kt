@@ -35,6 +35,13 @@ class Media3PlaybackService : MediaSessionService() {
         fun stopExistingPlayback() {
             liveService?.stopAndClear()
         }
+
+        /** Captura o ponto exato antes de uma tela de bloqueio limpar a sessão. */
+        fun rememberPositionBeforeAttentionBlock() {
+            liveService?.let { service ->
+                service.player?.let { service.savePlaybackPosition(it, interrupted = true) }
+            }
+        }
     }
     private val stopAllCommand = SessionCommand(ACTION_STOP_ALL, Bundle.EMPTY)
     private var player: ExoPlayer? = null
@@ -50,14 +57,17 @@ class Media3PlaybackService : MediaSessionService() {
         }
         stopSelf()
     }
-    private fun savePlaybackPosition(exo: ExoPlayer) {
+    private fun savePlaybackPosition(exo: ExoPlayer, interrupted: Boolean = false) {
         val extras = exo.currentMediaItem?.mediaMetadata?.extras ?: return
         val page = extras.getString("nm_attention_page") ?: return
         val title = exo.currentMediaItem?.mediaMetadata?.title?.toString() ?: "Vídeo"
-        val duration = exo.duration
-        val position = if (exo.playbackState == Player.STATE_ENDED) 0L else exo.currentPosition
-        val safePosition = if (duration > 0L && position >= duration - 5000L) 0L else position
-        playerHistory.save(page, title, safePosition)
+        // Uma interrupção por limite de atenção não significa que o usuário
+        // concluiu o vídeo. Salvar zero aqui reiniciava o histórico indevidamente.
+        val position = if (!interrupted && exo.playbackState == Player.STATE_ENDED) 0L
+            else exo.currentPosition
+        val safePosition = if (!interrupted && exo.playbackState == Player.STATE_ENDED) 0L
+            else position.coerceAtLeast(0L)
+        playerHistory.save(page, title, safePosition, durable = interrupted)
     }
     private val attentionHandler = Handler(Looper.getMainLooper())
     private var lastMediaTickMs = 0L
@@ -79,6 +89,7 @@ class Media3PlaybackService : MediaSessionService() {
                 // Parar e retirar a fonte da sessão impede Play/Seek/Próximo na
                 // notificação, mini-player ou PiP de reativarem mídia bloqueada.
                 if (exo.mediaItemCount > 0) {
+                    savePlaybackPosition(exo, interrupted = true)
                     exo.stop()
                     exo.clearMediaItems()
                     Log.i(TAG, "Controle de Atenção encerrou sessão Media3: " +
