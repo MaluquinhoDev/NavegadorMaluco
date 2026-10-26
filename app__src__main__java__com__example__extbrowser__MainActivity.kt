@@ -25,6 +25,7 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.os.Message
+import android.os.Parcel
 import android.os.SystemClock
 import android.text.InputType
 import android.view.View
@@ -56,6 +57,8 @@ import androidx.webkit.WebMessageCompat
 import androidx.webkit.WebViewCompat
 import androidx.webkit.WebViewFeature
 import java.io.ByteArrayInputStream
+import java.io.File
+import java.util.UUID
 import java.util.WeakHashMap
 import android.content.ComponentName
 import androidx.media3.common.MediaItem
@@ -79,12 +82,49 @@ class MainActivity : ComponentActivity() {
     private class Blocker(val name: String, val regex: Regex)
     private data class Tab(
         val view: WebView, var title: String = "Nova aba", var url: String = HOME,
-        var constellation: String = "Exploração", var lastUsed: Long = SystemClock.elapsedRealtime()
+        var constellation: String = "Exploração", var lastUsed: Long = SystemClock.elapsedRealtime(),
+        val id: String = UUID.randomUUID().toString()
     )
-    private data class ParkedTab(val url: String, val title: String, val constellation: String)
+    private data class ParkedTab(val url: String, val title: String, val constellation: String,
+        val id: String = UUID.randomUUID().toString())
     private val parkedTabs = mutableListOf<ParkedTab>()
     private val constellations = listOf("Exploração", "Estudos", "Entretenimento", "Trabalho")
     private val totalTabCount get() = tabs.size + parkedTabs.size
+
+    private fun safeTabId(candidate: String?): String = runCatching {
+        UUID.fromString(candidate).toString()
+    }.getOrElse { UUID.randomUUID().toString() }
+
+    private fun sessionStateFile(id: String): File = File(File(filesDir, "tab_navigation"), "$id.bin")
+
+    /** Histórico de navegação privado e limitado; nunca promete restaurar DOM, senha ou reprodução. */
+    private fun saveTabNavigation(tab: Tab) {
+        runCatching {
+            val state = Bundle()
+            if (tab.view.saveState(state) == null) return@runCatching
+            val parcel = Parcel.obtain()
+            val bytes = try { state.writeToParcel(parcel, 0); parcel.marshall() }
+                finally { parcel.recycle() }
+            if (bytes.size !in 1..262_144) return@runCatching
+            val file = sessionStateFile(tab.id)
+            file.parentFile?.mkdirs()
+            file.writeBytes(bytes)
+        }.onFailure { android.util.Log.w("TabNavigation", "Falha ao salvar histórico", it) }
+    }
+
+    private fun restoreTabNavigation(tab: Tab): Boolean = runCatching {
+        val file = sessionStateFile(tab.id)
+        if (!file.isFile || file.length() !in 1..262_144) return@runCatching false
+        val parcel = Parcel.obtain()
+        try {
+            val bytes = file.readBytes()
+            parcel.unmarshall(bytes, 0, bytes.size)
+            parcel.setDataPosition(0)
+            tab.view.restoreState(parcel.readBundle(javaClass.classLoader) ?: return@runCatching false) != null
+        } finally { parcel.recycle() }
+    }.getOrDefault(false)
+
+    private fun deleteTabNavigation(id: String) { runCatching { sessionStateFile(id).delete() } }
 
     private val tabs = mutableListOf<Tab>()
     private var youtubeDiagnosticsVideoId: String? = null
@@ -788,7 +828,6 @@ class MainActivity : ComponentActivity() {
         }
 
         val prefs = getSharedPreferences("tabs", MODE_PRIVATE)
-        val initial = mutableListOf<String>()
         val savedConstellations = prefs.getString("constellations_v1", null)
         if (savedConstellations != null) {
             runCatching {
@@ -799,25 +838,40 @@ class MainActivity : ComponentActivity() {
                     if (!url.startsWith("https://") && !url.startsWith("http://")) continue
                     val title = item.optString("title", "Nova aba").take(100)
                     val group = item.optString("group", "Exploração").takeIf { it in constellations } ?: "Exploração"
+                    val id = safeTabId(item.optString("id", ""))
                     if (item.optBoolean("live", false) && tabs.size < BrowserTabPolicy.MAX_RESIDENT_TABS) {
-                        tabs.add(Tab(createWebView(), title, url, group)); initial.add(url)
-                    } else parkedTabs.add(ParkedTab(url, title, group))
+                        val tab = Tab(createWebView(), title, url, group, id = id)
+                        tabs.add(tab)
+                        restoreTabNavigation(tab)
+                    } else parkedTabs.add(ParkedTab(url, title, group, id))
                 }
-            }.onFailure { tabs.clear(); parkedTabs.clear(); initial.clear() }
+            }.onFailure {
+                tabs.forEach { it.view.destroy() }
+                tabs.clear(); parkedTabs.clear()
+            }
         }
         if (tabs.isEmpty()) {
-            val urls = prefs.getString("urls", "")!!.split('\n')
-                .filter { it.startsWith("https://") || it.startsWith("http://") }.take(MAX_TABS)
-            val first = urls.ifEmpty { listOf(HOME) }
-            for (url in first.take(BrowserTabPolicy.MAX_RESIDENT_TABS)) {
-                tabs.add(Tab(createWebView(), url = url)); initial.add(url)
+            if (parkedTabs.isNotEmpty()) {
+                // Sessão válida somente com abas guardadas: recupera uma, sem duplicar o legado.
+                val first = parkedTabs.removeAt(0)
+                val tab = Tab(createWebView(), first.title, first.url, first.constellation, id = first.id)
+                tabs.add(tab)
+                restoreTabNavigation(tab)
+            } else {
+                val urls = prefs.getString("urls", "")!!.split('\n')
+                    .filter { it.startsWith("https://") || it.startsWith("http://") }.take(MAX_TABS)
+                val first = urls.ifEmpty { listOf(HOME) }
+                for (url in first.take(BrowserTabPolicy.MAX_RESIDENT_TABS))
+                    tabs.add(Tab(createWebView(), url = url))
+                if (savedConstellations == null)
+                    urls.drop(BrowserTabPolicy.MAX_RESIDENT_TABS).forEach {
+                        parkedTabs.add(ParkedTab(it, "Nova aba", "Exploração"))
+                    }
             }
-            if (savedConstellations == null)
-                urls.drop(BrowserTabPolicy.MAX_RESIDENT_TABS).forEach { parkedTabs.add(ParkedTab(it, "Nova aba", "Exploração")) }
         }
-        activeIndex = BrowserTabPolicy.restoredIndex(prefs.getInt("active", 0), tabs.size)
+        activeIndex = tabs.indexOfFirst { it.id == prefs.getString("active_id", null) }
+            .takeIf { it >= 0 } ?: BrowserTabPolicy.restoredIndex(prefs.getInt("active", 0), tabs.size)
         showActive()
-        initial.forEachIndexed { index, url -> if (index == activeIndex) tabs[index].view.loadUrl(url) }
         loaded = true
         connectMiniPlayer()
         openPlayerFromMediaNotification(intent)
@@ -1219,6 +1273,30 @@ class MainActivity : ComponentActivity() {
                     (if (request.isForMainFrame) "documento principal" else "subrecurso") +
                     " · ${request.method} ${request.url.host ?: "?"}${safeDiagnosticPath(request.url)}")
             }
+            override fun onRenderProcessGone(v: WebView, detail: android.webkit.RenderProcessGoneDetail): Boolean {
+                val index = tabs.indexOfFirst { it.view === v }
+                val old = tabs.getOrNull(index)
+                val address = old?.let { attentionBlockedSources[v] ?: v.url ?: it.url } ?: HOME
+                (v.parent as? android.view.ViewGroup)?.removeView(v)
+                pendingPopups.remove(v)
+                attentionBlockedSources.remove(v)
+                synchronized(mediaCandidateLock) {
+                    mediaCandidates.remove(v)
+                    mediaRequestOrigins.remove(v)
+                    mediaNetworkSignals.remove(v)
+                }
+                v.destroy()
+                if (old != null) {
+                    val replacement = old.copy(view = createWebView(), url = address)
+                    tabs[index] = replacement
+                    restoreTabNavigation(replacement)
+                    if (index == activeIndex) showActive() else persistTabs()
+                }
+                Toast.makeText(this@MainActivity,
+                    "Uma página foi recuperada após falha do mecanismo de navegação.",
+                    Toast.LENGTH_LONG).show()
+                return true
+            }
         }
         // Upload de arquivos e vídeos HTML5 em tela cheia.
         view.webChromeClient = object : WebChromeClient() {
@@ -1238,12 +1316,22 @@ class MainActivity : ComponentActivity() {
                 source: WebView?, isDialog: Boolean, isUserGesture: Boolean, resultMsg: Message?
             ): Boolean {
                 // Não permitir pop-ups automáticos nem exceder o limite de abas.
-                if (!isUserGesture || resultMsg == null || totalTabCount >= MAX_TABS ||
-                    tabs.size >= BrowserTabPolicy.MAX_RESIDENT_TABS) {
-                    if (isUserGesture && resultMsg != null)
-                        Toast.makeText(this@MainActivity,
-                            "Limite de WebViews ativas. Abra Abas e hiberne uma página para liberar espaço.",
-                            Toast.LENGTH_LONG).show()
+                if (!isUserGesture || resultMsg == null) return false
+                if (totalTabCount >= MAX_TABS) {
+                    Toast.makeText(this@MainActivity, "Limite de $MAX_TABS páginas", Toast.LENGTH_LONG).show()
+                    return false
+                }
+                if (tabs.size >= BrowserTabPolicy.MAX_RESIDENT_TABS) {
+                    // O transporte WebView deve ser imediato; não o guardamos para
+                    // depois do diálogo. Usuário libera uma vaga e repete o clique.
+                    handler.post {
+                        if (!isFinishing && !isDestroyed)
+                            selectTabToPark("Liberar WebView para abrir janela do site") {
+                                Toast.makeText(this@MainActivity,
+                                    "Vaga liberada. Toque novamente no link para abrir a janela.",
+                                    Toast.LENGTH_LONG).show()
+                            }
+                    }
                     return false
                 }
                 val transport = resultMsg.obj as? WebView.WebViewTransport ?: return false
@@ -1596,10 +1684,11 @@ class MainActivity : ComponentActivity() {
     private fun parkTab(index: Int) {
         if (index !in tabs.indices || index == activeIndex) return
         val tab = tabs.removeAt(index)
+        saveTabNavigation(tab)
         val address = attentionBlockedSources[tab.view] ?: tab.view.url ?: tab.url
         if (address.startsWith("http://") || address.startsWith("https://")) {
-            parkedTabs.add(ParkedTab(address, tab.view.title ?: tab.title, tab.constellation))
-        } else parkedTabs.add(ParkedTab(HOME, tab.title, tab.constellation))
+            parkedTabs.add(ParkedTab(address, tab.view.title ?: tab.title, tab.constellation, tab.id))
+        } else parkedTabs.add(ParkedTab(HOME, tab.title, tab.constellation, tab.id))
         attentionBlockedSources.remove(tab.view)
         pendingPopups.remove(tab.view)
         synchronized(mediaCandidateLock) { mediaCandidates.remove(tab.view) }
@@ -1611,16 +1700,45 @@ class MainActivity : ComponentActivity() {
         tabsButton.text = "${totalTabCount} abas"
     }
 
+    private fun confirmParkTab(id: String, afterPark: () -> Unit = {}) {
+        val index = tabs.indexOfFirst { it.id == id }
+        if (index < 0 || index == activeIndex) return
+        val tab = tabs[index]
+        // A sonda HTML5 não detecta necessariamente mídia em iframes nem WebAudio.
+        val script = "(function(){try{return Array.from(document.querySelectorAll('audio,video'))" +
+            ".some(m=>!m.paused&&!m.ended)||" +
+            "(navigator.mediaSession&&navigator.mediaSession.playbackState==='playing')}catch(e){return false}})()"
+        val warn: (Boolean?) -> Unit = { playing ->
+            val current = tabs.indexOfFirst { it.id == id }
+            if (current >= 0 && current != activeIndex) {
+                val status = when (playing) {
+                    true -> "ATENÇÃO: foi detectada mídia em reprodução nesta aba.\n\n"
+                    false -> "Nenhuma mídia HTML5 ativa foi detectada. Vídeos em frames e WebAudio podem não ser identificados.\n\n"
+                    null -> "O estado da mídia não pôde ser verificado.\n\n"
+                }
+                AlertDialog.Builder(this).setTitle("Hibernar ${tabs[current].title.take(55)}?")
+                    .setMessage(status + "A página será recarregada ao restaurar. Áudio, vídeo e dados de formulários não enviados podem ser perdidos.")
+                    .setPositiveButton("Hibernar") { _, _ ->
+                        val safeIndex = tabs.indexOfFirst { it.id == id }
+                        if (safeIndex >= 0 && safeIndex != activeIndex) { parkTab(safeIndex); afterPark() }
+                    }.setNegativeButton("Cancelar", null).show()
+            }
+        }
+        if (tab.view.url == null) warn(null)
+        else runCatching { tab.view.evaluateJavascript(script) { answer -> warn(answer == "true") } }
+            .onFailure { warn(null) }
+    }
+
     private fun selectTabToPark(title: String, afterPark: () -> Unit = {}) {
-        val choices = tabs.indices.filter { it != activeIndex }
+        val choices = tabs.indices.filter { it != activeIndex }.map { tabs[it].id }
         if (choices.isEmpty()) {
             Toast.makeText(this, "Não há aba inativa para hibernar", Toast.LENGTH_LONG).show()
             return
         }
         AlertDialog.Builder(this).setTitle(title)
-            .setMessage("Hibernar libera memória, mas encerra o conteúdo e eventuais mídias dessa aba. Ao reabrir, a página será recarregada.")
-            .setItems(choices.map { "${tabs[it].constellation} · ${tabs[it].view.title ?: tabs[it].title}" }.toTypedArray()) { _, which ->
-                parkTab(choices[which]); afterPark()
+            .setMessage("Escolha uma página. O navegador verificará a reprodução antes de confirmar a hibernação.")
+            .setItems(choices.mapNotNull { id -> tabs.firstOrNull { it.id == id }?.let { "${it.constellation} · ${it.view.title ?: it.title}" } }.toTypedArray()) { _, which ->
+                confirmParkTab(choices[which], afterPark)
             }.setNegativeButton("Cancelar", null).show()
     }
 
@@ -1628,7 +1746,9 @@ class MainActivity : ComponentActivity() {
         if (index !in parkedTabs.indices) return
         val restore = {
             val stored = parkedTabs.removeAt(index)
-            tabs.add(Tab(createWebView(), stored.title, stored.url, stored.constellation))
+            val tab = Tab(createWebView(), stored.title, stored.url, stored.constellation, id = stored.id)
+            tabs.add(tab)
+            restoreTabNavigation(tab)
             activeIndex = tabs.lastIndex
             showActive()
         }
@@ -1637,10 +1757,13 @@ class MainActivity : ComponentActivity() {
         else restore()
     }
 
-    private fun moveTabToConstellation() {
-        AlertDialog.Builder(this).setTitle("Constelação da aba atual")
+    private fun moveTabToConstellation(id: String) {
+        AlertDialog.Builder(this).setTitle("Mover para constelação")
             .setItems(constellations.toTypedArray()) { _, index ->
-                tabs[activeIndex].constellation = constellations[index]
+                tabs.firstOrNull { it.id == id }?.let { it.constellation = constellations[index] }
+                parkedTabs.indexOfFirst { it.id == id }.takeIf { it >= 0 }?.let { parkedIndex ->
+                    parkedTabs[parkedIndex] = parkedTabs[parkedIndex].copy(constellation = constellations[index])
+                }
                 persistTabs()
                 Toast.makeText(this, "Movida para ${constellations[index]}", Toast.LENGTH_SHORT).show()
             }.show()
@@ -1648,6 +1771,7 @@ class MainActivity : ComponentActivity() {
 
     private fun closeTab(index: Int) {
         val tab = tabs.removeAt(index)
+        deleteTabNavigation(tab.id)
         attentionBlockedSources.remove(tab.view)
         if (webHost.childCount > 0 && webHost.getChildAt(0) === tab.view) webHost.removeView(tab.view)
         pendingPopups.remove(tab.view)
@@ -1660,34 +1784,96 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun showTabs() {
-        val liveNames = tabs.mapIndexed { i, t ->
-            "${if (i == activeIndex) "●" else "○"} ${t.constellation} · ${t.view.title ?: t.title} [ativa]"
+        val scroll = ScrollView(this)
+        val list = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(16, 8, 16, 12)
         }
-        val parkedNames = parkedTabs.map { "◌ ${it.constellation} · ${it.title} [hibernada]" }
-        val items = (liveNames + parkedNames).toTypedArray()
-        AlertDialog.Builder(this)
-            .setTitle("Constelações · $totalTabCount/$MAX_TABS páginas · ${tabs.size}/${BrowserTabPolicy.MAX_RESIDENT_TABS} residentes")
-            .setItems(items) { _, selected ->
-                if (selected < tabs.size) { activeIndex = selected; showActive() }
-                else restoreParkedTab(selected - tabs.size)
+        scroll.addView(list)
+        val stats = TextView(this).apply {
+            text = "$totalTabCount/$MAX_TABS páginas · ${tabs.size}/${BrowserTabPolicy.MAX_RESIDENT_TABS} residentes\n" +
+                "As hibernadas economizam memória e são recarregadas ao abrir."
+            textSize = 13f
+            setPadding(8, 4, 8, 16)
+        }
+        list.addView(stats)
+        lateinit var dialog: AlertDialog
+        for (group in constellations) {
+            val residents = tabs.filter { it.constellation == group }
+            val sleeping = parkedTabs.filter { it.constellation == group }
+            if (residents.isEmpty() && sleeping.isEmpty()) continue
+            list.addView(TextView(this).apply {
+                text = "✦ $group · ${residents.size + sleeping.size}"
+                textSize = 18f
+                setTypeface(null, android.graphics.Typeface.BOLD)
+                setPadding(8, 16, 8, 8)
+            })
+            for (id in residents.map { it.id } + sleeping.map { it.id }) {
+                val resident = tabs.firstOrNull { it.id == id }
+                val parked = parkedTabs.firstOrNull { it.id == id }
+                val isLive = resident != null
+                val name = (resident?.view?.title ?: resident?.title ?: parked?.title ?: "Página").take(85)
+                val line = LinearLayout(this).apply {
+                    orientation = LinearLayout.HORIZONTAL
+                    gravity = android.view.Gravity.CENTER_VERTICAL
+                    setPadding(8, 5, 8, 5)
+                }
+                val details = TextView(this).apply {
+                    text = name + "\n" + when {
+                        resident?.id == tabs.getOrNull(activeIndex)?.id -> "● Em primeiro plano"
+                        isLive -> "● Residente · mídia não verificada"
+                        else -> "◌ Hibernada · toque para restaurar"
+                    }
+                    textSize = 14f
+                    maxLines = 3
+                }
+                line.addView(details, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
+                line.addView(Button(this).apply {
+                    text = if (isLive) "Abrir" else "Restaurar"
+                    contentDescription = "Abrir $name"
+                    setOnClickListener {
+                        dialog.dismiss()
+                        val liveIndex = tabs.indexOfFirst { it.id == id }
+                        if (liveIndex >= 0) { activeIndex = liveIndex; showActive() }
+                        else parkedTabs.indexOfFirst { it.id == id }.takeIf { it >= 0 }?.let(::restoreParkedTab)
+                    }
+                })
+                line.addView(Button(this).apply {
+                    text = "⋮"
+                    contentDescription = "Ações de $name"
+                    setOnClickListener {
+                        dialog.dismiss()
+                        val activeTab = tabs.getOrNull(activeIndex)?.id == id
+                        val actions = if (isLive) arrayOf("Mover de constelação", "Hibernar", "Fechar")
+                            else arrayOf("Mover de constelação", "Excluir hibernada")
+                        AlertDialog.Builder(this@MainActivity).setTitle(name)
+                            .setItems(actions) { _, action ->
+                                when (action) {
+                                    0 -> moveTabToConstellation(id)
+                                    1 -> if (isLive) {
+                                        if (activeTab) Toast.makeText(this@MainActivity,
+                                            "Abra outra aba antes de hibernar a atual", Toast.LENGTH_LONG).show()
+                                        else confirmParkTab(id)
+                                    } else parkedTabs.indexOfFirst { it.id == id }.takeIf { it >= 0 }?.let {
+                                        parkedTabs.removeAt(it); deleteTabNavigation(id); persistTabs()
+                                        tabsButton.text = "${totalTabCount} abas"
+                                    }
+                                    2 -> tabs.indexOfFirst { it.id == id }.takeIf { it >= 0 }?.let(::closeTab)
+                                }
+                            }.setNegativeButton("Voltar", null).show()
+                    }
+                })
+                list.addView(line)
             }
+        }
+        dialog = AlertDialog.Builder(this)
+            .setTitle("Constelações")
+            .setView(scroll)
             .setPositiveButton("Nova aba") { _, _ -> newTab() }
-            .setNeutralButton("Gerenciar") { _, _ ->
-                val actions = arrayOf("Hibernar outra aba", "Mover aba atual para constelação", "Fechar aba atual", "Excluir aba hibernada")
-                AlertDialog.Builder(this).setTitle("Gerenciar constelações")
-                    .setItems(actions) { _, action ->
-                        when (action) {
-                            0 -> selectTabToPark("Hibernar aba")
-                            1 -> moveTabToConstellation()
-                            2 -> closeTab(activeIndex)
-                            3 -> AlertDialog.Builder(this).setTitle("Excluir página hibernada")
-                                .setItems(parkedTabs.map { "${it.constellation} · ${it.title}" }.toTypedArray()) { _, i ->
-                                    parkedTabs.removeAt(i); persistTabs(); tabsButton.text = "${totalTabCount} abas"
-                                }.show()
-                        }
-                    }.show()
-            }
-            .setNegativeButton("Voltar", null).show()
+            .setNeutralButton("Hibernar") { _, _ -> selectTabToPark("Escolher aba para hibernar") }
+            .setNegativeButton("Fechar", null)
+            .create()
+        dialog.show()
     }
 
     private fun toggleFavorite() {
@@ -4768,17 +4954,19 @@ class MainActivity : ComponentActivity() {
             val url = attentionBlockedSources[tab.view] ?: tab.view.url ?: tab.url
             entries.put(org.json.JSONObject().put("url", url)
                 .put("title", tab.view.title ?: tab.title)
-                .put("group", tab.constellation).put("live", true))
+                .put("group", tab.constellation).put("id", tab.id).put("live", true))
         }
         parkedTabs.forEach { tab ->
             entries.put(org.json.JSONObject().put("url", tab.url)
-                .put("title", tab.title).put("group", tab.constellation).put("live", false))
+                .put("title", tab.title).put("group", tab.constellation)
+                .put("id", tab.id).put("live", false))
         }
         getSharedPreferences("tabs", MODE_PRIVATE).edit()
             .putString("urls", tabs.joinToString("\n") {
                 attentionBlockedSources[it.view] ?: it.view.url ?: it.url
             })
             .putString("constellations_v1", entries.toString())
+            .putString("active_id", tabs.getOrNull(activeIndex)?.id)
             .putInt("active", activeIndex).apply()
     }
 
@@ -4896,6 +5084,7 @@ class MainActivity : ComponentActivity() {
         handler.removeCallbacks(miniRefresh)
         handler.removeCallbacks(ticker)
         Attention.pause()
+        tabs.forEach { saveTabNavigation(it) }
         persistTabs()
         // A contagem de navegação para fora do app. O ticker separado verifica
         // reprodução HTML5 detectável enquanto o serviço mantém as abas vivas.
