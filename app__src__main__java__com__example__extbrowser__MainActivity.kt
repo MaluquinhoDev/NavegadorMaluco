@@ -1697,7 +1697,7 @@ class MainActivity : ComponentActivity() {
         action("1 · Testar extrator + PO Token") { showYouTubeExtractor() }
         action("2 · Examinar fontes da página") { inspectYouTubePageSources(webView, page!!) }
         val scroll = android.widget.ScrollView(this).apply {
-            fillViewport = false
+            isFillViewport = false
             addView(layout)
         }
         val dialog = AlertDialog.Builder(this)
