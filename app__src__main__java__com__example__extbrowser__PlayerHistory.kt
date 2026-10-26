@@ -24,7 +24,7 @@ internal class PlayerHistory(context: Context) {
     fun position(page: String): Long = list().firstOrNull { it.page == page }?.positionMs ?: 0L
 
     @Synchronized
-    fun save(page: String, title: String, positionMs: Long) {
+    fun save(page: String, title: String, positionMs: Long, durable: Boolean = false) {
         val uri = runCatching { Uri.parse(page) }.getOrNull() ?: return
         if (uri.scheme !in listOf("http", "https") || uri.host.isNullOrBlank()) return
         val entry = Entry(page, title.take(90), positionMs.coerceAtLeast(0L), System.currentTimeMillis())
@@ -35,6 +35,9 @@ internal class PlayerHistory(context: Context) {
             arr.put(JSONObject().put("page", e.page).put("title", e.title)
                 .put("position", e.positionMs).put("updated", e.updatedAt))
         }
-        prefs.edit().putString("entries", arr.toString()).apply()
+        val edit = prefs.edit().putString("entries", arr.toString())
+        // Bloqueio do Controle de Atenção pode encerrar o serviço imediatamente.
+        // Essa gravação precisa estar em disco antes que a sessão seja removida.
+        if (durable) edit.commit() else edit.apply()
     }
 }
