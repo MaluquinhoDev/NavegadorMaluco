@@ -22,7 +22,19 @@ import com.google.common.util.concurrent.ListenableFuture
  * Conecta à sessão Media3 já existente, sem criar outro player ou reiniciar mídia.
  */
 class VideoPipActivity : Activity() {
-    companion object { @Volatile var active = false; private set }
+    companion object {
+        @Volatile var active = false
+            private set
+        private var liveWindow: java.lang.ref.WeakReference<VideoPipActivity>? = null
+
+        fun closeExistingWindow() {
+            liveWindow?.get()?.let { activity ->
+                if (!activity.isFinishing && !activity.isDestroyed) {
+                    activity.finishAndRemoveTask()
+                }
+            }
+        }
+    }
     private lateinit var videoSurface: SurfaceView
     private lateinit var info: TextView
     private var controllerFuture: ListenableFuture<MediaController>? = null
@@ -31,6 +43,7 @@ class VideoPipActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         active = true
+        liveWindow = java.lang.ref.WeakReference(this)
         val root = FrameLayout(this).apply { setBackgroundColor(android.graphics.Color.BLACK) }
         videoSurface = SurfaceView(this)
         root.addView(videoSurface, FrameLayout.LayoutParams(-1, -1, Gravity.CENTER))
@@ -101,6 +114,7 @@ class VideoPipActivity : Activity() {
     }
 
     override fun onDestroy() {
+        if (liveWindow?.get() === this) liveWindow = null
         active = false
         controller?.let { runCatching { it.clearVideoSurfaceView(videoSurface) } }
         controllerFuture?.let { MediaController.releaseFuture(it) }
