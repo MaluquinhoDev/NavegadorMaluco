@@ -1,6 +1,7 @@
 package com.example.extbrowser
 
 import android.net.Uri
+import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
@@ -17,15 +18,38 @@ import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.session.MediaSession
 import androidx.media3.session.MediaSessionService
+import androidx.media3.session.CommandButton
+import androidx.media3.session.SessionCommand
+import androidx.media3.session.SessionResult
+import com.google.common.util.concurrent.Futures
+import com.google.common.util.concurrent.ListenableFuture
 import java.util.Locale
 
 /** Diagnóstico seguro: não imprime URLs completas, queries, cookies ou credenciais. */
 class Media3PlaybackService : MediaSessionService() {
-    companion object { private const val TAG = "NavegadorMedia3" }
+    companion object {
+        private const val TAG = "NavegadorMedia3"
+        private const val ACTION_STOP_ALL = "com.example.extbrowser.MEDIA3_STOP_ALL"
+        @Volatile private var liveService: Media3PlaybackService? = null
+
+        fun stopExistingPlayback() {
+            liveService?.stopAndClear()
+        }
+    }
+    private val stopAllCommand = SessionCommand(ACTION_STOP_ALL, Bundle.EMPTY)
     private var player: ExoPlayer? = null
     private var session: MediaSession? = null
     private lateinit var playerHistory: PlayerHistory
     private var lastHistorySaveMs = 0L
+    private fun stopAndClear() {
+        player?.let { exo ->
+            savePlaybackPosition(exo)
+            exo.pause()
+            exo.stop()
+            exo.clearMediaItems()
+        }
+        stopSelf()
+    }
     private fun savePlaybackPosition(exo: ExoPlayer) {
         val extras = exo.currentMediaItem?.mediaMetadata?.extras ?: return
         val page = extras.getString("nm_attention_page") ?: return
@@ -85,6 +109,7 @@ class Media3PlaybackService : MediaSessionService() {
 
     override fun onCreate() {
         super.onCreate()
+        liveService = this
         Attention.init(this)
         playerHistory = PlayerHistory(this)
         val http = DefaultHttpDataSource.Factory()
@@ -179,14 +204,44 @@ class Media3PlaybackService : MediaSessionService() {
             android.app.PendingIntent.FLAG_UPDATE_CURRENT or
                 android.app.PendingIntent.FLAG_IMMUTABLE
         )
+        val stopButton = CommandButton.Builder(CommandButton.ICON_STOP)
+            .setDisplayName("Parar todas as mídias")
+            .setSessionCommand(stopAllCommand)
+            .build()
         session = MediaSession.Builder(this, exo)
             .setSessionActivity(sessionActivity)
+            .setMediaButtonPreferences(listOf(stopButton))
+            .setCallback(object : MediaSession.Callback {
+                override fun onConnect(
+                    session: MediaSession,
+                    controller: MediaSession.ControllerInfo
+                ): MediaSession.ConnectionResult =
+                    MediaSession.ConnectionResult.AcceptedResultBuilder(session)
+                        .setAvailableSessionCommands(
+                            MediaSession.ConnectionResult.DEFAULT_SESSION_COMMANDS.buildUpon()
+                                .add(stopAllCommand).build())
+                        .build()
+
+                override fun onCustomCommand(
+                    session: MediaSession,
+                    controller: MediaSession.ControllerInfo,
+                    customCommand: SessionCommand,
+                    args: Bundle
+                ): ListenableFuture<SessionResult> {
+                    if (customCommand.customAction == ACTION_STOP_ALL) {
+                        StopAllMediaReceiver.stopAll(this@Media3PlaybackService)
+                        return Futures.immediateFuture(SessionResult(SessionResult.RESULT_SUCCESS))
+                    }
+                    return super.onCustomCommand(session, controller, customCommand, args)
+                }
+            })
             .build()
     }
 
     override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaSession? = session
 
     override fun onDestroy() {
+        if (liveService === this) liveService = null
         player?.let(::savePlaybackPosition)
         attentionHandler.removeCallbacks(attentionCheck)
         Attention.mediaPlaybackReset()
