@@ -93,10 +93,11 @@ class NativeMediaService : Service() {
             p.setDataSource(this, uri)
             p.setOnPreparedListener {
                 ready = true
-                it.start()
-                playing = true
-                setState(PlaybackState.STATE_PLAYING)
-                refreshNotification("Reproduzindo áudio")
+                if (runCatching { it.start() }.isSuccess) {
+                    playing = true
+                    setState(PlaybackState.STATE_PLAYING)
+                    refreshNotification("Reproduzindo áudio")
+                } else stopSelf()
             }
             p.setOnCompletionListener { stopSelf() }
             p.setOnErrorListener { _, _, _ -> stopSelf(); true }
@@ -117,7 +118,10 @@ class NativeMediaService : Service() {
 
     private fun resumeMedia() {
         if (!ready || playing) return
-        runCatching { player?.start() }
+        if (runCatching { (player ?: error("Player indisponível")).start() }.isFailure) {
+            stopSelf()
+            return
+        }
         playing = true
         setState(PlaybackState.STATE_PLAYING)
         refreshNotification("Reproduzindo áudio")
