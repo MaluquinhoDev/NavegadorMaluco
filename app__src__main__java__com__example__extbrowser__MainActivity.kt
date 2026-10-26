@@ -4671,9 +4671,15 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun htmlResponse(html: String) = WebResourceResponse("text/html", "utf-8", 200, "OK", emptyMap(), ByteArrayInputStream(html.toByteArray(Charsets.UTF_8)))
-    private fun blockHtmlFor(v: AttentionVerdict): String = if (v.untilMs > 0L)
-        BlockPage.breakHtml(v, Attention.dismissWaitLeft(v.site.id))
-    else BlockPage.html("Acesso encerrado", v.site.domain, v.reason)
+    private fun blockHtmlFor(v: AttentionVerdict): String {
+        if (v.untilMs > 0L) return BlockPage.breakHtml(v, Attention.dismissWaitLeft(v.site.id))
+        val html = BlockPage.html("Acesso encerrado", v.site.domain, v.reason)
+        if (v.reason != "O limite diário foi atingido." || AttentionRewards.balance() < 5) return html
+        val link = "<p>Créditos disponíveis: ${AttentionRewards.balance()} min</p>" +
+            "<a href='extbrowser://resgatar/${v.site.id}' style='display:inline-block;padding:14px;" +
+            "background:#eee;color:#111;border-radius:8px;text-decoration:none'>Resgatar 5 minutos</a>"
+        return html.replace("</main>", link + "</main>")
+    }
     private fun loadBlock(v: AttentionVerdict) {
         rememberAttentionSource(webView, webView.url ?: tabs.getOrNull(activeIndex)?.url)
         servedBlockUrl = null
@@ -4689,6 +4695,11 @@ class MainActivity : ComponentActivity() {
         val site = Attention.sites().firstOrNull { it.id == id } ?: return
         val returnUrl = attentionBlockedSources[webView] ?: "https://${site.domain}/"
         when (u.host) {
+            "resgatar" -> {
+                if (Attention.verdictForSite(id)?.reason == "O limite diário foi atingido." &&
+                    AttentionRewards.redeem(id, 5)) webView.loadUrl(returnUrl)
+                else Attention.verdictForSite(id)?.let { loadBlock(it) } ?: webView.loadUrl(returnUrl)
+            }
             "dispensar" -> {
                 Attention.requestDismiss(id)
                 Attention.verdictForSite(id)?.let { loadBlock(it) } ?: webView.loadUrl(returnUrl)
