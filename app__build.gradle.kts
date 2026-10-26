@@ -23,6 +23,17 @@ android {
             keyPassword = "android"
         }
     }
+
+    // GeckoView inclui código nativo para várias CPUs. Cada APK de download
+    // leva somente a arquitetura necessária, sem remover o motor Firefox.
+    splits {
+        abi {
+            isEnable = true
+            reset()
+            include("arm64-v8a", "armeabi-v7a", "x86", "x86_64")
+            isUniversalApk = false
+        }
+    }
 }
 
 kotlin { jvmToolchain(17) }
