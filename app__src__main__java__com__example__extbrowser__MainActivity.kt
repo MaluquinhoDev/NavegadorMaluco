@@ -80,6 +80,10 @@ class MainActivity : ComponentActivity() {
     private data class Tab(val view: WebView, var title: String = "Nova aba", var url: String = HOME)
 
     private val tabs = mutableListOf<Tab>()
+    private var youtubeDiagnosticsVideoId: String? = null
+    private var youtubeExtractionResult = "Ainda não executado"
+    private var youtubeSourceHttpResult = "Ainda não executado"
+    private var youtubeMedia3Result = "Ainda não executado"
     private val siteDiagnostics = WeakHashMap<WebView, MutableList<String>>()
     private var lastSeuImpostoImeVisible: Boolean? = null
     private var lastSeuImpostoImeOpenAt = 0L
@@ -1638,6 +1642,75 @@ class MainActivity : ComponentActivity() {
             }.show()
     }
 
+    /** Painel único: expõe cada teste separadamente e evita confundir HTTP com Media3. */
+    private fun showYouTubeTestPanel() {
+        val page = webView.url
+        val videoId = youtubeVideoId(page)
+        if (videoId == null) {
+            Toast.makeText(this, "Abra primeiro um vídeo do YouTube.", Toast.LENGTH_LONG).show()
+            return
+        }
+        if (youtubeDiagnosticsVideoId != videoId) {
+            youtubeDiagnosticsVideoId = videoId
+            youtubeExtractionResult = "Ainda não executado"
+            youtubeSourceHttpResult = "Ainda não executado"
+            youtubeMedia3Result = "Ainda não executado"
+            YoutubeExtractor.recordPoTokenStatus("Ainda não testado")
+        }
+        val dp = resources.displayMetrics.density
+        val pad = (18 * dp).toInt()
+        val layout = android.widget.LinearLayout(this).apply {
+            orientation = android.widget.LinearLayout.VERTICAL
+            setPadding(pad, (10 * dp).toInt(), pad, pad)
+        }
+        fun description(title: String, status: String) {
+            layout.addView(android.widget.TextView(this).apply {
+                text = title
+                textSize = 16f
+                setTypeface(null, android.graphics.Typeface.BOLD)
+                setPadding(0, (12 * dp).toInt(), 0, (4 * dp).toInt())
+            })
+            layout.addView(android.widget.TextView(this).apply {
+                text = status
+                textSize = 14f
+            })
+        }
+        description("1 · Extrator e PO Token", "Extração: $youtubeExtractionResult\n" +
+            "PO Token: ${YoutubeExtractor.poTokenStatus}")
+        description("2 · Fonte HTTP", youtubeSourceHttpResult)
+        description("3 · Reprodução no Media3", youtubeMedia3Result)
+        layout.addView(android.widget.TextView(this).apply {
+            text = "HTTP 200 na API não garante reprodução. Uma URL encontrada na página " +
+                "também pode receber 403 no servidor de mídia. O Media3 mantém seus controles nativos."
+            textSize = 12f
+            setPadding(0, (16 * dp).toInt(), 0, (10 * dp).toInt())
+        })
+        val buttons = mutableListOf<Pair<android.widget.Button, () -> Unit>>()
+        fun action(title: String, command: () -> Unit) {
+            val button = android.widget.Button(this).apply {
+                text = title
+                isAllCaps = false
+            }
+            layout.addView(button)
+            buttons += button to command
+        }
+        action("1 · Testar extrator + PO Token") { showYouTubeExtractor() }
+        action("2 · Examinar fontes da página") { inspectYouTubePageSources(webView, page!!) }
+        val scroll = android.widget.ScrollView(this).apply {
+            fillViewport = false
+            addView(layout)
+        }
+        val dialog = AlertDialog.Builder(this)
+            .setTitle("YouTube · painel de testes")
+            .setView(scroll)
+            .setNegativeButton("Fechar", null)
+            .create()
+        buttons.forEach { (button, command) ->
+            button.setOnClickListener { dialog.dismiss(); command() }
+        }
+        dialog.show()
+    }
+
     /** Extrai formatos no worker sem bloquear a WebView nem expor URLs assinadas no log. */
     private fun showYouTubeExtractor() {
         val current = webView
@@ -1646,7 +1719,8 @@ class MainActivity : ComponentActivity() {
             Toast.makeText(this, "Abra primeiro um vídeo do YouTube.", Toast.LENGTH_LONG).show()
             return
         }
-        Toast.makeText(this, "Identificando formatos do YouTube...", Toast.LENGTH_SHORT).show()
+        youtubeExtractionResult = "Executando…"
+        Toast.makeText(this, "Testando extração e PO Token…", Toast.LENGTH_SHORT).show()
         Thread {
             val result = runCatching { YoutubeExtractor.extractWithReport(page!!) }
             runOnUiThread {
@@ -1654,12 +1728,15 @@ class MainActivity : ComponentActivity() {
                     return@runOnUiThread
                 result.onSuccess { report ->
                     val sources = MediaSourceCatalog.ordered(report.sources)
+                    youtubeExtractionResult = "${sources.size} formato(s) · ${report.requests} " +
+                        "requisição(ões) · HTTP ${report.httpErrors.ifEmpty { mapOf() }}"
                     android.util.Log.i("NavegadorMedia3", "ExtratorYouTube: requests=${report.requests}; " +
                         "httpErrors=${report.httpErrors}; formatos=${sources.size}; " +
                         "tempoMs=${report.elapsedMs}")
                     if (sources.isEmpty()) {
                         AlertDialog.Builder(this).setTitle("Extrator YouTube")
-                            .setMessage("Nenhuma fonte disponível. Requisições: ${report.requests}; " +
+                            .setMessage("PO Token: ${YoutubeExtractor.poTokenStatus}\n\n" +
+                                "Nenhuma fonte disponível. Requisições: ${report.requests}; " +
                                 "HTTP: ${if (report.httpErrors.isEmpty()) "sem erros registrados" else report.httpErrors}. " +
                                 "O YouTube pode disponibilizar apenas formatos protegidos ou " +
                                 "incompatíveis com a extração atual.")
@@ -1685,12 +1762,14 @@ class MainActivity : ComponentActivity() {
                         }.setNegativeButton("Cancelar", null).show()
                 }.onFailure { err ->
                     val failure = err as? YoutubeExtractor.ExtractionFailure
+                    youtubeExtractionResult = "Falha · ${err.cause?.javaClass?.simpleName ?: err.javaClass.simpleName}" +
+                        " · ${failure?.requests ?: 0} requisição(ões)"
                     android.util.Log.w("NavegadorMedia3",
                         "Falha no extrator: ${err.javaClass.simpleName}; " +
                             "causa=${err.cause?.javaClass?.simpleName ?: "desconhecida"}; " +
                             "requests=${failure?.requests ?: 0}; http=${failure?.httpErrors.orEmpty()}")
                     AlertDialog.Builder(this).setTitle("Extrator YouTube")
-                        .setMessage((when {
+                        .setMessage("PO Token: ${YoutubeExtractor.poTokenStatus}\n\n" + (when {
                             err.cause?.javaClass?.simpleName == "SignInConfirmNotBotException" ->
                                 "O YouTube exigiu confirmação antirrobô do extrator anônimo. " +
                                     "Essa recusa não significa que a página aberta esteja bloqueada."
@@ -1828,6 +1907,8 @@ class MainActivity : ComponentActivity() {
                     return@runOnUiThread
                 android.util.Log.i("NavegadorMedia3", "FonteYouTube: http=${check.status}; " +
                     "falha=${check.failure ?: "nenhuma"}; tipo=${source.label.substringBefore('·').trim()}")
+                youtubeSourceHttpResult = "HTTP ${check.status ?: "indisponível"}" +
+                    (check.failure?.let { " · $it" } ?: "")
                 if (check.status == 403) {
                     val signals = YoutubeExtractor.inspectSourceSignals(source.url)
                     AlertDialog.Builder(this).setTitle("Diagnóstico YouTube · HTTP 403")
@@ -1896,7 +1977,7 @@ class MainActivity : ComponentActivity() {
                 "▶ Reproduzir mídia desta página",
                 "Vídeos detectados",
                 "Manifestos HLS / DASH",
-                "YouTube · extrair formatos",
+                "YouTube · testes e PO Token",
                 "Abrir player nativo",
                 "Janela flutuante (PiP)",
                 "Histórico do player",
@@ -1907,7 +1988,7 @@ class MainActivity : ComponentActivity() {
                     0 -> playPageMediaDirectly()
                     1 -> showRequestMediaCandidates()
                     2 -> showStreamingManifests()
-                    3 -> showYouTubeExtractor()
+                    3 -> showYouTubeTestPanel()
                     4 -> showNativeVideoPlayer()
                     5 -> enterPip()
                     6 -> showPlayerHistory()
@@ -4053,6 +4134,8 @@ class MainActivity : ComponentActivity() {
                         override fun onIsPlayingChanged(isPlaying: Boolean) {
                             if (!isPlaying || transferred) return
                             transferred = true
+                            if (youtubeVideoId(sourceView.url) != null)
+                                youtubeMedia3Result = "Reproduzindo no player nativo"
                             if (matched) {
                                 // Pausa o player original somente após o Media3 tocar.
                                 sourceView.evaluateJavascript("""(function(){
@@ -4091,6 +4174,8 @@ class MainActivity : ComponentActivity() {
                             // quando a MediaSession não preserva a cadeia de causas.
                             val status = httpCode ?: Media3PlaybackService.latestPlaybackHttpStatus()
                             if (youtubeVideoId(sourceView.url) != null) {
+                                youtubeMedia3Result = "Erro ${error.errorCodeName} · " +
+                                    "HTTP ${status ?: "indisponível"}"
                                 val signals = YoutubeExtractor.inspectSourceSignals(url)
                                 android.util.Log.i("NavegadorMedia3", "YouTubeHTTPMedia3=" +
                                     "${status ?: "indisponível"}; " +
