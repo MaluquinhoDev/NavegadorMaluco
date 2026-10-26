@@ -43,6 +43,21 @@ class AttentionActivity : ComponentActivity() {
             setPadding(0, 0, 0, dp(12))
         })
 
+        // Mostrar o estado atual antes do formulário evita que a lista fique
+        // escondida sob todos os campos em telas pequenas.
+        content.addView(TextView(this).apply {
+            text = "Sites monitorados"
+            textSize = 18f
+            setPadding(0, dp(8), 0, dp(8))
+        })
+        list = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        content.addView(list)
+        content.addView(TextView(this).apply {
+            text = "Adicionar site e definir limites"
+            textSize = 18f
+            setPadding(0, dp(20), 0, dp(8))
+        })
+
         val suggestedDomain = AttentionLogic.rootDomainOf(
             intent.getStringExtra("attention_current_page"))
         domainEt = field(content, "Site", "youtube.com",
@@ -63,14 +78,6 @@ class AttentionActivity : ComponentActivity() {
             text = "Adicionar site"
             setOnClickListener { addSite() }
         })
-
-        content.addView(TextView(this).apply {
-            text = "Sites monitorados"
-            textSize = 18f
-            setPadding(0, dp(20), 0, dp(8))
-        })
-        list = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        content.addView(list)
 
         scroll = ScrollView(this).apply { addView(content) }
         setContentView(scroll)
