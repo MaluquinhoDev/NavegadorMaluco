@@ -1828,11 +1828,14 @@ class MainActivity : ComponentActivity() {
                 android.util.Log.i("NavegadorMedia3", "FonteYouTube: http=${check.status}; " +
                     "falha=${check.failure ?: "nenhuma"}; tipo=${source.label.substringBefore('·').trim()}")
                 if (check.status == 403) {
+                    val signals = YoutubeExtractor.inspectSourceSignals(source.url)
                     AlertDialog.Builder(this).setTitle("Diagnóstico YouTube · HTTP 403")
                         .setMessage("A verificação preliminar recebeu HTTP 403. " +
                             "Isso não comprova que o Media3 receberá a mesma resposta. " +
                             "O teste experimental fará uma única tentativa de reprodução " +
-                            "sem compartilhar cookies ou alterar a sessão do navegador.")
+                            "sem compartilhar cookies ou alterar a sessão do navegador.\n\n" +
+                            signals.description() +
+                            "\nA ausência de PO na URL não prova ausência de token na requisição.")
                         .setPositiveButton("Testar no Media3") { _, _ ->
                             val mime = when {
                                 source.label.startsWith("HLS") -> "application/x-mpegURL"
@@ -4087,12 +4090,35 @@ class MainActivity : ComponentActivity() {
                             // quando a MediaSession não preserva a cadeia de causas.
                             val status = httpCode ?: Media3PlaybackService.latestPlaybackHttpStatus()
                             if (youtubeVideoId(sourceView.url) != null) {
+                                val signals = YoutubeExtractor.inspectSourceSignals(url)
+                                android.util.Log.i("NavegadorMedia3", "YouTubeHTTPMedia3=" +
+                                    "${status ?: "indisponível"}; " +
+                                    signals.description().replace('\n', ';'))
                                 AlertDialog.Builder(this@MainActivity)
                                     .setTitle("Resultado real · Media3")
                                     .setMessage("Erro do player: ${error.errorCodeName}\n" +
                                         "HTTP recebido pelo Media3: ${status ?: "indisponível"}.\n" +
-                                        "Este resultado é independente da sonda inicial.")
-                                    .setPositiveButton("Fechar", null).show()
+                                        "Este resultado é independente da sonda inicial.\n\n" +
+                                        signals.description() + "\n\n" +
+                                        "A reprodução da página continua como alternativa " +
+                                        "sem transferir credenciais ao Media3.")
+                                    .setPositiveButton("Retomar na página") { _, _ ->
+                                        if (!isDestroyed && tabs.any { it.view === sourceView }) {
+                                            sourceView.evaluateJavascript("""(function(){
+                                                const video = [...document.querySelectorAll('video')]
+                                                    .find(v => v.currentSrc && !v.ended);
+                                                if (!video) return 'sem_video';
+                                                if (!video.paused) return 'reproduzindo';
+                                                video.play().catch(() => {});
+                                                return 'solicitado';
+                                            })()""") { result ->
+                                                if (!isDestroyed) Toast.makeText(this@MainActivity,
+                                                    if (result == "\"reproduzindo\"") "Vídeo já ativo na página"
+                                                    else "Reprodução solicitada; use o Play da página se necessário",
+                                                    Toast.LENGTH_LONG).show()
+                                            }
+                                        }
+                                    }.setNegativeButton("Fechar", null).show()
                             } else {
                                 Toast.makeText(this@MainActivity,
                                     "Erro Media3: ${error.errorCodeName}", Toast.LENGTH_LONG).show()
