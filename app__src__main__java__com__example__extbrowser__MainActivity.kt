@@ -402,6 +402,16 @@ class MainActivity : ComponentActivity() {
     // Monitoramento de melhor esforço: somente vídeo/áudio acessível pela própria
     // página; frames de outras origens não são inspecionados.
     private val backgroundMediaSeen = java.util.WeakHashMap<WebView, Long>()
+    // O documento de bloqueio usa about:blank: nunca substituir por ele a URL
+    // da publicação que deve permanecer na lista de abas e no retorno da pausa.
+    private val attentionBlockedSources = java.util.WeakHashMap<WebView, String>()
+    private fun rememberAttentionSource(view: WebView, originalUrl: String?) {
+        val candidate = attentionBlockedSources[view] ?: originalUrl.orEmpty()
+        if (candidate.startsWith("https://") || candidate.startsWith("http://")) {
+            attentionBlockedSources[view] = candidate
+            tabs.firstOrNull { it.view === view }?.url = candidate
+        }
+    }
     private fun forceStopWebMedia() {
         val script = """(function(){
             window.__nmForceMediaStop=true;
@@ -562,6 +572,7 @@ class MainActivity : ComponentActivity() {
                     )
                     // A aba deixa de oferecer controles da página bloqueada.
                     if (view.url == page) {
+                        rememberAttentionSource(view, page)
                         view.stopLoading()
                         view.loadDataWithBaseURL(null, blockHtmlFor(verdict),
                             "text/html", "utf-8", null)
@@ -803,6 +814,8 @@ class MainActivity : ComponentActivity() {
         WebView.setWebContentsDebuggingEnabled((applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) != 0)
         view.webViewClient = object : WebViewClient() {
             override fun onPageStarted(v: WebView, url: String, favicon: Bitmap?) {
+                if (url.startsWith("http://") || url.startsWith("https://"))
+                    attentionBlockedSources.remove(v)
                 if (tabs.getOrNull(activeIndex)?.view === v) updateKeyboardWindowMode(url)
                 synchronized(siteDiagnostics) {
                     if (isSeuImposto(url)) siteDiagnostics[v] = mutableListOf("Navegação iniciada")
@@ -826,8 +839,9 @@ class MainActivity : ComponentActivity() {
                     loginDomain || seuImpostoCookies)
                 val t = tabs.firstOrNull { it.view === v } ?: return
                 synchronized(mediaCandidateLock) { mediaCandidates.remove(v); mediaRequestOrigins.remove(v); mediaNetworkSignals.remove(v) }
-                t.url = url
-                if (v === webView && !urlBar.hasFocus()) urlBar.setText(url)
+                val shownUrl = attentionBlockedSources[v] ?: url
+                t.url = shownUrl
+                if (v === webView && !urlBar.hasFocus()) urlBar.setText(shownUrl)
                 if (v === webView) { updateFavorite(); updateInstagramOverlay() }
             }
             override fun onPageFinished(v: WebView, url: String) {
@@ -1053,8 +1067,9 @@ class MainActivity : ComponentActivity() {
                     })()""", null)
                 }
                 val t = tabs.firstOrNull { it.view === v } ?: return
-                t.title = v.title ?: url
-                t.url = url
+                val shownUrl = attentionBlockedSources[v] ?: url
+                if (attentionBlockedSources[v] == null) t.title = v.title ?: url
+                t.url = shownUrl
                 if (v === webView) { updateFavorite(); persistTabs() }
                 scanDeclaredMedia(v)
                 val pageHost = websiteHost(url)
@@ -1510,7 +1525,7 @@ class MainActivity : ComponentActivity() {
         webHost.addView(newView, LinearLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT))
         newView.onResume()
         if (newView.url == null && newView !in pendingPopups) newView.loadUrl(tabs[activeIndex].url)
-        urlBar.setText(newView.url ?: tabs[activeIndex].url)
+        urlBar.setText(attentionBlockedSources[newView] ?: newView.url ?: tabs[activeIndex].url)
         tabsButton.text = "${tabs.size} abas"
         servedBlockUrl = null
         lastBlockMs = 0
@@ -1533,6 +1548,7 @@ class MainActivity : ComponentActivity() {
 
     private fun closeTab(index: Int) {
         val tab = tabs.removeAt(index)
+        attentionBlockedSources.remove(tab.view)
         if (webHost.childCount > 0 && webHost.getChildAt(0) === tab.view) webHost.removeView(tab.view)
         pendingPopups.remove(tab.view)
         synchronized(mediaCandidateLock) { mediaCandidates.remove(tab.view) }
@@ -3579,6 +3595,7 @@ class MainActivity : ComponentActivity() {
             if (page.isNullOrBlank() || Attention.checkNavigation(page) == null) return false
             player?.let { c ->
                 if (c.mediaItemCount > 0) {
+                    Media3PlaybackService.rememberPositionBeforeAttentionBlock()
                     c.stop()
                     c.clearMediaItems()
                 }
@@ -4204,7 +4221,9 @@ class MainActivity : ComponentActivity() {
     private fun persistTabs() {
         if (!loaded) return
         getSharedPreferences("tabs", MODE_PRIVATE).edit()
-            .putString("urls", tabs.joinToString("\n") { it.view.url ?: it.url })
+            .putString("urls", tabs.joinToString("\n") {
+                attentionBlockedSources[it.view] ?: it.view.url ?: it.url
+            })
             .putInt("active", activeIndex).apply()
     }
 
@@ -4227,6 +4246,7 @@ class MainActivity : ComponentActivity() {
         BlockPage.breakHtml(v, Attention.dismissWaitLeft(v.site.id))
     else BlockPage.html("Acesso encerrado", v.site.domain, v.reason)
     private fun loadBlock(v: AttentionVerdict) {
+        rememberAttentionSource(webView, webView.url ?: tabs.getOrNull(activeIndex)?.url)
         servedBlockUrl = null
         lastBlockMs = SystemClock.elapsedRealtime()
         webView.loadDataWithBaseURL(null, blockHtmlFor(v), "text/html", "utf-8", null)
@@ -4238,14 +4258,15 @@ class MainActivity : ComponentActivity() {
     private fun handleBreakAction(u: Uri) {
         val id = u.pathSegments.firstOrNull() ?: return
         val site = Attention.sites().firstOrNull { it.id == id } ?: return
+        val returnUrl = attentionBlockedSources[webView] ?: "https://${site.domain}/"
         when (u.host) {
             "dispensar" -> {
                 Attention.requestDismiss(id)
-                Attention.verdictForSite(id)?.let { loadBlock(it) } ?: webView.loadUrl("https://${site.domain}/")
+                Attention.verdictForSite(id)?.let { loadBlock(it) } ?: webView.loadUrl(returnUrl)
             }
             "confirmar" -> {
-                if (Attention.confirmDismiss(id)) webView.loadUrl("https://${site.domain}/")
-                else Attention.verdictForSite(id)?.let { loadBlock(it) } ?: webView.loadUrl("https://${site.domain}/")
+                if (Attention.confirmDismiss(id)) webView.loadUrl(returnUrl)
+                else Attention.verdictForSite(id)?.let { loadBlock(it) } ?: webView.loadUrl(returnUrl)
             }
         }
     }
