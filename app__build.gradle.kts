@@ -38,6 +38,7 @@ dependencies {
     implementation("androidx.media3:media3-exoplayer-hls:1.11.1")
     implementation("androidx.media3:media3-exoplayer-dash:1.11.1")
     implementation("androidx.media3:media3-session:1.11.1")
-    // GeckoView estável: motor real do Firefox, isolado da WebView Chromium.
-    implementation("org.mozilla.geckoview:geckoview:158.0.20261021001945")
+    // Compatível com a infraestrutura atual (compileSdk 36 / AGP 8.9.1).
+    // GeckoView 158 passou a exigir SDK 37 e AndroidX Core 1.19 / AGP 9.1.
+    implementation("org.mozilla.geckoview:geckoview:140.0.20250707120347")
 }
