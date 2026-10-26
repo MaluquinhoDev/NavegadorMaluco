@@ -395,6 +395,60 @@ class MainActivity : ComponentActivity() {
     // Monitoramento de melhor esforço: somente vídeo/áudio acessível pela própria
     // página; frames de outras origens não são inspecionados.
     private val backgroundMediaSeen = java.util.WeakHashMap<WebView, Long>()
+    /** Evita loop/auto-próximo depois que uma mídia HTML5 termina fora da tela.
+     * A proteção é por documento: outras abas e players Media3 seguem independentes.
+     */
+    private fun setBackgroundEndGuard(enabled: Boolean) {
+        if (tabs.isEmpty()) return
+        val script = if (enabled) """(function(){
+            let g=window.__nmBackgroundEndGuard;
+            if(!g){
+                g={enabled:false,finished:false,started:new WeakSet(),ended:new WeakSet(),loops:[]};
+                window.__nmBackgroundEndGuard=g;
+                document.addEventListener('ended',function(e){
+                    if(!g.enabled||!(e.target instanceof HTMLMediaElement))return;
+                    g.finished=true;g.ended.add(e.target);
+                    // Não entregar o fim ao autoplay/auto-próximo da página no fundo.
+                    e.stopImmediatePropagation();
+                },true);
+                // Alguns players voltam para zero pouco antes de emitir 'ended'.
+                document.addEventListener('timeupdate',function(e){
+                    const m=e.target;
+                    if(g.enabled&&m instanceof HTMLMediaElement&&
+                        Number.isFinite(m.duration)&&m.duration>1&&
+                        m.currentTime>=m.duration-0.12){
+                        g.finished=true;g.ended.add(m);
+                    }
+                },true);
+                document.addEventListener('play',function(e){
+                    const m=e.target;
+                    if(!g.enabled||!(m instanceof HTMLMediaElement))return;
+                    if(g.ended.has(m)||(g.finished&&!g.started.has(m))){
+                        try{m.pause();m.autoplay=false;m.removeAttribute('autoplay')}catch(_){}
+                    }
+                },true);
+            }
+            if(!g.enabled){
+                g.finished=false;g.started=new WeakSet();g.ended=new WeakSet();g.loops=[];
+            }
+            g.enabled=true;
+            document.querySelectorAll('audio,video').forEach(function(m){
+                if(!m.paused&&!m.ended){
+                    g.started.add(m);
+                    if(m.loop){g.loops.push(m);m.loop=false;}
+                }
+            });
+        })()""" else """(function(){
+            const g=window.__nmBackgroundEndGuard;
+            if(!g)return;
+            g.enabled=false;g.finished=false;
+            for(const m of g.loops){if(m.isConnected)m.loop=true;}
+            g.loops=[];
+        })()"""
+        tabs.forEach { tab ->
+            runCatching { tab.view.evaluateJavascript(script, null) }
+        }
+    }
     private fun detectAudibleWebMedia() {
         if (!backgroundAudioEnabled || tabs.isEmpty()) return
         // Apenas elementos HTML5 audíveis; o player Media3 tem serviço próprio.
@@ -497,6 +551,7 @@ class MainActivity : ComponentActivity() {
     private val backgroundMediaTicker = object : Runnable {
         override fun run() {
             if (browserIsResumed || !backgroundAudioEnabled || isFinishing || isDestroyed) return
+            setBackgroundEndGuard(true)
             checkBackgroundTabMedia(includeActive = true)
             detectAudibleWebMedia()
             handler.postDelayed(this, 5000L)
@@ -507,7 +562,10 @@ class MainActivity : ComponentActivity() {
         backgroundAudioEnabled = enabled
         if (!enabled) backgroundMediaSeen.clear()
         handler.removeCallbacks(audibleMediaTicker)
-        if (!enabled) stopService(Intent(this, BackgroundAudioService::class.java))
+        if (!enabled) {
+            setBackgroundEndGuard(false)
+            stopService(Intent(this, BackgroundAudioService::class.java))
+        }
         if (!loaded) return
         tabs.forEachIndexed { index, tab ->
             if (enabled || (browserIsResumed && index == activeIndex)) tab.view.onResume()
@@ -4185,6 +4243,7 @@ class MainActivity : ComponentActivity() {
     override fun onResume() {
         super.onResume()
         browserIsResumed = true
+        setBackgroundEndGuard(false)
         handler.removeCallbacks(backgroundMediaTicker)
         backgroundAudioEnabled = backgroundAudioPrefs.getBoolean("background_audio", false)
         // Retoma a renderização sem recriar páginas ou reiniciar players.
@@ -4200,6 +4259,7 @@ class MainActivity : ComponentActivity() {
     }
     override fun onPause() {
         browserIsResumed = false
+        if (backgroundAudioEnabled) setBackgroundEndGuard(true)
         handler.removeCallbacks(audibleMediaTicker)
         handler.removeCallbacks(miniRefresh)
         handler.removeCallbacks(ticker)
