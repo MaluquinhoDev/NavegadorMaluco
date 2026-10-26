@@ -1647,15 +1647,21 @@ class MainActivity : ComponentActivity() {
         }
         Toast.makeText(this, "Identificando formatos do YouTube...", Toast.LENGTH_SHORT).show()
         Thread {
-            val result = runCatching { YoutubeExtractor.extract(page!!) }
+            val result = runCatching { YoutubeExtractor.extractWithReport(page!!) }
             runOnUiThread {
                 if (isFinishing || isDestroyed || current !== webView || current.url != page)
                     return@runOnUiThread
-                result.onSuccess { extracted ->
-                    val sources = MediaSourceCatalog.ordered(extracted)
+                result.onSuccess { report ->
+                    val sources = MediaSourceCatalog.ordered(report.sources)
+                    android.util.Log.i("NavegadorMedia3", "ExtratorYouTube: requests=${report.requests}; " +
+                        "httpErrors=${report.httpErrors}; formatos=${sources.size}; " +
+                        "tempoMs=${report.elapsedMs}")
                     if (sources.isEmpty()) {
                         AlertDialog.Builder(this).setTitle("Extrator YouTube")
-                            .setMessage("Nenhuma fonte disponível para este vídeo.")
+                            .setMessage("Nenhuma fonte disponível. Requisições: ${report.requests}; " +
+                                "HTTP: ${if (report.httpErrors.isEmpty()) "sem erros registrados" else report.httpErrors}. " +
+                                "O YouTube pode disponibilizar apenas formatos protegidos ou " +
+                                "incompatíveis com a extração atual.")
                             .setPositiveButton("OK", null).show()
                         return@onSuccess
                     }
@@ -1667,28 +1673,69 @@ class MainActivity : ComponentActivity() {
                         .setTitle("YouTube · ${sources.size} formato(s)")
                         .setItems(labels) { _, i ->
                             val selected = sources[i]
-                            if (selected.playable) startMedia3(selected.url)
+                            if (selected.playable) verifyExtractedYouTubeSource(current, page!!, selected)
                             else AlertDialog.Builder(this).setTitle("Vídeo sem áudio")
                                 .setMessage("Este formato tem áudio separado. A reprodução conjunta " +
                                     "ainda precisa ser integrada ao Media3.")
                                 .setPositiveButton("OK", null).show()
                         }.setNegativeButton("Cancelar", null).show()
                 }.onFailure { err ->
+                    val failure = err as? YoutubeExtractor.ExtractionFailure
                     android.util.Log.w("NavegadorMedia3",
-                        "Falha no extrator: ${err.javaClass.simpleName}")
+                        "Falha no extrator: ${err.javaClass.simpleName}; " +
+                            "causa=${err.cause?.javaClass?.simpleName ?: "desconhecida"}; " +
+                            "requests=${failure?.requests ?: 0}; http=${failure?.httpErrors.orEmpty()}")
                     AlertDialog.Builder(this).setTitle("Extrator YouTube")
-                        .setMessage(when {
-                            err is java.net.SocketTimeoutException ->
+                        .setMessage((when {
+                            err.cause is java.net.SocketTimeoutException ->
                                 "A conexão demorou demais. Confira a internet e tente novamente."
-                            err is java.net.UnknownHostException ->
+                            err.cause is java.net.UnknownHostException ->
                                 "Não foi possível acessar o servidor. Verifique a conexão."
-                            err is java.io.IOException ->
-                                "Falha de rede ou resposta inesperada. Tente novamente."
+                            failure?.httpErrors?.containsKey(429) == true ->
+                                "O YouTube limitou as requisições (HTTP 429)."
+                            failure?.httpErrors?.containsKey(403) == true ->
+                                "O YouTube recusou uma requisição do extrator (HTTP 403)."
                             else ->
                                 "Não foi possível obter os formatos. O YouTube pode ter alterado " +
                                     "o protocolo ou restringido este vídeo."
-                        })
+                        }) + "\nDiagnóstico: ${failure?.requests ?: 0} requisição(ões), " +
+                            "HTTP ${failure?.httpErrors.orEmpty()}, " +
+                            "erro ${err.cause?.javaClass?.simpleName ?: err.javaClass.simpleName}.")
                         .setPositiveButton("OK", null).show()
+                }
+            }
+        }.start()
+    }
+
+    /** Comprova a autorização HTTP antes de enviar uma URL temporária ao Media3. */
+    private fun verifyExtractedYouTubeSource(
+        originalView: WebView, page: String, source: YoutubeExtractor.Source
+    ) {
+        Toast.makeText(this, "Verificando acesso ao formato...", Toast.LENGTH_SHORT).show()
+        val agent = android.webkit.WebSettings.getDefaultUserAgent(this)
+        val pageUri = Uri.parse(page)
+        val origin = "https://${pageUri.host}/"
+        Thread {
+            val check = YoutubeExtractor.checkAccess(source.url, agent, origin)
+            runOnUiThread {
+                if (isFinishing || isDestroyed || webView !== originalView || originalView.url != page)
+                    return@runOnUiThread
+                android.util.Log.i("NavegadorMedia3", "FonteYouTube: http=${check.status}; " +
+                    "falha=${check.failure ?: "nenhuma"}; tipo=${source.label.substringBefore('·').trim()}")
+                if (check.status == 403 || check.status == 401 || check.status == 410 ||
+                    check.status == 429) {
+                    AlertDialog.Builder(this).setTitle("Fonte do YouTube recusada")
+                        .setMessage("A extração encontrou o formato, mas o servidor retornou " +
+                            "HTTP ${check.status}. A URL não está autorizada para esta reprodução.")
+                        .setPositiveButton("OK", null).show()
+                } else {
+                    // Respostas inconclusivas continuam pelo diagnóstico do Media3.
+                    val mime = when {
+                        source.label.startsWith("HLS") -> "application/x-mpegURL"
+                        source.label.startsWith("DASH") -> "application/dash+xml"
+                        else -> null
+                    }
+                    startMedia3(source.url, mime)
                 }
             }
         }.start()
@@ -3841,7 +3888,7 @@ class MainActivity : ComponentActivity() {
     private var media3OriginView: WebView? = null
     private var media3OriginUrl: String? = null
 
-    private fun startMedia3(url: String) {
+    private fun startMedia3(url: String, mimeType: String? = null) {
         val u = Uri.parse(url)
         if (u.scheme !in listOf("http", "https") || u.host.isNullOrBlank()) return
         val sourceView = webView
@@ -3936,6 +3983,7 @@ class MainActivity : ComponentActivity() {
                         putString("nm_attention_page", sourceView.url ?: "")
                     }
                     val item = MediaItem.Builder().setUri(u)
+                        .apply { if (mimeType != null) setMimeType(mimeType) }
                         .setMediaMetadata(androidx.media3.common.MediaMetadata.Builder()
                             // Metadados usados pelo cartão de mídia do Android (API 34+).
                             // Os botões Play/Pause são comandos da MediaSession, não atalhos da Activity.
