@@ -5,7 +5,8 @@ package com.example.extbrowser
  * As operações de criar/destruir WebViews permanecem na MainActivity.
  */
 internal object BrowserTabPolicy {
-    const val MAX_TABS = 6
+    const val MAX_TABS = 30
+    const val MAX_RESIDENT_TABS = 6
 
     fun canCreate(count: Int): Boolean = count < MAX_TABS
 
