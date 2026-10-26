@@ -230,6 +230,22 @@ class MainActivity : ComponentActivity() {
     // Opcional: mantém WebViews ativas para reprodução HTML5 após trocar de aba.
     // Não contorna restrições de sites nem garante execução após o Android suspender o app.
     private var backgroundAudioEnabled = false
+    private var browserIsResumed = false
+    // A notificação pode desativar o recurso enquanto a Activity ainda existe.
+    // O listener mantém as abas e o monitoramento sincronizados com essa escolha.
+    private val backgroundAudioPrefs by lazy {
+        getSharedPreferences("media_options", MODE_PRIVATE)
+    }
+    private val backgroundAudioPreferenceListener =
+        android.content.SharedPreferences.OnSharedPreferenceChangeListener { prefs, key ->
+            if (key == "background_audio") {
+                handler.post {
+                    if (!isDestroyed && !isFinishing) {
+                        applyBackgroundAudioState(prefs.getBoolean("background_audio", false))
+                    }
+                }
+            }
+        }
     // Apenas metadados de requisições. Nunca intercepta conteúdo, tokens nem corpos HTTP.
     private val mediaCandidates = WeakHashMap<WebView, LinkedHashSet<String>>()
     private val mediaCandidateLock = Any()
@@ -378,8 +394,8 @@ class MainActivity : ComponentActivity() {
     // Monitoramento de melhor esforço: somente vídeo/áudio acessível pela própria
     // página; frames de outras origens não são inspecionados.
     private val backgroundMediaSeen = java.util.WeakHashMap<WebView, Long>()
-    private fun checkBackgroundTabMedia() {
-        if (!backgroundAudioEnabled || tabs.size < 2) {
+    private fun checkBackgroundTabMedia(includeActive: Boolean = false) {
+        if (!backgroundAudioEnabled || (tabs.size < 2 && !includeActive)) {
             backgroundMediaSeen.clear()
             return
         }
@@ -387,7 +403,7 @@ class MainActivity : ComponentActivity() {
         // Evita cobrar simultaneamente duas abas do mesmo domínio no mesmo ciclo.
         val chargedDomains = HashSet<String>()
         tabs.forEachIndexed { index, tab ->
-            if (index == activeIndex) return@forEachIndexed
+            if (!includeActive && index == activeIndex) return@forEachIndexed
             val view = tab.view
             val page = view.url ?: return@forEachIndexed
             if (Attention.status(page) == null) return@forEachIndexed
@@ -397,7 +413,8 @@ class MainActivity : ComponentActivity() {
             view.evaluateJavascript(
                 "(function(){return Array.from(document.querySelectorAll('video,audio')).some(v=>!v.paused&&!v.ended)})()"
             ) { value ->
-                if (isFinishing || isDestroyed || tabs.none { it.view === view }) return@evaluateJavascript
+                if (isFinishing || isDestroyed || tabs.none { it.view === view } ||
+                    view.url != page) return@evaluateJavascript
                 // Verifica bloqueio mesmo que a reprodução tenha sido pausada
                 // temporariamente. Bloqueio não pode depender do estado Play.
                 val existingBlock = Attention.checkNavigation(page)
@@ -433,6 +450,27 @@ class MainActivity : ComponentActivity() {
             handler.postDelayed(this, 5000)
         }
     }
+    // Fora da tela a contagem da navegação para, mas a mídia HTML5 que continua
+    // realmente tocando ainda deve consumir a cota. Não recria nem dá play em abas.
+    private val backgroundMediaTicker = object : Runnable {
+        override fun run() {
+            if (browserIsResumed || !backgroundAudioEnabled || isFinishing || isDestroyed) return
+            checkBackgroundTabMedia(includeActive = true)
+            handler.postDelayed(this, 5000L)
+        }
+    }
+
+    private fun applyBackgroundAudioState(enabled: Boolean) {
+        backgroundAudioEnabled = enabled
+        if (!enabled) backgroundMediaSeen.clear()
+        if (!loaded) return
+        tabs.forEachIndexed { index, tab ->
+            if (enabled || (browserIsResumed && index == activeIndex)) tab.view.onResume()
+            else tab.view.onPause()
+        }
+        handler.removeCallbacks(backgroundMediaTicker)
+        if (enabled && !browserIsResumed) handler.post(backgroundMediaTicker)
+    }
 
     private val extLauncher = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
         if (result.resultCode == RESULT_OK) {
@@ -460,8 +498,8 @@ class MainActivity : ComponentActivity() {
         }
         Attention.init(this)
         store = BrowserData(this)
-        backgroundAudioEnabled = getSharedPreferences("media_options", MODE_PRIVATE)
-            .getBoolean("background_audio", false)
+        backgroundAudioPrefs.registerOnSharedPreferenceChangeListener(backgroundAudioPreferenceListener)
+        backgroundAudioEnabled = backgroundAudioPrefs.getBoolean("background_audio", false)
         if (backgroundAudioEnabled) {
             // Reestabelece a proteção do processo após recriação normal da Activity.
             runCatching { androidx.core.content.ContextCompat.startForegroundService(
@@ -4001,13 +4039,8 @@ class MainActivity : ComponentActivity() {
         } else {
             stopService(Intent(this, BackgroundAudioService::class.java))
         }
-        backgroundAudioEnabled = enable
-        getSharedPreferences("media_options", MODE_PRIVATE).edit()
-            .putBoolean("background_audio", backgroundAudioEnabled).apply()
-        tabs.forEachIndexed { index, tab ->
-            if (backgroundAudioEnabled || index == activeIndex) tab.view.onResume()
-            else tab.view.onPause()
-        }
+        applyBackgroundAudioState(enable)
+        backgroundAudioPrefs.edit().putBoolean("background_audio", enable).apply()
         Toast.makeText(this,
             if (enable) "Suporte a áudio em segundo plano ativado"
             else "Suporte a áudio em segundo plano desativado",
@@ -4121,8 +4154,9 @@ class MainActivity : ComponentActivity() {
 
     override fun onResume() {
         super.onResume()
-        backgroundAudioEnabled = getSharedPreferences("media_options", MODE_PRIVATE)
-            .getBoolean("background_audio", false)
+        browserIsResumed = true
+        handler.removeCallbacks(backgroundMediaTicker)
+        backgroundAudioEnabled = backgroundAudioPrefs.getBoolean("background_audio", false)
         // Retoma a renderização sem recriar páginas ou reiniciar players.
         tabs.forEachIndexed { index, tab ->
             if (backgroundAudioEnabled || index == activeIndex) tab.view.onResume()
@@ -4133,17 +4167,24 @@ class MainActivity : ComponentActivity() {
         handler.post(miniRefresh)
     }
     override fun onPause() {
+        browserIsResumed = false
         handler.removeCallbacks(miniRefresh)
         handler.removeCallbacks(ticker)
         Attention.pause()
         persistTabs()
-        // O controle de atenção para de contar fora do app. A opção de áudio
-        // mantém o WebView vivo como melhor esforço, sem serviço de mídia.
+        // A contagem de navegação para fora do app. O ticker separado verifica
+        // reprodução HTML5 detectável enquanto o serviço mantém as abas vivas.
         if (!backgroundAudioEnabled && !isInPictureInPictureMode && fullscreenView == null)
             tabs.forEach { it.view.onPause() }
+        if (backgroundAudioEnabled) {
+            handler.removeCallbacks(backgroundMediaTicker)
+            handler.post(backgroundMediaTicker)
+        }
         super.onPause()
     }
     override fun onDestroy() {
+        backgroundAudioPrefs.unregisterOnSharedPreferenceChangeListener(backgroundAudioPreferenceListener)
+        handler.removeCallbacks(backgroundMediaTicker)
         fileCallback?.onReceiveValue(null)
         fileCallback = null
         closeNativePlayer()
