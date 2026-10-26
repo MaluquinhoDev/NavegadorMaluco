@@ -155,6 +155,8 @@ class NativeMediaService : Service() {
             .addAction(Notification.Action.Builder(icon, label, pending(toggleAction, 2)).build())
             .addAction(Notification.Action.Builder(android.R.drawable.ic_menu_close_clear_cancel,
                 "Parar", pending(ACTION_STOP, 3)).build())
+            .addAction(Notification.Action.Builder(android.R.drawable.ic_menu_close_clear_cancel,
+                "Parar todas", StopAllMediaReceiver.pendingIntent(this, 108)).build())
             .setOngoing(playing)
             .setCategory(Notification.CATEGORY_TRANSPORT)
             .build()
