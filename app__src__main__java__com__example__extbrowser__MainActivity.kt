@@ -1827,11 +1827,25 @@ class MainActivity : ComponentActivity() {
                     return@runOnUiThread
                 android.util.Log.i("NavegadorMedia3", "FonteYouTube: http=${check.status}; " +
                     "falha=${check.failure ?: "nenhuma"}; tipo=${source.label.substringBefore('·').trim()}")
-                if (check.status == 403 || check.status == 401 || check.status == 410 ||
-                    check.status == 429) {
-                    AlertDialog.Builder(this).setTitle("Fonte do YouTube recusada")
-                        .setMessage("A extração encontrou o formato, mas o servidor retornou " +
-                            "HTTP ${check.status}. A URL não está autorizada para esta reprodução.")
+                if (check.status == 403) {
+                    AlertDialog.Builder(this).setTitle("Diagnóstico YouTube · HTTP 403")
+                        .setMessage("A verificação preliminar recebeu HTTP 403. " +
+                            "Isso não comprova que o Media3 receberá a mesma resposta. " +
+                            "O teste experimental fará uma única tentativa de reprodução " +
+                            "sem compartilhar cookies ou alterar a sessão do navegador.")
+                        .setPositiveButton("Testar no Media3") { _, _ ->
+                            val mime = when {
+                                source.label.startsWith("HLS") -> "application/x-mpegURL"
+                                source.label.startsWith("DASH") -> "application/dash+xml"
+                                else -> null
+                            }
+                            startMedia3(source.url, mime)
+                        }
+                        .setNegativeButton("Cancelar", null).show()
+                } else if (check.status == 401 || check.status == 410 || check.status == 429) {
+                    AlertDialog.Builder(this).setTitle("Fonte do YouTube indisponível")
+                        .setMessage("A verificação preliminar recebeu HTTP ${check.status}. " +
+                            "O aplicativo não fará novas tentativas automáticas.")
                         .setPositiveButton("OK", null).show()
                 } else {
                     // Respostas inconclusivas continuam pelo diagnóstico do Media3.
@@ -4059,8 +4073,30 @@ class MainActivity : ComponentActivity() {
                                 Toast.LENGTH_LONG).show()
                         }
                         override fun onPlayerError(error: androidx.media3.common.PlaybackException) {
-                            Toast.makeText(this@MainActivity,
-                                "Erro Media3: ${error.errorCodeName}", Toast.LENGTH_LONG).show()
+                            val visited = HashSet<Throwable>()
+                            var cause: Throwable? = error
+                            var httpCode: Int? = null
+                            while (cause != null && visited.add(cause)) {
+                                if (cause is androidx.media3.datasource.HttpDataSource.InvalidResponseCodeException) {
+                                    httpCode = cause.responseCode
+                                    break
+                                }
+                                cause = cause.cause
+                            }
+                            // O serviço recebe a resposta HTTP diretamente, mesmo
+                            // quando a MediaSession não preserva a cadeia de causas.
+                            val status = httpCode ?: Media3PlaybackService.latestPlaybackHttpStatus()
+                            if (youtubeVideoId(sourceView.url) != null) {
+                                AlertDialog.Builder(this@MainActivity)
+                                    .setTitle("Resultado real · Media3")
+                                    .setMessage("Erro do player: ${error.errorCodeName}\n" +
+                                        "HTTP recebido pelo Media3: ${status ?: "indisponível"}.\n" +
+                                        "Este resultado é independente da sonda inicial.")
+                                    .setPositiveButton("Fechar", null).show()
+                            } else {
+                                Toast.makeText(this@MainActivity,
+                                    "Erro Media3: ${error.errorCodeName}", Toast.LENGTH_LONG).show()
+                            }
                         }
                     }
                     controller.addListener(listener)
