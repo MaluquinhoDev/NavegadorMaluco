@@ -231,8 +231,11 @@ private class YoutubePoTokenProvider(private val context: android.content.Contex
             }.onFailure {
                 android.util.Log.w("YoutubePoToken", "Token WEB indisponível: ${it.javaClass.simpleName}")
             }.getOrNull()
-            YoutubeExtractor.recordPoTokenStatus(if (tokenResult == null)
-                "Falha na geração do PO Token WEB" else "PO Token WEB gerado")
+            YoutubeExtractor.recordPoTokenStatus(if (tokenResult != null)
+                "PO Token WEB gerado em perfil WebView isolado"
+            else if (YoutubeExtractor.poTokenStatus.startsWith("BotGuard isolado indisponível"))
+                YoutubeExtractor.poTokenStatus
+            else "Falha na geração do PO Token WEB")
             tokenResult
         }
     }
@@ -262,8 +265,20 @@ private class YoutubePoTokenProvider(private val context: android.content.Contex
         fun run(): org.schabi.newpipe.extractor.services.youtube.PoTokenResult? {
             main.post {
                 try {
+                    // Uma WebView nova compartilha o perfil padrão com as abas do navegador.
+                    // Exigir MULTI_PROFILE protege os cookies e armazenamento da navegação.
+                    // Falhar fechado preserva a sessão do usuário em WebViews antigas.
+                    if (!androidx.webkit.WebViewFeature.isFeatureSupported(
+                            androidx.webkit.WebViewFeature.MULTI_PROFILE)) {
+                        YoutubeExtractor.recordPoTokenStatus(
+                            "BotGuard isolado indisponível: WebView sem suporte a perfis")
+                        finish()
+                        return@post
+                    }
                     val view = android.webkit.WebView(context)
                     webView = view
+                    // setProfile DEVE ser a primeira operação com a instância.
+                    androidx.webkit.WebViewCompat.setProfile(view, "nm_botguard_isolated")
                     view.settings.javaScriptEnabled = true
                     view.settings.blockNetworkLoads = true
                     view.settings.userAgentString = BOTGUARD_UA
@@ -272,7 +287,11 @@ private class YoutubePoTokenProvider(private val context: android.content.Contex
                         "https://www.youtube.com", BOTGUARD_HTML,
                         "text/html", "UTF-8", null
                     )
-                } catch (_: Exception) { finish() }
+                } catch (e: Exception) {
+                    YoutubeExtractor.recordPoTokenStatus(
+                        "BotGuard isolado indisponível: ${e.javaClass.simpleName}")
+                    finish()
+                }
             }
             try {
                 done.await(32, java.util.concurrent.TimeUnit.SECONDS)
