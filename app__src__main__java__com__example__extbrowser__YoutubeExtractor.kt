@@ -13,6 +13,17 @@ import java.io.IOException
 /** Extractor independente, sem cookies da WebView nem alteração da sessão Media3. */
 object YoutubeExtractor {
     data class Source(val label: String, val url: String, val playable: Boolean)
+    data class Report(val sources: List<Source>, val requests: Int,
+        val httpErrors: Map<Int, Int>, val elapsedMs: Long)
+    class ExtractionFailure(val requests: Int, val httpErrors: Map<Int, Int>,
+        cause: Throwable) : IOException("Falha na extração: ${cause.javaClass.simpleName}", cause)
+    data class AccessCheck(val status: Int?, val failure: String? = null)
+
+    private class NetworkTrace {
+        var requests = 0
+        val errors = sortedMapOf<Int, Int>()
+    }
+    private val trace = ThreadLocal<NetworkTrace>()
 
     // Metadados do extrator não devem consumir memória sem limites.
     private const val MAX_RESPONSE_BYTES = 16 * 1024 * 1024
@@ -35,6 +46,7 @@ object YoutubeExtractor {
     private class NetworkDownloader : Downloader() {
         override fun execute(request: Request): Response {
             val connection = (URL(request.url()).openConnection() as HttpURLConnection)
+            trace.get()?.let { it.requests++ }
             try {
                 connection.connectTimeout = 12000
                 connection.readTimeout = 16000
@@ -51,6 +63,9 @@ object YoutubeExtractor {
                     connection.outputStream.use { it.write(payload) }
                 }
                 val status = connection.responseCode
+                trace.get()?.let { t ->
+                    if (status >= 400) t.errors[status] = (t.errors[status] ?: 0) + 1
+                }
                 val bytes = (if (status >= 400) connection.errorStream else connection.inputStream)
                     ?.let(::readLimited) ?: byteArrayOf()
                 val headers = connection.headerFields.filterKeys { it != null }
@@ -94,5 +109,41 @@ object YoutubeExtractor {
                 result += Source("Áudio · ${stream.averageBitrate} kbps", u, true)
         }
         return result.distinctBy { it.url }
+    }
+
+    /** Métricas sem URLs assinadas, cookies ou corpo das respostas. */
+    fun extractWithReport(url: String): Report {
+        val started = android.os.SystemClock.elapsedRealtime()
+        val network = NetworkTrace()
+        trace.set(network)
+        try {
+            val sources = extract(url)
+            return Report(sources, network.requests, network.errors.toMap(),
+                android.os.SystemClock.elapsedRealtime() - started)
+        } catch (error: Exception) {
+            throw ExtractionFailure(network.requests, network.errors.toMap(), error)
+        } finally {
+            trace.remove()
+        }
+    }
+
+    /** Sonda o primeiro byte; sucesso inicial não garante a reprodução integral. */
+    fun checkAccess(url: String, userAgent: String, referer: String): AccessCheck {
+        val conn = (URL(url).openConnection() as HttpURLConnection)
+        return try {
+            conn.connectTimeout = 8000
+            conn.readTimeout = 8000
+            conn.instanceFollowRedirects = true
+            conn.setRequestProperty("Range", "bytes=0-0")
+            conn.setRequestProperty("User-Agent", userAgent)
+            if (referer.startsWith("https://")) conn.setRequestProperty("Referer", referer)
+            val status = conn.responseCode
+            if (status in 200..299) conn.inputStream.use { it.read() }
+            AccessCheck(status)
+        } catch (error: IOException) {
+            AccessCheck(null, error.javaClass.simpleName)
+        } finally {
+            conn.disconnect()
+        }
     }
 }
