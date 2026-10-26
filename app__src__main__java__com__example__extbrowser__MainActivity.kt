@@ -2443,7 +2443,9 @@ class MainActivity : ComponentActivity() {
                 "Mídia · elementos HTML5 e manifestos",
                 "Teclado · teste HTML isolado",
                 "Seu Imposto · experiências anteriores",
-                "Google · login de múltiplas contas"
+                "Google · login de múltiplas contas",
+                if (googleLoginAuditEnabled) "■ Google · parar monitoramento"
+                    else "▶ Google · iniciar monitoramento"
             )) { _, which ->
                 when (which) {
                     0 -> showYouTubeTestPanel()
@@ -2452,38 +2454,41 @@ class MainActivity : ComponentActivity() {
                     3 -> openIsolatedKeyboardTest()
                     4 -> showSeuImpostoLegacyTests()
                     5 -> showGoogleLoginAuditMenu()
+                    6 -> { toggleGoogleLoginAudit(); showGoogleLoginAuditMenu() }
                 }
             }.show()
     }
 
+    private fun toggleGoogleLoginAudit() {
+        googleLoginAuditEnabled = !googleLoginAuditEnabled
+        if (googleLoginAuditEnabled) {
+            googleLoginAuditEvents.clear()
+            googleLoginAuditStarted = SystemClock.elapsedRealtime()
+            recordGoogleLoginAudit("Monitor iniciado · política de cookies observada", webView.url, webView)
+        }
+        Toast.makeText(this, if (googleLoginAuditEnabled) "Monitor Google iniciado"
+            else "Monitor Google encerrado", Toast.LENGTH_SHORT).show()
+    }
+
     private fun showGoogleLoginAuditMenu() {
         val monitorLabel = if (googleLoginAuditEnabled) "■ Parar monitoramento" else "▶ Iniciar monitoramento"
-        AlertDialog.Builder(this).setTitle("Google · diagnóstico de múltiplas contas")
-            .setMessage("Identifica falhas de navegação, permissões de cookies, respostas HTTP e janelas de login. Não lê dados da conta nem modifica sessões.")
-            .setItems(arrayOf(monitorLabel, "Ver relatório", "Copiar relatório sem dados sensíveis",
+        AlertDialog.Builder(this).setTitle("Google · monitor ${if (googleLoginAuditEnabled) "ATIVO" else "PARADO"}")
+            .setItems(arrayOf("Ver relatório", "Copiar relatório sem dados sensíveis",
                 "Abrir página de contas Google", "Limpar eventos")) { _, option ->
                 when (option) {
-                    0 -> {
-                        googleLoginAuditEnabled = !googleLoginAuditEnabled
-                        if (googleLoginAuditEnabled) {
-                            googleLoginAuditEvents.clear()
-                            googleLoginAuditStarted = SystemClock.elapsedRealtime()
-                            recordGoogleLoginAudit("Monitor iniciado · política de cookies observada", webView.url, webView)
-                        }
-                        Toast.makeText(this, if (googleLoginAuditEnabled) "Monitor Google iniciado"
-                            else "Monitor Google encerrado", Toast.LENGTH_SHORT).show()
-                    }
-                    1 -> showGoogleLoginAuditReport()
-                    2 -> {
+                    0 -> showGoogleLoginAuditReport()
+                    1 -> {
                         val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
                         clipboard.setPrimaryClip(android.content.ClipData.newPlainText(
                             "Diagnóstico de login Google", googleLoginAuditReport()))
                         Toast.makeText(this, "Relatório técnico copiado", Toast.LENGTH_SHORT).show()
                     }
-                    3 -> navigate("https://myaccount.google.com/")
-                    4 -> { googleLoginAuditEvents.clear(); Toast.makeText(this, "Eventos limpos", Toast.LENGTH_SHORT).show() }
+                    2 -> navigate("https://myaccount.google.com/")
+                    3 -> { googleLoginAuditEvents.clear(); Toast.makeText(this, "Eventos limpos", Toast.LENGTH_SHORT).show() }
                 }
-            }.setNegativeButton("Fechar", null).show()
+            }
+            .setPositiveButton(monitorLabel) { _, _ -> toggleGoogleLoginAudit(); showGoogleLoginAuditMenu() }
+            .setNegativeButton("Fechar", null).show()
     }
 
     private fun showGoogleLoginAuditReport() {
