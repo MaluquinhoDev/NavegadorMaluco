@@ -91,6 +91,53 @@ class MainActivity : ComponentActivity() {
     private val constellations = listOf("Exploração", "Estudos", "Entretenimento", "Trabalho")
     private val totalTabCount get() = tabs.size + parkedTabs.size
 
+    // Diagnóstico volátil: nenhum cookie, token, e-mail, URL ou corpo de resposta é coletado.
+    private var googleLoginAuditEnabled = false
+    private var googleLoginAuditStarted = 0L
+    private val googleLoginAuditEvents = ArrayDeque<String>()
+
+    private fun googleLoginHostCategory(rawUrl: String?): String? {
+        val host = runCatching { Uri.parse(rawUrl).host?.lowercase() }.getOrNull() ?: return null
+        return when {
+            host == "accounts.google.com" -> "Contas Google"
+            host == "myaccount.google.com" -> "Minha conta"
+            host == "oauth2.googleapis.com" -> "OAuth Google"
+            host == "google.com" || host.endsWith(".google.com") -> "Google"
+            host == "gmail.com" || host.endsWith(".gmail.com") -> "Gmail"
+            host == "youtube.com" || host.endsWith(".youtube.com") ||
+                host == "youtu.be" -> "YouTube"
+            else -> null
+        }
+    }
+
+    private fun recordGoogleLoginAudit(event: String, url: String? = null,
+                                       relatedView: WebView? = null) {
+        if (!googleLoginAuditEnabled) return
+        val category = googleLoginHostCategory(url)
+            ?: if (googleLoginHostCategory(relatedView?.url) != null) "Terceiro na página Google"
+                else return
+        val elapsed = (SystemClock.elapsedRealtime() - googleLoginAuditStarted).coerceAtLeast(0)
+        if (googleLoginAuditEvents.size >= 90) googleLoginAuditEvents.removeFirst()
+        googleLoginAuditEvents.addLast("+${elapsed}ms · $category · $event")
+    }
+
+    private fun googleLoginAuditReport(): String = buildString {
+        appendLine("Navegador Maluco · diagnóstico de login Google")
+        appendLine("Monitor: ${if (googleLoginAuditEnabled) "ativo" else "inativo"}")
+        appendLine("Motor: ${WebView.getCurrentWebViewPackage()?.packageName ?: "desconhecido"}")
+        appendLine("Modo: ${siteDisplayMode(webView.url)}")
+        appendLine("Identificação: ${if (webView.settings.userAgentString.contains("; wv)")) "WebView" else "personalizada"}")
+        appendLine("JavaScript: ${webView.settings.javaScriptEnabled}")
+        appendLine("DOM Storage: ${webView.settings.domStorageEnabled}")
+        appendLine("Cookies gerais: ${CookieManager.getInstance().acceptCookie()}")
+        appendLine("Cookies de terceiros (aba atual): ${CookieManager.getInstance().acceptThirdPartyCookies(webView)}")
+        appendLine("Abas: $totalTabCount · residentes: ${tabs.size}")
+        appendLine("Eventos (${googleLoginAuditEvents.size}):")
+        if (googleLoginAuditEvents.isEmpty()) appendLine("- Nenhum evento relevante registrado")
+        else googleLoginAuditEvents.forEach { appendLine("- $it") }
+        appendLine("Não contém e-mails, senhas, cookies, tokens, URLs completas nem parâmetros da autenticação.")
+    }
+
     private fun safeTabId(candidate: String?): String = runCatching {
         UUID.fromString(candidate).toString()
     }.getOrElse { UUID.randomUUID().toString() }
@@ -925,8 +972,12 @@ class MainActivity : ComponentActivity() {
                 val seuImpostoCookies = isSeuImposto(url) &&
                     getSharedPreferences("seuimposto_diagnostic", MODE_PRIVATE)
                         .getBoolean("third_party_cookies", false)
+                val cookieBefore = if (googleLoginAuditEnabled)
+                    CookieManager.getInstance().acceptThirdPartyCookies(v) else false
                 CookieManager.getInstance().setAcceptThirdPartyCookies(v,
                     loginDomain || seuImpostoCookies)
+                recordGoogleLoginAudit("Navegação iniciada · cookies terceiros: $cookieBefore → " +
+                    CookieManager.getInstance().acceptThirdPartyCookies(v), url, v)
                 val t = tabs.firstOrNull { it.view === v } ?: return
                 synchronized(mediaCandidateLock) { mediaCandidates.remove(v); mediaRequestOrigins.remove(v); mediaNetworkSignals.remove(v) }
                 val shownUrl = attentionBlockedSources[v] ?: url
@@ -935,6 +986,7 @@ class MainActivity : ComponentActivity() {
                 if (v === webView) { updateFavorite(); updateInstagramOverlay() }
             }
             override fun onPageFinished(v: WebView, url: String) {
+                recordGoogleLoginAudit("Navegação concluída", url, v)
                 if (isSeuImposto(url)) {
                     recordSiteDiagnostic(v, "Navegação concluída")
                     val recoverFocus = getSharedPreferences("seuimposto_diagnostic", MODE_PRIVATE)
@@ -1177,6 +1229,9 @@ class MainActivity : ComponentActivity() {
             }
             override fun shouldOverrideUrlLoading(v: WebView, request: WebResourceRequest): Boolean {
                 val target = request.url
+                if (request.isForMainFrame)
+                    recordGoogleLoginAudit("Redirecionamento/navegação principal · " +
+                        (if (request.hasGesture()) "com gesto" else "sem gesto"), target.toString(), v)
                 if (target.scheme == "extbrowser") {
                     if (v === webView) handleBreakAction(target)
                     return true
@@ -1225,6 +1280,9 @@ class MainActivity : ComponentActivity() {
             }
             override fun onReceivedHttpError(v: WebView, request: WebResourceRequest,
                                              errorResponse: WebResourceResponse) {
+                recordGoogleLoginAudit("HTTP ${errorResponse.statusCode} · " +
+                    (if (request.isForMainFrame) "documento principal" else "subrecurso"),
+                    request.url.toString(), v)
                 val hasRetryAfter = errorResponse.responseHeaders?.keys?.any {
                     it.equals("Retry-After", ignoreCase = true)
                 } == true
@@ -1268,6 +1326,9 @@ class MainActivity : ComponentActivity() {
             }
             override fun onReceivedError(v: WebView, request: WebResourceRequest,
                                          error: WebResourceError) {
+                recordGoogleLoginAudit("Erro de rede ${error.errorCode} · " +
+                    (if (request.isForMainFrame) "documento principal" else "subrecurso"),
+                    request.url.toString(), v)
                 if (isSeuImposto(v.url)) recordSiteDiagnostic(v,
                     "Rede ${error.errorCode} · " +
                     (if (request.isForMainFrame) "documento principal" else "subrecurso") +
@@ -1316,12 +1377,24 @@ class MainActivity : ComponentActivity() {
                 source: WebView?, isDialog: Boolean, isUserGesture: Boolean, resultMsg: Message?
             ): Boolean {
                 // Não permitir pop-ups automáticos nem exceder o limite de abas.
-                if (!isUserGesture || resultMsg == null) return false
+                if (googleLoginAuditEnabled) {
+                    val category = googleLoginHostCategory(source?.url) ?: "Outro site"
+                    val elapsed = (SystemClock.elapsedRealtime() - googleLoginAuditStarted).coerceAtLeast(0)
+                    if (googleLoginAuditEvents.size >= 90) googleLoginAuditEvents.removeFirst()
+                    googleLoginAuditEvents.addLast("+${elapsed}ms · $category · Nova janela solicitada · " +
+                        (if (isUserGesture) "com gesto" else "sem gesto"))
+                }
+                if (!isUserGesture || resultMsg == null) {
+                    recordGoogleLoginAudit("Popup recusado: sem gesto ou transporte", source?.url, source)
+                    return false
+                }
                 if (totalTabCount >= MAX_TABS) {
+                    recordGoogleLoginAudit("Popup recusado: limite de páginas", source?.url, source)
                     Toast.makeText(this@MainActivity, "Limite de $MAX_TABS páginas", Toast.LENGTH_LONG).show()
                     return false
                 }
                 if (tabs.size >= BrowserTabPolicy.MAX_RESIDENT_TABS) {
+                    recordGoogleLoginAudit("Popup recusado: limite de WebViews residentes", source?.url, source)
                     // O transporte WebView deve ser imediato; não o guardamos para
                     // depois do diálogo. Usuário libera uma vaga e repete o clique.
                     handler.post {
@@ -1335,6 +1408,7 @@ class MainActivity : ComponentActivity() {
                     return false
                 }
                 val transport = resultMsg.obj as? WebView.WebViewTransport ?: return false
+                recordGoogleLoginAudit("Popup permitido", source?.url, source)
                 // Uma nova WebView recebe a navegação diretamente do mecanismo Android.
                 // Não reconstruímos URL, preservando POST e scripts de abertura.
                 val popup = createWebView()
@@ -2368,7 +2442,8 @@ class MainActivity : ComponentActivity() {
                 "Seu Imposto · foco, chat e rede",
                 "Mídia · elementos HTML5 e manifestos",
                 "Teclado · teste HTML isolado",
-                "Seu Imposto · experiências anteriores"
+                "Seu Imposto · experiências anteriores",
+                "Google · login de múltiplas contas"
             )) { _, which ->
                 when (which) {
                     0 -> showYouTubeTestPanel()
@@ -2376,8 +2451,58 @@ class MainActivity : ComponentActivity() {
                     2 -> showMediaDiagnosticsMenu()
                     3 -> openIsolatedKeyboardTest()
                     4 -> showSeuImpostoLegacyTests()
+                    5 -> showGoogleLoginAuditMenu()
                 }
             }.show()
+    }
+
+    private fun showGoogleLoginAuditMenu() {
+        val monitorLabel = if (googleLoginAuditEnabled) "■ Parar monitoramento" else "▶ Iniciar monitoramento"
+        AlertDialog.Builder(this).setTitle("Google · diagnóstico de múltiplas contas")
+            .setMessage("Identifica falhas de navegação, permissões de cookies, respostas HTTP e janelas de login. Não lê dados da conta nem modifica sessões.")
+            .setItems(arrayOf(monitorLabel, "Ver relatório", "Copiar relatório sem dados sensíveis",
+                "Abrir página de contas Google", "Limpar eventos")) { _, option ->
+                when (option) {
+                    0 -> {
+                        googleLoginAuditEnabled = !googleLoginAuditEnabled
+                        if (googleLoginAuditEnabled) {
+                            googleLoginAuditEvents.clear()
+                            googleLoginAuditStarted = SystemClock.elapsedRealtime()
+                            recordGoogleLoginAudit("Monitor iniciado · política de cookies observada", webView.url, webView)
+                        }
+                        Toast.makeText(this, if (googleLoginAuditEnabled) "Monitor Google iniciado"
+                            else "Monitor Google encerrado", Toast.LENGTH_SHORT).show()
+                    }
+                    1 -> showGoogleLoginAuditReport()
+                    2 -> {
+                        val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+                        clipboard.setPrimaryClip(android.content.ClipData.newPlainText(
+                            "Diagnóstico de login Google", googleLoginAuditReport()))
+                        Toast.makeText(this, "Relatório técnico copiado", Toast.LENGTH_SHORT).show()
+                    }
+                    3 -> navigate("https://myaccount.google.com/")
+                    4 -> { googleLoginAuditEvents.clear(); Toast.makeText(this, "Eventos limpos", Toast.LENGTH_SHORT).show() }
+                }
+            }.setNegativeButton("Fechar", null).show()
+    }
+
+    private fun showGoogleLoginAuditReport() {
+        val scroll = ScrollView(this)
+        scroll.addView(TextView(this).apply {
+            text = googleLoginAuditReport()
+            textSize = 12f
+            setTextIsSelectable(true)
+            setPadding(24, 16, 24, 16)
+        })
+        AlertDialog.Builder(this).setTitle("Google · relatório técnico")
+            .setView(scroll)
+            .setPositiveButton("Copiar") { _, _ ->
+                val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+                clipboard.setPrimaryClip(android.content.ClipData.newPlainText(
+                    "Diagnóstico de login Google", googleLoginAuditReport()))
+            }
+            .setNeutralButton("Atualizar") { _, _ -> showGoogleLoginAuditReport() }
+            .setNegativeButton("Fechar", null).show()
     }
 
     private fun showSeuImpostoToolsMenu() {
