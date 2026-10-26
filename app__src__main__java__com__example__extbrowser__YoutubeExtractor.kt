@@ -2,6 +2,7 @@ package com.example.extbrowser
 
 import org.schabi.newpipe.extractor.NewPipe
 import org.schabi.newpipe.extractor.ServiceList
+import org.schabi.newpipe.extractor.services.youtube.extractors.YoutubeStreamExtractor
 import org.schabi.newpipe.extractor.downloader.Downloader
 import org.schabi.newpipe.extractor.downloader.Request
 import org.schabi.newpipe.extractor.downloader.Response
@@ -12,6 +13,12 @@ import java.io.IOException
 
 /** Extractor independente, sem cookies da WebView nem alteração da sessão Media3. */
 object YoutubeExtractor {
+    @Volatile private var applicationContext: android.content.Context? = null
+
+    /** O gerador WebView só é iniciado durante a extração, nunca em serviço persistente. */
+    fun configure(context: android.content.Context) {
+        applicationContext = context.applicationContext
+    }
     data class Source(val label: String, val url: String, val playable: Boolean)
     data class Report(val sources: List<Source>, val requests: Int,
         val httpErrors: Map<Int, Int>, val elapsedMs: Long)
@@ -119,6 +126,9 @@ object YoutubeExtractor {
     @Synchronized
     private fun initialize() {
         if (NewPipe.getDownloader() == null) NewPipe.init(NetworkDownloader())
+        applicationContext?.let { YoutubeStreamExtractor.setPoTokenProvider(
+            YoutubePoTokenProvider(it)
+        ) }
     }
 
     /** Executar exclusivamente em thread de I/O. URLs podem expirar. */
@@ -184,6 +194,235 @@ object YoutubeExtractor {
             AccessCheck(null, error.javaClass.simpleName)
         } finally {
             conn.disconnect()
+        }
+    }
+}
+
+/**
+ * PO Token WEB anônimo para o NewPipeExtractor. Executa BotGuard em WebView efêmera,
+ * isolada da sessão do navegador: não lê nem encaminha cookies da conta do usuário.
+ * Adaptado da especificação pública do protocolo usada pelo projeto NewPipe.
+ */
+private class YoutubePoTokenProvider(private val context: android.content.Context) :
+    org.schabi.newpipe.extractor.services.youtube.PoTokenProvider {
+
+    override fun getWebClientPoToken(videoId: String):
+        org.schabi.newpipe.extractor.services.youtube.PoTokenResult? {
+        if (android.os.Looper.myLooper() == android.os.Looper.getMainLooper()) return null
+        return synchronized(this) {
+            runCatching {
+                val info = org.schabi.newpipe.extractor.services.youtube.InnertubeClientRequestInfo.ofWebClient()
+                info.clientInfo.clientVersion =
+                    org.schabi.newpipe.extractor.services.youtube.YoutubeParsingHelper.getClientVersion()
+                val visitor = org.schabi.newpipe.extractor.services.youtube.YoutubeParsingHelper.getVisitorDataFromInnertube(
+                    info, NewPipe.getPreferredLocalization(), NewPipe.getPreferredContentCountry(),
+                    org.schabi.newpipe.extractor.services.youtube.YoutubeParsingHelper.getYouTubeHeaders(),
+                    org.schabi.newpipe.extractor.services.youtube.YoutubeParsingHelper.YOUTUBEI_V1_URL,
+                    null, false
+                )
+                val generator = BotguardSession(context, visitor, videoId)
+                generator.run()
+            }.onFailure {
+                android.util.Log.w("YoutubePoToken", "Token WEB indisponível: ${it.javaClass.simpleName}")
+            }.getOrNull()
+        }
+    }
+
+    override fun getWebEmbedClientPoToken(videoId: String):
+        org.schabi.newpipe.extractor.services.youtube.PoTokenResult? = null
+
+    override fun getAndroidClientPoToken(videoId: String):
+        org.schabi.newpipe.extractor.services.youtube.PoTokenResult? = null
+
+    override fun getIosClientPoToken(videoId: String):
+        org.schabi.newpipe.extractor.services.youtube.PoTokenResult? = null
+
+    private class BotguardSession(
+        private val context: android.content.Context,
+        private val visitor: String,
+        private val videoId: String
+    ) {
+        private val done = java.util.concurrent.CountDownLatch(1)
+        private val main = android.os.Handler(android.os.Looper.getMainLooper())
+        private var webView: android.webkit.WebView? = null
+        @Volatile private var result:
+            org.schabi.newpipe.extractor.services.youtube.PoTokenResult? = null
+        private var stage = 0
+        private var streamingToken: String? = null
+
+        fun run(): org.schabi.newpipe.extractor.services.youtube.PoTokenResult? {
+            main.post {
+                try {
+                    val view = android.webkit.WebView(context)
+                    webView = view
+                    view.settings.javaScriptEnabled = true
+                    view.settings.blockNetworkLoads = true
+                    view.settings.userAgentString = BOTGUARD_UA
+                    view.addJavascriptInterface(Callbacks(), "PoBridge")
+                    view.loadDataWithBaseURL(
+                        "https://www.youtube.com", BOTGUARD_HTML,
+                        "text/html", "UTF-8", null
+                    )
+                } catch (_: Exception) { finish() }
+            }
+            try {
+                done.await(32, java.util.concurrent.TimeUnit.SECONDS)
+            } catch (_: InterruptedException) {
+                Thread.currentThread().interrupt()
+            } finally {
+                main.post {
+                    webView?.let {
+                        it.stopLoading()
+                        it.removeJavascriptInterface("PoBridge")
+                        it.loadUrl("about:blank")
+                        it.destroy()
+                    }
+                    webView = null
+                }
+            }
+            return result
+        }
+
+        private fun finish() { done.countDown() }
+
+        private fun postChallenge(endpoint: String, data: String, action: (String) -> Unit) {
+            Thread {
+                try {
+                    val conn = (java.net.URL("https://www.youtube.com/api/jnn/v1/$endpoint")
+                        .openConnection() as HttpURLConnection)
+                    try {
+                        conn.connectTimeout = 9000
+                        conn.readTimeout = 9000
+                        conn.requestMethod = "POST"
+                        conn.setRequestProperty("User-Agent", BOTGUARD_UA)
+                        conn.setRequestProperty("Accept", "application/json")
+                        conn.setRequestProperty("Content-Type", "application/json+protobuf")
+                        conn.setRequestProperty("x-goog-api-key", BOTGUARD_API_KEY)
+                        conn.setRequestProperty("x-user-agent", "grpc-web-javascript/0.1")
+                        conn.doOutput = true
+                        conn.outputStream.use { it.write(data.toByteArray(Charsets.UTF_8)) }
+                        if (conn.responseCode != 200) throw IOException("BotGuard HTTP ${conn.responseCode}")
+                        val response = conn.inputStream.bufferedReader().use { it.readText() }
+                        main.post { action(response) }
+                    } finally { conn.disconnect() }
+                } catch (_: Exception) { finish() }
+            }.start()
+        }
+
+        private fun js(source: String) {
+            webView?.evaluateJavascript(source, null)
+        }
+
+        inner class Callbacks {
+            @android.webkit.JavascriptInterface fun loaded() {
+                postChallenge("Create", "[\"$BOTGUARD_REQUEST_KEY\"]") { response ->
+                    try {
+                        val root = org.json.JSONArray(response)
+                        val challenge = if (root.length() > 1 && root.opt(1) is String) {
+                            val encoded = root.getString(1).replace('-', '+').replace('_', '/')
+                                .replace('.', '=')
+                            val bytes = android.util.Base64.decode(encoded, android.util.Base64.DEFAULT)
+                            org.json.JSONArray(String(bytes.map { (it + 97).toByte() }.toByteArray()))
+                        } else root.getJSONArray(0)
+                        val jsInfo = org.json.JSONObject().apply {
+                            put("program", challenge.getString(4))
+                            put("globalName", challenge.getString(5))
+                            put("interpreterJavascript", org.json.JSONObject().apply {
+                                put("privateDoNotAccessOrElseSafeScriptWrappedValue",
+                                    challenge.optJSONArray(1)?.let { list ->
+                                        (0 until list.length()).mapNotNull { list.optString(it).takeIf(String::isNotEmpty) }
+                                            .firstOrNull()
+                                    } ?: "")
+                            })
+                        }
+                        js("""try { runBotGuard($jsInfo).then(
+                            function(r) { window.poSignal=r.webPoSignalOutput; PoBridge.botguard(r.botguardResponse); },
+                            function(e) { PoBridge.failed(); }
+                        ); } catch(e) { PoBridge.failed(); }""")
+                    } catch (_: Exception) { finish() }
+                }
+            }
+
+            @android.webkit.JavascriptInterface fun botguard(snapshot: String) {
+                val body = org.json.JSONArray().put(BOTGUARD_REQUEST_KEY).put(snapshot).toString()
+                postChallenge("GenerateIT", body) { response ->
+                    try {
+                        val json = org.json.JSONArray(response)
+                        val encoded = json.getString(0).replace('-', '+').replace('_', '/')
+                            .replace('.', '=')
+                        val bytes = android.util.Base64.decode(encoded, android.util.Base64.DEFAULT)
+                        js("window.integrityToken=new Uint8Array([${bytes.joinToString(",") { (it.toInt() and 255).toString() }}]);")
+                        mint(visitor)
+                    } catch (_: Exception) { finish() }
+                }
+            }
+
+            @android.webkit.JavascriptInterface fun minted(encoded: String) {
+                try {
+                    val bytes = encoded.split(',').map { it.toInt().toByte() }.toByteArray()
+                    val token = android.util.Base64.encodeToString(bytes,
+                        android.util.Base64.URL_SAFE or android.util.Base64.NO_WRAP or android.util.Base64.NO_PADDING)
+                    main.post {
+                        if (stage == 0) {
+                            streamingToken = token
+                            stage = 1
+                            mint(videoId)
+                        } else {
+                            val streaming = streamingToken
+                            if (streaming != null)
+                                result = org.schabi.newpipe.extractor.services.youtube.PoTokenResult(
+                                    visitor, token, streaming
+                                )
+                            finish()
+                        }
+                    }
+                } catch (_: Exception) { finish() }
+            }
+
+            @android.webkit.JavascriptInterface fun failed() { finish() }
+        }
+
+        private fun mint(identifier: String) {
+            val data = identifier.toByteArray(Charsets.UTF_8)
+                .joinToString(",") { (it.toInt() and 255).toString() }
+            js("""try { PoBridge.minted(Array.from(obtainPoToken(window.poSignal,
+                window.integrityToken,new Uint8Array([$data]))).join(',')); }
+                catch(e) { PoBridge.failed(); }""")
+        }
+
+        companion object {
+            private const val BOTGUARD_API_KEY = "AIzaSyDyT5W0Jh49F30Pqqtyfdf7pDLFKLJoAnw"
+            private const val BOTGUARD_REQUEST_KEY = "O43z0dpjhgX20SCx4KAo"
+            private const val BOTGUARD_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) " +
+                "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+            private val BOTGUARD_HTML = """<!doctype html><html><head><script>
+                function runBotGuard(c) {
+                  let source=c.interpreterJavascript.privateDoNotAccessOrElseSafeScriptWrappedValue;
+                  if(!source) throw Error('BotGuard VM missing');
+                  new Function(source)();
+                  let vm=window[c.globalName], output=[];
+                  if(!vm || !vm.a) throw Error('BotGuard VM unavailable');
+                  return new Promise((resolve,reject)=>{
+                    let functions=null;
+                    let snapshot=vm.a(c.program,(a,b,p,cam)=>{functions=a;},true,
+                      document.body,()=>{},[[],[]])[0];
+                    let tries=0;
+                    let timer=setInterval(()=>{
+                      if(functions){
+                        clearInterval(timer);
+                        functions(v=>resolve({webPoSignalOutput:output,botguardResponse:v}),
+                          [undefined,undefined,output,undefined]);
+                      } else if(++tries>10000){clearInterval(timer);reject(Error('BotGuard timeout'));}
+                    },1);
+                  });
+                }
+                function obtainPoToken(signal,integrity,id) {
+                  let callback=signal[0](integrity),value=callback(id);
+                  if(!(value instanceof Uint8Array)) throw Error('Invalid PO Token');
+                  return value;
+                }
+                PoBridge.loaded();
+                </script></head><body></body></html>"""
         }
     }
 }
