@@ -142,6 +142,7 @@ object Attention {
 
     @Synchronized
     fun init(context: Context) {
+        AttentionRewards.init(context)
         if (prefs != null) return
         val p = context.applicationContext.getSharedPreferences("attention", Context.MODE_PRIVATE)
         prefs = p
@@ -290,7 +291,7 @@ object Attention {
         val site = findSite(host) ?: return null
         if (navigationBlock(site) != null) return 0L
         val daily = if (site.dailyMinutes > 0)
-            (site.dailyMinutes * 60_000L - usedMs(site.id)).coerceAtLeast(0L)
+            (site.dailyMinutes * 60_000L + AttentionRewards.extraLimitMs(site.id) - usedMs(site.id)).coerceAtLeast(0L)
         else Long.MAX_VALUE
         val session = if (site.sessionMinutes > 0)
             (site.sessionMinutes * 60_000L -
@@ -332,6 +333,10 @@ object Attention {
 
     private fun usedMs(id: String): Long = usage[todayKey()]?.get(id) ?: 0L
 
+    private fun dailyExhausted(site: AttentionSite): Boolean =
+        site.dailyMinutes > 0 && usedMs(site.id) >=
+            site.dailyMinutes * 60_000L + AttentionRewards.extraLimitMs(site.id)
+
     /**
      * Quanto falta da pausa obrigatória. Se o relógio do aparelho foi atrasado, a pausa nunca
      * passa da duração prevista para o site.
@@ -349,7 +354,7 @@ object Attention {
         if (!AttentionLogic.withinTime(site.start, site.end, nowMinutes())) {
             return AttentionVerdict(site, "Este site está fora do horário permitido.")
         }
-        if (site.dailyMinutes > 0 && usedMs(site.id) >= site.dailyMinutes * 60_000L) {
+        if (dailyExhausted(site)) {
             return AttentionVerdict(site, "O limite diário foi atingido.")
         }
         val left = breakLeftMs(site)
@@ -471,7 +476,7 @@ object Attention {
         if (!AttentionLogic.withinTime(site.start, site.end, nowMinutes())) {
             return stopWith(site, "Este site está fora do horário permitido.")
         }
-        if (site.dailyMinutes > 0 && usedMs(id) >= site.dailyMinutes * 60_000L) {
+        if (dailyExhausted(site)) {
             return stopWith(site, "O limite diário foi atingido.")
         }
         if (site.sessionMinutes > 0 && sessionMs >= site.sessionMinutes * 60_000L) {
