@@ -1620,14 +1620,16 @@ class MainActivity : ComponentActivity() {
 
     private fun showMainMenu() {
         AlertDialog.Builder(this).setTitle("NavegadorMaluco")
-            .setItems(arrayOf("Biblioteca", "Mídia", "Ferramentas", "Favoritar / desfavoritar",
-                "■ Parar todas as mídias")) { _, which ->
+            .setItems(arrayOf("Biblioteca · favoritos e histórico", "Reprodução e mídia",
+                "Ferramentas do navegador", "Diagnósticos e testes",
+                "Favoritar / desfavoritar", "■ Parar todas as mídias")) { _, which ->
                 when (which) {
                     0 -> showLibrary()
                     1 -> showMediaMenu()
                     2 -> showToolsMenu()
-                    3 -> toggleFavorite()
-                    4 -> forceStopAllMediaFromMenu()
+                    3 -> showDiagnosticsMenu()
+                    4 -> toggleFavorite()
+                    5 -> forceStopAllMediaFromMenu()
                 }
             }.show()
     }
@@ -1972,28 +1974,43 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun showMediaMenu() {
-        AlertDialog.Builder(this).setTitle("Mídia")
+        AlertDialog.Builder(this).setTitle("Reprodução e mídia")
             .setItems(arrayOf(
                 "▶ Reproduzir mídia desta página",
-                "Vídeos detectados",
-                "Manifestos HLS / DASH",
-                "YouTube · testes e PO Token",
-                "Abrir player nativo",
-                "Janela flutuante (PiP)",
+                "▶ YouTube · tocar no player nativo",
+                "Abrir controles do player nativo",
+                "Janela flutuante · PiP",
                 "Histórico do player",
-                "Mais opções de mídia",
+                "Configurações de reprodução",
+                "Diagnósticos de mídia",
                 "■ Forçar interrupção de todas as mídias"
             )) { _, which ->
                 when (which) {
                     0 -> playPageMediaDirectly()
+                    1 -> showYouTubeExtractor()
+                    2 -> showNativeVideoPlayer()
+                    3 -> enterPip()
+                    4 -> showPlayerHistory()
+                    5 -> showMediaOptions()
+                    6 -> showMediaDiagnosticsMenu()
+                    7 -> forceStopAllMediaFromMenu()
+                }
+            }.show()
+    }
+
+    private fun showMediaDiagnosticsMenu() {
+        AlertDialog.Builder(this).setTitle("Diagnósticos · mídia")
+            .setItems(arrayOf(
+                "YouTube · painel PO Token, HTTP e Media3",
+                "Listar vídeos e fontes detectadas",
+                "Inspecionar manifestos HLS / DASH",
+                "Examinar player HTML5 da página"
+            )) { _, which ->
+                when (which) {
+                    0 -> showYouTubeTestPanel()
                     1 -> showRequestMediaCandidates()
                     2 -> showStreamingManifests()
-                    3 -> showYouTubeTestPanel()
-                    4 -> showNativeVideoPlayer()
-                    5 -> enterPip()
-                    6 -> showPlayerHistory()
-                    7 -> showMediaOptions()
-                    8 -> forceStopAllMediaFromMenu()
+                    3 -> tryNativeMediaFromPage()
                 }
             }.show()
     }
@@ -2015,33 +2032,62 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun showToolsMenu() {
-        AlertDialog.Builder(this).setTitle("Ferramentas")
-            .setItems(arrayOf("Extensões", "Opções avançadas de mídia",
-                "Aparência · claro/escuro", "Modo de exibição do site",
-                "Seu Imposto · chat e diagnóstico",
-                "Teclado · teste HTML isolado")) { _, which ->
+        AlertDialog.Builder(this).setTitle("Ferramentas do navegador")
+            .setItems(arrayOf(
+                "YouTube · tocar no player nativo",
+                "Seu Imposto · chat compatível (GeckoView)",
+                "Controle de Atenção · sites e limites",
+                "Extensões",
+                "Áudio e vídeo em segundo plano",
+                "Aparência · claro/escuro",
+                "Modo de exibição do site",
+                "Diagnósticos e experiências"
+            )) { _, which ->
                 when (which) {
-                    0 -> extLauncher.launch(Intent(this, ExtensionsActivity::class.java).apply {
+                    0 -> showYouTubeExtractor()
+                    1 -> openSeuImpostoInGecko()
+                    2 -> startActivity(Intent(this, AttentionActivity::class.java).apply {
                         putExtra("attention_current_page", webView.url ?: tabs[activeIndex].url)
                     })
-                    1 -> showMediaOptions()
-                    2 -> showThemePicker()
-                    3 -> showSiteDisplayModes()
-                    4 -> showSeuImpostoToolsMenu()
-                    5 -> openIsolatedKeyboardTest()
+                    3 -> extLauncher.launch(Intent(this, ExtensionsActivity::class.java).apply {
+                        putExtra("attention_current_page", webView.url ?: tabs[activeIndex].url)
+                    })
+                    4 -> showMediaOptions()
+                    5 -> showThemePicker()
+                    6 -> showSiteDisplayModes()
+                    7 -> showDiagnosticsMenu()
+                }
+            }.show()
+    }
+
+    private fun showDiagnosticsMenu() {
+        AlertDialog.Builder(this).setTitle("Diagnósticos e testes")
+            .setItems(arrayOf(
+                "YouTube · PO Token, HTTP e reprodução",
+                "Seu Imposto · foco, chat e rede",
+                "Mídia · elementos HTML5 e manifestos",
+                "Teclado · teste HTML isolado",
+                "Seu Imposto · experiências anteriores"
+            )) { _, which ->
+                when (which) {
+                    0 -> showYouTubeTestPanel()
+                    1 -> showSeuImpostoToolsMenu()
+                    2 -> showMediaDiagnosticsMenu()
+                    3 -> openIsolatedKeyboardTest()
+                    4 -> showSeuImpostoLegacyTests()
                 }
             }.show()
     }
 
     private fun showSeuImpostoToolsMenu() {
-        AlertDialog.Builder(this).setTitle("Seu Imposto · chat")
+        AlertDialog.Builder(this).setTitle("Seu Imposto · diagnóstico")
             .setItems(arrayOf(
-                "Abrir chat no motor Firefox · GeckoView",
-                "Diagnóstico · resumo, foco e rede",
-                "Digitar mensagem pelo Android",
+                "Chat compatível · abrir no GeckoView",
+                "Resumo técnico · foco e rede",
+                "Entrada Android · recurso alternativo",
                 "Rastrear origem da reconstrução (sem bloqueios)",
-                "Comparar WebView, Chrome e Firefox",
-                "Experimentos anteriores · teclado e DOM"
+                "Comparar identificação dos navegadores · teste",
+                "Histórico de experiências · teclado e DOM"
             )) { _, selected ->
                 when (selected) {
                     0 -> openSeuImpostoInGecko()
