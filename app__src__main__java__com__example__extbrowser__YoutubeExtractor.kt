@@ -18,6 +18,46 @@ object YoutubeExtractor {
     class ExtractionFailure(val requests: Int, val httpErrors: Map<Int, Int>,
         cause: Throwable) : IOException("Falha na extração: ${cause.javaClass.simpleName}", cause)
     data class AccessCheck(val status: Int?, val failure: String? = null)
+    data class SourceSignals(
+        val mediaHost: String,
+        val poTokenParameter: Boolean,
+        val sabrParameter: Boolean,
+        val signatureParameter: Boolean,
+        val expiry: String
+    ) {
+        fun description(): String = "Host: $mediaHost\n" +
+            "Parâmetro PO na URL: ${if (poTokenParameter) "presente" else "ausente"}\n" +
+            "Indicador SABR na URL: ${if (sabrParameter) "presente" else "ausente"}\n" +
+            "Assinatura na URL: ${if (signatureParameter) "presente" else "ausente"}\n" +
+            "Validade da URL: $expiry"
+    }
+
+    /** Somente presença de parâmetros e validade; nunca retorna seus valores. */
+    fun inspectSourceSignals(url: String): SourceSignals {
+        val uri = android.net.Uri.parse(url)
+        val names = runCatching { uri.queryParameterNames.map { it.lowercase() }.toSet() }
+            .getOrDefault(emptySet())
+        val expirySeconds = runCatching { uri.getQueryParameter("expire")?.toLongOrNull() }
+            .getOrNull()
+        val expiry = if (expirySeconds == null) "não informada" else {
+            val left = expirySeconds - System.currentTimeMillis() / 1000L
+            when {
+                left <= 0 -> "expirada"
+                left < 60 -> "menos de 1 minuto"
+                else -> "aproximadamente ${left / 60} minuto(s)"
+            }
+        }
+        val host = uri.host.orEmpty().lowercase()
+        return SourceSignals(
+            mediaHost = if (host == "googlevideo.com" || host.endsWith(".googlevideo.com"))
+                "GoogleVideo" else if (host == "youtube.com" || host.endsWith(".youtube.com"))
+                "YouTube" else "outro",
+            poTokenParameter = "pot" in names,
+            sabrParameter = "sabr" in names,
+            signatureParameter = names.any { it == "sig" || it == "lsig" || it == "signature" },
+            expiry = expiry
+        )
+    }
 
     private class NetworkTrace {
         var requests = 0
