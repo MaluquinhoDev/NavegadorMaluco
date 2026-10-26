@@ -38,7 +38,7 @@ class AttentionActivity : ComponentActivity() {
             setPadding(0, 0, 0, dp(4))
         })
         content.addView(TextView(this).apply {
-            text = "O tempo só conta enquanto o app está na tela, em uma página do site monitorado."
+            text = "Conta o uso do site monitorado na tela e a reprodução de mídia detectada, inclusive em segundo plano."
             textSize = 13f
             setPadding(0, 0, 0, dp(12))
         })
