@@ -361,6 +361,63 @@ class MainActivity : ComponentActivity() {
             .getString(host, "mobile") ?: "mobile"
     }
 
+    /** Preferência explícita por domínio. Nunca aplica a otimização a sites não configurados. */
+    private fun turboMode(url: String?): String {
+        val host = websiteHost(url) ?: return "off"
+        return getSharedPreferences("site_turbo", MODE_PRIVATE)
+            .getString(host, "off")?.takeIf { it in setOf("off", "compatible", "balanced", "aggressive") }
+            ?: "off"
+    }
+
+    private fun turboProtected(url: String?): Boolean {
+        val host = websiteHost(url) ?: return true
+        return isSeuImposto(url) || host == "youtube.com" || host.endsWith(".youtube.com") ||
+            host == "youtu.be" || host == "instagram.com" || host.endsWith(".instagram.com") ||
+            host == "google.com" || host.endsWith(".google.com")
+    }
+
+    private fun effectiveTurboMode(url: String?): String {
+        val selected = turboMode(url)
+        return if (turboProtected(url) && selected in setOf("balanced", "aggressive"))
+            "compatible" else selected
+    }
+
+    private fun applyTurboNetworkPolicy(view: WebView, url: String?) {
+        // O bloqueio é reversível, mas imagens descartadas só voltam após recarga.
+        view.settings.blockNetworkImage = effectiveTurboMode(url) == "aggressive"
+    }
+
+    private fun applyTurboPagePolicy(view: WebView, url: String) {
+        val mode = effectiveTurboMode(url)
+        if (mode == "off" || view.url != url) return
+        val balanced = mode == "balanced" || mode == "aggressive"
+        val script = """(function(){
+          try {
+            if (!document.head || document.getElementById('__nmTurboStyle')) return;
+            const style=document.createElement('style');
+            style.id='__nmTurboStyle';
+            style.textContent='html{scroll-behavior:auto!important}' +
+              '*{animation-duration:.08s!important;transition-duration:.08s!important}';
+            document.head.appendChild(style);
+            if ($balanced) {
+              // Somente blocos longos abaixo da dobra e sem campos ou mídia.
+              const targets=document.querySelectorAll('main > article, main > section, article > section');
+              let changed=0;
+              for (const el of targets) {
+                if (changed>=20) break;
+                const rect=el.getBoundingClientRect();
+                if (rect.height<320 || rect.top<innerHeight*1.5) continue;
+                if (el.querySelector('input,textarea,button,form,video,audio,iframe,[contenteditable]')) continue;
+                el.style.contentVisibility='auto';
+                el.style.containIntrinsicSize='auto 600px';
+                changed++;
+              }
+            }
+          } catch (_) {}
+        })()"""
+        view.evaluateJavascript(script, null)
+    }
+
     private fun configureSiteDisplay(view: WebView, url: String?) {
         // Exceção restrita ao Instagram híbrido: permite play() disparado
         // pelo controle nativo, que não é reconhecido como gesto DOM da página.
@@ -1204,6 +1261,7 @@ class MainActivity : ComponentActivity() {
         view.settings.javaScriptEnabled = true
         view.settings.domStorageEnabled = true
         configureSiteDisplay(view, null)
+        applyTurboNetworkPolicy(view, null)
         // Preferência de cores respeitada pela WebView quando o motor oferece suporte.
         // Sites que implementam tema próprio continuam controlando sua aparência.
         if (WebViewFeature.isFeatureSupported(WebViewFeature.ALGORITHMIC_DARKENING)) {
@@ -1216,6 +1274,7 @@ class MainActivity : ComponentActivity() {
         WebView.setWebContentsDebuggingEnabled((applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) != 0)
         view.webViewClient = object : WebViewClient() {
             override fun onPageStarted(v: WebView, url: String, favicon: Bitmap?) {
+                applyTurboNetworkPolicy(v, url)
                 if (url.startsWith("http://") || url.startsWith("https://"))
                     attentionBlockedSources.remove(v)
                 if (tabs.getOrNull(activeIndex)?.view === v) updateKeyboardWindowMode(url)
@@ -1473,6 +1532,7 @@ class MainActivity : ComponentActivity() {
                     getSharedPreferences("instagram_controls", MODE_PRIVATE).getBoolean("sound_on", false)) {
                     applyInstagramAudioIntent(v, true)
                 }
+                applyTurboPagePolicy(v, url)
                 updateInstagramOverlay()
             }
             override fun doUpdateVisitedHistory(v: WebView, url: String, isReload: Boolean) {
@@ -3304,6 +3364,7 @@ class MainActivity : ComponentActivity() {
         showActionHub("Ferramentas", "Controle da navegação e das permissões", listOf(
             MenuAction("Reprodução", "YouTube e YouTube Music", "Abrir no player nativo") { showYouTubeExtractor() },
             MenuAction("Reprodução", "Opções de mídia", "Configurar reprodução em segundo plano") { showMediaOptions() },
+            MenuAction("Desempenho", "Modo Turbo Maluco", "Otimizar e diagnosticar o site atual") { showTurboMenu() },
             MenuAction("Rede e privacidade", "Cloudflare · DNS e WARP",
                 "DNS 1.1.1.1, filtros de segurança e teste da conexão") { showCloudflareMenu() },
             MenuAction("Privacidade", "Controle de Atenção", "Limites de uso por site") {
@@ -3321,6 +3382,108 @@ class MainActivity : ComponentActivity() {
             MenuAction("Compatibilidade", "Seu Imposto no GeckoView", "Abrir chat no motor alternativo") { openSeuImpostoInGecko() },
             MenuAction("Avançado", "Diagnósticos", "Experimentos e relatórios") { showDiagnosticsMenu() }
         ))
+    }
+
+    private fun showTurboMenu() {
+        val page = webView.url ?: tabs.getOrNull(activeIndex)?.url
+        val host = websiteHost(page)
+        if (host == null) {
+            Toast.makeText(this, "Abra uma página HTTP(S) para configurar o Modo Turbo", Toast.LENGTH_LONG).show()
+            return
+        }
+        val selected = turboMode(page)
+        val effective = effectiveTurboMode(page)
+        val labels = mapOf("off" to "Desligado", "compatible" to "Compatível",
+            "balanced" to "Equilibrado", "aggressive" to "Agressivo")
+        val protection = if (turboProtected(page))
+            " · protegido: ajustes fortes limitados" else ""
+        showActionHub("Turbo Maluco · $host",
+            "Atual: ${labels[selected]} · aplicado: ${labels[effective]}$protection", listOf(
+                MenuAction("Perfis", "Desligado", "Navegação original, sem modificações") {
+                    setTurboMode(host, "off")
+                },
+                MenuAction("Perfis", "Compatível", "Reduz animações e rolagem animada") {
+                    setTurboMode(host, "compatible")
+                },
+                MenuAction("Perfis", "Equilibrado", "Prioriza renderização de blocos estáticos fora da tela") {
+                    setTurboMode(host, "balanced")
+                },
+                MenuAction("Perfis", "Agressivo · sem imagens", "Economiza rede, mas páginas podem ficar incompletas") {
+                    AlertDialog.Builder(this).setTitle("Turbo agressivo · $host")
+                        .setMessage("Bloqueia downloads de imagens de rede neste site e reduz a renderização " +
+                            "de partes estáticas. Pode quebrar botões, capas e elementos gráficos. " +
+                            "YouTube, Instagram, Google e Seu Imposto recebem somente o perfil compatível.")
+                        .setPositiveButton("Ativar e recarregar") { _, _ -> setTurboMode(host, "aggressive") }
+                        .setNegativeButton("Cancelar", null).show()
+                },
+                MenuAction("Diagnóstico", "Medir página atual", "Tempo, recursos e peso aproximado do JavaScript") {
+                    showTurboDiagnostics()
+                },
+                MenuAction("Informações", "Segurança e limitações", "Entender alterações por site") {
+                    AlertDialog.Builder(this).setTitle("Modo Turbo Maluco")
+                        .setMessage("As preferências ficam salvas por domínio. O diagnóstico usa dados " +
+                            "locais do navegador, sem enviar formulários, cookies ou endereços para terceiros. " +
+                            "O perfil Equilibrado só age em trechos longos e sem campos ou mídia, após o carregamento. " +
+                            "Isso não acelera servidores lentos nem substitui correções no site.")
+                        .setPositiveButton("Entendi", null).show()
+                }
+            ))
+    }
+
+    private fun setTurboMode(host: String, mode: String) {
+        getSharedPreferences("site_turbo", MODE_PRIVATE).edit().putString(host, mode).apply()
+        val page = webView.url
+        if (websiteHost(page) == host) {
+            applyTurboNetworkPolicy(webView, page)
+            // Restaura imagens e remove CSS injetado ao recriar o documento.
+            webView.reload()
+        }
+        val label = mapOf("off" to "desligado", "compatible" to "compatível",
+            "balanced" to "equilibrado", "aggressive" to "agressivo")[mode] ?: mode
+        Toast.makeText(this, "Turbo $label configurado para $host", Toast.LENGTH_SHORT).show()
+    }
+
+    private fun showTurboDiagnostics() {
+        val view = webView
+        val page = view.url ?: return
+        val script = """(function(){
+            try {
+              const nav=performance.getEntriesByType('navigation')[0];
+              const resources=performance.getEntriesByType('resource');
+              const memory=performance.memory;
+              return JSON.stringify({
+                pageMs:Math.round(nav&&nav.duration||performance.now()),
+                responseMs:nav?Math.round(nav.responseEnd-nav.requestStart):-1,
+                domMs:nav?Math.round(nav.domContentLoadedEventEnd-nav.startTime):-1,
+                resources:resources.length,
+                images:document.images.length,
+                scripts:document.scripts.length,
+                heapMb:memory?Math.round(memory.usedJSHeapSize/1048576):-1
+              });
+            } catch (_) {return '{}';}
+        })()"""
+        view.evaluateJavascript(script) { encoded ->
+            if (view !== webView || view.url != page || isFinishing || isDestroyed) return@evaluateJavascript
+            val data = runCatching {
+                org.json.JSONObject(org.json.JSONArray("[$encoded]").getString(0))
+            }.getOrNull()
+            if (data == null || !data.has("pageMs")) {
+                Toast.makeText(this, "Diagnóstico indisponível nesta página", Toast.LENGTH_LONG).show()
+                return@evaluateJavascript
+            }
+            val heap = data.optInt("heapMb", -1).let { if (it < 0) "não informado" else "$it MB" }
+            AlertDialog.Builder(this).setTitle("Desempenho · ${websiteHost(page)}")
+                .setMessage("Carregamento observado: ${data.optInt("pageMs")} ms\n" +
+                    "Resposta da rede: ${data.optInt("responseMs")} ms\n" +
+                    "DOM pronto: ${data.optInt("domMs")} ms\n" +
+                    "Recursos registrados: ${data.optInt("resources")}\n" +
+                    "Imagens no documento: ${data.optInt("images")}\n" +
+                    "Scripts no documento: ${data.optInt("scripts")}\n" +
+                    "Memória JS aproximada: $heap\n\n" +
+                    "Os valores são estimativas expostas pelo site ao WebView. " +
+                    "Não equivalem a uma auditoria Lighthouse.")
+                .setPositiveButton("Fechar", null).show()
+        }
     }
 
     /** O WebView usa a rede do Android: mudar DNS requer ação do usuário no sistema. */
