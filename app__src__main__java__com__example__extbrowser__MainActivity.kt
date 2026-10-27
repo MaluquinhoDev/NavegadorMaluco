@@ -321,6 +321,29 @@ class MainActivity : ComponentActivity() {
     private val webView get() = tabs[activeIndex].view
     private lateinit var webHost: LinearLayout
     private lateinit var browserBar: LinearLayout
+    private lateinit var browserAddressRow: LinearLayout
+    private lateinit var browserActionsRow: LinearLayout
+
+    /** Largura real disponível; celulares deitados mantêm os comandos em duas faixas. */
+    private fun arrangeBrowserToolbar(widthDp: Int) {
+        if (!::browserBar.isInitialized || !::browserAddressRow.isInitialized ||
+            !::browserActionsRow.isInitialized) return
+        val expanded = widthDp >= 840
+        browserBar.removeAllViews()
+        browserBar.orientation = if (expanded) LinearLayout.HORIZONTAL else LinearLayout.VERTICAL
+        browserBar.gravity = if (expanded) android.view.Gravity.CENTER_VERTICAL else android.view.Gravity.NO_GRAVITY
+        if (expanded) {
+            browserBar.addView(browserAddressRow, LinearLayout.LayoutParams(0, WRAP_CONTENT, 3f))
+            browserBar.addView(browserActionsRow, LinearLayout.LayoutParams(0, WRAP_CONTENT, 4f).apply {
+                marginStart = dp(12)
+            })
+        } else {
+            browserBar.addView(browserAddressRow, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
+            browserBar.addView(browserActionsRow, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply {
+                topMargin = dp(6)
+            })
+        }
+    }
     private lateinit var urlBar: EditText
     private lateinit var statusView: TextView
     private lateinit var tabsButton: Button
@@ -437,8 +460,13 @@ class MainActivity : ComponentActivity() {
         text = label
         setAllCaps(false)
         textSize = 13f
+        minWidth = 0
+        minimumWidth = 0
         minHeight = dp(48)
         minimumHeight = dp(48)
+        setPadding(dp(4), 0, dp(4), 0)
+        maxLines = 1
+        ellipsize = android.text.TextUtils.TruncateAt.END
         setTextColor(if (primary) Color.WHITE else uiForeground())
         background = uiShape(if (primary) 0xFF1769A6.toInt() else uiSurface(), 12, !primary)
     }
@@ -1030,21 +1058,10 @@ class MainActivity : ComponentActivity() {
             orientation = LinearLayout.VERTICAL
             setBackgroundColor(uiBackground())
             setPadding(dp(8), dp(6), dp(8), dp(6))
-            if (resources.configuration.screenWidthDp >= 600) {
-                // Em janelas amplas, evita ocupar duas faixas de altura útil.
-                orientation = LinearLayout.HORIZONTAL
-                gravity = android.view.Gravity.CENTER_VERTICAL
-                addView(addressRow, LinearLayout.LayoutParams(0, WRAP_CONTENT, 3f))
-                addView(actions, LinearLayout.LayoutParams(0, WRAP_CONTENT, 4f).apply {
-                    marginStart = dp(12)
-                })
-            } else {
-                addView(addressRow, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
-                addView(actions, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply {
-                    topMargin = dp(6)
-                })
-            }
         }
+        browserAddressRow = addressRow
+        browserActionsRow = actions
+        arrangeBrowserToolbar(resources.configuration.screenWidthDp)
         statusView = TextView(this).apply { textSize = 12f; visibility = View.GONE; setPadding(16, 4, 16, 4) }
         statusDefaultColor = statusView.currentTextColor
         webHost = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
@@ -5172,25 +5189,19 @@ class MainActivity : ComponentActivity() {
         val close = uiAction("Fechar")
         val navControls = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         val displayControls = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        val compactPlayer = resources.configuration.screenWidthDp < 400
         close.contentDescription = "Fechar player e voltar ao navegador"
         rotate.contentDescription = "Girar orientação do vídeo"
         fullscreenButton.contentDescription = "Alternar modo de tela cheia"
         pipButton.contentDescription = "Abrir vídeo em janela flutuante PiP"
-        if (compactPlayer) {
-            // Duas ações por linha preservam os rótulos em aparelhos estreitos.
-            listOf(close, rotate).forEach { navControls.addView(it,
-                LinearLayout.LayoutParams(0, dp(48), 1f).apply { marginStart = dp(2); marginEnd = dp(2) }) }
-            val navSecondRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-            listOf(fullscreenButton, pipButton).forEach { navSecondRow.addView(it,
-                LinearLayout.LayoutParams(0, dp(48), 1f).apply { marginStart = dp(2); marginEnd = dp(2) }) }
-            outer.addView(navControls, LinearLayout.LayoutParams(MATCH_PARENT, dp(48)))
-            outer.addView(navSecondRow, LinearLayout.LayoutParams(MATCH_PARENT, dp(48)))
-        } else {
-            listOf(close, rotate, fullscreenButton, pipButton).forEach { navControls.addView(it,
-                LinearLayout.LayoutParams(0, dp(48), 1f).apply { marginStart = dp(2); marginEnd = dp(2) }) }
-            outer.addView(navControls, LinearLayout.LayoutParams(MATCH_PARENT, dp(48)))
-        }
+        // Duas ações por faixa em todas as orientações: nunca comprime os
+        // rótulos ao girar a Activity, que mantém configChanges ligado.
+        listOf(close, rotate).forEach { navControls.addView(it,
+            LinearLayout.LayoutParams(0, dp(48), 1f).apply { marginStart = dp(2); marginEnd = dp(2) }) }
+        val navSecondRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        listOf(fullscreenButton, pipButton).forEach { navSecondRow.addView(it,
+            LinearLayout.LayoutParams(0, dp(48), 1f).apply { marginStart = dp(2); marginEnd = dp(2) }) }
+        outer.addView(navControls, LinearLayout.LayoutParams(MATCH_PARENT, dp(48)))
+        outer.addView(navSecondRow, LinearLayout.LayoutParams(MATCH_PARENT, dp(48)))
         outer.addView(displayControls, LinearLayout.LayoutParams(MATCH_PARENT, dp(48)))
         // Controles de recuperação só aparecem durante espera prolongada ou falha.
         val recoveryRow = LinearLayout(this).apply {
@@ -6274,7 +6285,9 @@ class MainActivity : ComponentActivity() {
      */
     override fun onConfigurationChanged(newConfig: Configuration) {
         super.onConfigurationChanged(newConfig)
-        // A hierarquia usa MATCH_PARENT e pesos, então adapta-se automaticamente.
+        // ConfigChanges preserva a Activity: a barra precisa refazer as colunas
+        // ao girar, em vez de manter os pesos de sua orientação anterior.
+        arrangeBrowserToolbar(newConfig.screenWidthDp)
         // Solicita novo cálculo da área útil (barras do sistema/teclado) e desenho.
         ViewCompat.requestApplyInsets(window.decorView)
         webHost.requestLayout()
