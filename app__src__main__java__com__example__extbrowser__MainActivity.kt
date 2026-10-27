@@ -3256,15 +3256,7 @@ class MainActivity : ComponentActivity() {
             MenuAction("Reproduzir", "Janela flutuante", "Reprodução em Picture-in-Picture") { enterPip() },
             MenuAction("Fila", "Importar sequência", "Importar músicas e vídeos visíveis") { importNativeMediaQueue() },
             MenuAction("Fila", "Visualizar ou limpar fila", "${Media3PlaybackService.queueStatus()}") {
-                AlertDialog.Builder(this).setTitle("Fila de reprodução")
-                    .setMessage(Media3PlaybackService.queueStatus() +
-                        "\nA próxima fonte é obtida quando a mídia atual termina.")
-                    .setPositiveButton("Limpar fila") { _, _ ->
-                        queueSyncView = null
-                        queueSyncPage = null
-                        handler.removeCallbacks(queueSyncTicker)
-                        Media3PlaybackService.clearPendingQueue()
-                    }.setNegativeButton("Fechar", null).show()
+                showNativeQueue()
             },
             MenuAction("Histórico", "Histórico do player", "Retomar a partir da página original") { showPlayerHistory() },
             MenuAction("Configuração", "Opções de reprodução", "Segundo plano e recuperação") { showMediaOptions() },
@@ -3272,6 +3264,18 @@ class MainActivity : ComponentActivity() {
             MenuAction("Segurança", "Parar todas as mídias", "Interromper sessões e limpar fila",
                 true) { forceStopAllMediaFromMenu() }
         ))
+    }
+
+    private fun showNativeQueue() {
+        AlertDialog.Builder(this).setTitle("Fila de reprodução")
+            .setMessage(Media3PlaybackService.queueStatus() +
+                "\nA próxima fonte é obtida quando a mídia atual termina.")
+            .setPositiveButton("Limpar fila") { _, _ ->
+                queueSyncView = null
+                queueSyncPage = null
+                handler.removeCallbacks(queueSyncTicker)
+                Media3PlaybackService.clearPendingQueue()
+            }.setNegativeButton("Fechar", null).show()
     }
 
     private fun showMediaDiagnosticsMenu() {
@@ -5153,8 +5157,21 @@ class MainActivity : ComponentActivity() {
             orientation = LinearLayout.VERTICAL
             setBackgroundColor(0x55000000)
         }
+        val videoStage = FrameLayout(this).apply { setBackgroundColor(Color.BLACK) }
         val surface = android.view.SurfaceView(this)
-        panel.addView(surface, FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT, android.view.Gravity.CENTER))
+        videoStage.addView(surface, FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT,
+            android.view.Gravity.CENTER))
+        panel.addView(videoStage, FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT))
+        val mediaTitle = TextView(this).apply {
+            text = "Reprodução nativa"
+            textSize = 16f
+            setTypeface(null, android.graphics.Typeface.BOLD)
+            setTextColor(Color.WHITE)
+            maxLines = 2
+            ellipsize = android.text.TextUtils.TruncateAt.END
+            setPadding(dp(12), dp(10), dp(12), dp(4))
+        }
+        outer.addView(mediaTitle, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
         val info = TextView(this).apply {
             text = "Conectando ao player..."
             setTextColor(android.graphics.Color.WHITE)
@@ -5265,13 +5282,57 @@ class MainActivity : ComponentActivity() {
             if (playerPanel === panel && !closed) attentionBanner.visibility = View.GONE
         }
         var videoFullscreen = false
+        var playerLandscape = false
+        var wideNav: Boolean? = null
         val originalOrientation = requestedOrientation
         var videoWidth = 0
         var videoHeight = 0
         var filling = false
-        fun updateVideoAspect() {
+        fun layoutPlayerForWindow() {
             val width = panel.width
             val height = panel.height
+            if (width <= 0 || height <= 0) return
+            val overlay = width > height || videoFullscreen || isInPictureInPictureMode
+            playerLandscape = overlay
+            if (!overlay && outer.visibility == View.GONE) outer.visibility = View.VISIBLE
+            if (wideNav != overlay) {
+                wideNav = overlay
+                navControls.removeAllViews()
+                navSecondRow.removeAllViews()
+                val first = if (overlay) listOf(close, rotate, fullscreenButton, pipButton)
+                    else listOf(close, rotate)
+                first.forEach { navControls.addView(it,
+                    LinearLayout.LayoutParams(0, dp(48), 1f).apply {
+                        marginStart = dp(2); marginEnd = dp(2)
+                    }) }
+                navSecondRow.visibility = if (overlay) View.GONE else View.VISIBLE
+                if (!overlay) listOf(fullscreenButton, pipButton).forEach {
+                    navSecondRow.addView(it, LinearLayout.LayoutParams(0, dp(48), 1f).apply {
+                        marginStart = dp(2); marginEnd = dp(2)
+                    })
+                }
+            }
+            val stageHeight = if (overlay) height else
+                minOf(width * 9 / 16, (height - dp(350)).coerceAtLeast(dp(100)))
+                    .coerceIn(1, height)
+            val stageParams = videoStage.layoutParams as FrameLayout.LayoutParams
+            if (stageParams.height != stageHeight || stageParams.width != MATCH_PARENT) {
+                videoStage.layoutParams = FrameLayout.LayoutParams(MATCH_PARENT, stageHeight,
+                    android.view.Gravity.TOP)
+            }
+            val controlsHeight = if (overlay) height else (height - stageHeight).coerceAtLeast(1)
+            val controlsTop = if (overlay) 0 else stageHeight
+            val controlsParams = outer.layoutParams as FrameLayout.LayoutParams
+            if (controlsParams.height != controlsHeight || controlsParams.topMargin != controlsTop) {
+                outer.layoutParams = FrameLayout.LayoutParams(MATCH_PARENT, controlsHeight).apply {
+                    topMargin = controlsTop
+                }
+            }
+            outer.setBackgroundColor(if (overlay) 0x55000000 else 0xFF101820.toInt())
+        }
+        fun updateVideoAspect() {
+            val width = videoStage.width
+            val height = videoStage.height
             if (width <= 0 || height <= 0 || videoWidth <= 0 || videoHeight <= 0) return
             val ratio = videoWidth.toFloat() / videoHeight
             val boxRatio = width.toFloat() / height
@@ -5283,7 +5344,9 @@ class MainActivity : ComponentActivity() {
             if (current.width != w || current.height != h)
                 surface.layoutParams = FrameLayout.LayoutParams(w, h, android.view.Gravity.CENTER)
         }
-        panel.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ -> updateVideoAspect() }
+        panel.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ -> layoutPlayerForWindow() }
+        videoStage.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ -> updateVideoAspect() }
+        panel.post { layoutPlayerForWindow() }
         val attentionButton = uiAction("Tempo").apply {
             contentDescription = "Consultar tempo do Controle de Atenção"
             setOnClickListener {
@@ -5317,6 +5380,13 @@ class MainActivity : ComponentActivity() {
         displayControls.addView(aspectButton, LinearLayout.LayoutParams(0, dp(48), 1f).apply {
             marginStart = dp(2); marginEnd = dp(2)
         })
+        val queueButton = uiAction("Fila").apply {
+            contentDescription = "Consultar ou limpar a fila de reprodução"
+            setOnClickListener { showNativeQueue() }
+        }
+        displayControls.addView(queueButton, LinearLayout.LayoutParams(0, dp(48), 1f).apply {
+            marginStart = dp(2); marginEnd = dp(2)
+        })
         // Alterar o enquadramento nunca deve reativar áudio de uma sessão limitada.
         fun enforceAttentionForPlayerControls(): Boolean {
             val page = player?.currentMediaItem?.mediaMetadata?.extras
@@ -5348,16 +5418,17 @@ class MainActivity : ComponentActivity() {
             // Confere de novo depois que a SurfaceView atualizar o enquadramento.
             panel.postDelayed({ if (!closed) enforceAttentionForPlayerControls() }, 250L)
         }
-        val hideControls = Runnable { if (!closed && player?.isPlaying == true &&
+        val hideControls = Runnable { if (!closed && playerLandscape && player?.isPlaying == true &&
             !seeking && !isInPictureInPictureMode) outer.visibility = View.GONE }
         fun showControls() {
             if (!isInPictureInPictureMode) outer.visibility = View.VISIBLE
             handler.removeCallbacks(hideControls)
-            if (!videoFullscreen && player?.isPlaying == true)
+            if (playerLandscape && !videoFullscreen && player?.isPlaying == true)
                 handler.postDelayed(hideControls, 3500L)
         }
         fun setVideoFullscreen(enabled: Boolean) {
             videoFullscreen = enabled
+            layoutPlayerForWindow()
             val visibility = if (enabled) View.GONE else View.VISIBLE
             outer.visibility = visibility
             if (!enabled) showControls()
@@ -5370,10 +5441,13 @@ class MainActivity : ComponentActivity() {
             fullscreenButton.text = if (enabled) "Sair tela cheia" else "Tela cheia"
         }
         surface.setOnClickListener { showControls() }
-        outer.setOnClickListener { if (outer.visibility == View.VISIBLE) {
-            outer.visibility = View.GONE
-            handler.removeCallbacks(hideControls)
-        } else showControls() }
+        outer.setOnClickListener {
+            if (!playerLandscape) return@setOnClickListener
+            if (outer.visibility == View.VISIBLE) {
+                outer.visibility = View.GONE
+                handler.removeCallbacks(hideControls)
+            } else showControls()
+        }
 
         retryLoadButton.setOnClickListener {
             val c = player ?: return@setOnClickListener
@@ -5480,6 +5554,8 @@ class MainActivity : ComponentActivity() {
                         attentionReminderShown = false
                     }
                     val duration = c.duration
+                    mediaTitle.text = c.currentMediaItem?.mediaMetadata?.title?.toString()
+                        ?.takeIf { it.isNotBlank() } ?: "Reprodução nativa"
                     val pos = c.currentPosition.coerceAtLeast(0L)
                     val total = if (duration > 0L && duration != androidx.media3.common.C.TIME_UNSET)
                         duration else 0L
@@ -5529,7 +5605,7 @@ class MainActivity : ComponentActivity() {
                         c.isPlaying -> "Pausar reprodução"
                         else -> "Iniciar ou retomar reprodução"
                     }
-                    if (c.isPlaying && outer.visibility == View.VISIBLE &&
+                    if (playerLandscape && c.isPlaying && outer.visibility == View.VISIBLE &&
                         !handler.hasCallbacks(hideControls) && !videoFullscreen)
                         handler.postDelayed(hideControls, 3500L)
                     handler.postDelayed(this, 500L)
