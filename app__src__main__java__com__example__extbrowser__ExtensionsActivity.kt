@@ -3,6 +3,7 @@ package com.example.extbrowser
 import android.app.AlertDialog
 import android.content.Intent
 import android.graphics.Color
+import android.graphics.drawable.GradientDrawable
 import android.os.Bundle
 import android.view.Gravity
 import android.view.ViewGroup.LayoutParams.MATCH_PARENT
@@ -13,6 +14,7 @@ import android.widget.ScrollView
 import android.widget.Switch
 import android.widget.TextView
 import android.widget.Toast
+import android.content.res.Configuration
 import androidx.activity.ComponentActivity
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.view.ViewCompat
@@ -52,6 +54,7 @@ class ExtensionsActivity : ComponentActivity() {
         }
         val buttons = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
             addView(btnZip, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
             addView(btnDir, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
         }
@@ -79,6 +82,9 @@ class ExtensionsActivity : ComponentActivity() {
             addView(hint)
             addView(scroll, LinearLayout.LayoutParams(MATCH_PARENT, 0, 1f))
         }
+        title.setTypeface(null, android.graphics.Typeface.BOLD)
+        hint.alpha = 0.82f
+        list.setPadding(0, dp(8), 0, dp(8))
         setContentView(root)
 
         val pad = dp(16)
@@ -95,38 +101,58 @@ class ExtensionsActivity : ComponentActivity() {
         list.removeAllViews()
         val items = manager.entries()
         if (items.isEmpty()) {
-            list.addView(TextView(this).apply { text = "Nenhuma extensão instalada." })
+            list.addView(TextView(this).apply {
+                text = "Nenhuma extensão instalada.\nImporte um arquivo ZIP ou uma pasta para começar."
+                textSize = 15f
+                setPadding(dp(16), dp(24), dp(16), dp(24))
+                background = cardBackground()
+            })
         }
         for (e in items) {
             val row = LinearLayout(this).apply {
-                orientation = LinearLayout.HORIZONTAL
-                gravity = Gravity.CENTER_VERTICAL
-                setPadding(0, dp(6), 0, dp(6))
+                orientation = LinearLayout.VERTICAL
+                setPadding(dp(16), dp(12), dp(16), dp(12))
+                background = cardBackground()
             }
             if (e.error != null) {
                 val msg = TextView(this).apply {
-                    text = e.id + ": " + e.error
-                    setTextColor(Color.RED)
+                    text = e.name + " · erro: " + e.error
+                    setTextColor(if (isNightMode()) Color.rgb(255, 145, 145) else Color.rgb(172, 24, 24))
+                    textSize = 14f
                 }
-                row.addView(msg, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
+                row.addView(msg, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
             } else {
                 val sw = Switch(this).apply {
                     text = e.name
                     isChecked = e.enabled
+                    minHeight = dp(48)
                     setOnCheckedChangeListener { _, on ->
                         manager.setEnabled(e.id, on)
                         markChanged()
                     }
                 }
-                row.addView(sw, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
+                row.addView(sw, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
             }
             val del = Button(this).apply {
                 text = "Remover"
+                contentDescription = "Remover extensão ${e.name}"
+                minHeight = dp(48)
                 setOnClickListener { confirmRemove(e) }
             }
-            row.addView(del)
-            list.addView(row)
+            row.addView(del, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
+            list.addView(row, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply {
+                bottomMargin = dp(10)
+            })
         }
+    }
+
+    private fun isNightMode(): Boolean =
+        (resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK) == Configuration.UI_MODE_NIGHT_YES
+
+    private fun cardBackground() = GradientDrawable().apply {
+        setColor(if (isNightMode()) Color.rgb(39, 43, 52) else Color.rgb(245, 247, 251))
+        cornerRadius = dp(16).toFloat()
+        setStroke(dp(1), if (isNightMode()) Color.rgb(69, 74, 84) else Color.rgb(221, 227, 235))
     }
 
     private fun confirmRemove(e: ExtEntry) {

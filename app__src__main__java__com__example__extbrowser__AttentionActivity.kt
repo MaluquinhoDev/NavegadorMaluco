@@ -2,6 +2,10 @@ package com.example.extbrowser
 
 import android.app.AlertDialog
 import android.app.TimePickerDialog
+import android.content.res.Configuration
+import android.graphics.Color
+import android.graphics.Typeface
+import android.graphics.drawable.GradientDrawable
 import android.os.Bundle
 import android.text.InputType
 import android.view.ViewGroup.LayoutParams.MATCH_PARENT
@@ -39,6 +43,7 @@ class AttentionActivity : ComponentActivity() {
         content.addView(TextView(this).apply {
             text = "Controle de atenção"
             textSize = 22f
+            setTypeface(null, Typeface.BOLD)
             setPadding(0, 0, 0, dp(4))
         })
         content.addView(TextView(this).apply {
@@ -52,7 +57,11 @@ class AttentionActivity : ComponentActivity() {
             textSize = 18f
             setPadding(0, dp(8), 0, dp(8))
         })
-        rewardStatus = TextView(this).apply { textSize = 15f }
+        rewardStatus = TextView(this).apply {
+            textSize = 15f
+            setPadding(dp(12), dp(12), dp(12), dp(12))
+            background = panelBackground()
+        }
         content.addView(rewardStatus)
         taskList = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         content.addView(taskList)
@@ -130,6 +139,7 @@ class AttentionActivity : ComponentActivity() {
             inputType = type
             setSingleLine()
             setText(initial)
+            minHeight = dp(48)
         }
         parent.addView(et, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
         return et
@@ -145,11 +155,15 @@ class AttentionActivity : ComponentActivity() {
             hint = "--:--"
             isFocusable = false
             isClickable = true
+            minHeight = dp(48)
+            contentDescription = label
             setSingleLine()
             setOnClickListener { pickTime(this) }
         }
         val clear = Button(this).apply {
             text = "Limpar"
+            minHeight = dp(48)
+            contentDescription = "Limpar $label"
             setOnClickListener { et.setText("") }
         }
         val row = LinearLayout(this).apply {
@@ -196,9 +210,15 @@ class AttentionActivity : ComponentActivity() {
         taskList.removeAllViews()
         for (task in AttentionRewards.tasks()) {
             val completed = task.completedDay == java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US).format(java.util.Date())
-            val row = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(0, dp(5), 0, dp(5)) }
+            val row = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                setPadding(dp(12), dp(12), dp(12), dp(12))
+                background = panelBackground()
+            }
             row.addView(TextView(this).apply {
                 text = (if (completed) "✓ " else "○ ") + task.title + " · +${task.minutes} min"
+                textSize = 16f
+                setTypeface(null, Typeface.BOLD)
             })
             row.addView(Button(this).apply {
                 text = if (completed) "Concluída hoje" else "Concluir tarefa"
@@ -213,12 +233,18 @@ class AttentionActivity : ComponentActivity() {
                 text = "Excluir tarefa"
                 setOnClickListener { AttentionRewards.remove(task.id); render() }
             })
-            taskList.addView(row)
+            taskList.addView(row, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply {
+                topMargin = dp(8)
+            })
         }
         list.removeAllViews()
         val sites = Attention.sites()
         if (sites.isEmpty()) {
-            list.addView(TextView(this).apply { text = "Nenhum site configurado." })
+            list.addView(TextView(this).apply {
+                text = "Nenhum site configurado. Adicione um domínio abaixo para definir limites."
+                setPadding(dp(12), dp(16), dp(12), dp(16))
+                background = panelBackground()
+            })
             return
         }
         for (s in sites) {
@@ -233,11 +259,13 @@ class AttentionActivity : ComponentActivity() {
 
             val card = LinearLayout(this).apply {
                 orientation = LinearLayout.VERTICAL
-                setPadding(0, dp(8), 0, dp(8))
+                setPadding(dp(12), dp(12), dp(12), dp(12))
+                background = panelBackground()
             }
             card.addView(TextView(this).apply {
                 text = s.domain
                 textSize = 16f
+                setTypeface(null, Typeface.BOLD)
             })
             card.addView(TextView(this).apply { text = "$daily · $session · $hours" })
             card.addView(TextView(this).apply { text = "Uso hoje: $used" })
@@ -255,8 +283,17 @@ class AttentionActivity : ComponentActivity() {
                 text = "Remover"
                 setOnClickListener { confirmRemove(s) }
             })
-            list.addView(card)
+            list.addView(card, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply {
+                bottomMargin = dp(10)
+            })
         }
+    }
+
+    private fun panelBackground() = GradientDrawable().apply {
+        val dark = (resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK) == Configuration.UI_MODE_NIGHT_YES
+        setColor(if (dark) Color.rgb(39, 43, 52) else Color.rgb(245, 247, 251))
+        setStroke(dp(1), if (dark) Color.rgb(69, 74, 84) else Color.rgb(221, 227, 235))
+        cornerRadius = dp(16).toFloat()
     }
 
     private fun confirmRemove(s: AttentionSite) {
