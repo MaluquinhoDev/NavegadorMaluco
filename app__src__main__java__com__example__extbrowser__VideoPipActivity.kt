@@ -12,6 +12,7 @@ import android.view.SurfaceView
 import android.view.View
 import android.widget.FrameLayout
 import android.widget.TextView
+import kotlin.math.roundToInt
 import androidx.core.content.ContextCompat
 import androidx.media3.session.MediaController
 import androidx.media3.session.SessionToken
@@ -51,6 +52,11 @@ class VideoPipActivity : Activity() {
             text = "Conectando vídeo..."
             setTextColor(android.graphics.Color.WHITE)
             gravity = Gravity.CENTER
+            textSize = 16f
+            setPadding(24, 24, 24, 24)
+            isClickable = true
+            isFocusable = true
+            setOnClickListener { restoreMainPlayer() }
         }
         root.addView(info, FrameLayout.LayoutParams(-1, -1))
         setContentView(root)
@@ -61,7 +67,7 @@ class VideoPipActivity : Activity() {
             if (isFinishing || isDestroyed) return@addListener
             val c = runCatching { future.get() }.getOrNull()
             if (c?.currentMediaItem == null) {
-                info.text = "Nenhum vídeo ativo"
+                info.text = "Nenhum vídeo ativo\nToque para voltar ao navegador"
                 return@addListener
             }
             controller = c
@@ -73,21 +79,30 @@ class VideoPipActivity : Activity() {
 
     private fun enterVideoPip() {
         if (!packageManager.hasSystemFeature("android.software.picture_in_picture")) {
-            info.text = "PiP indisponível neste dispositivo"
+            info.text = "PiP indisponível neste dispositivo\nToque para voltar ao player"
             info.visibility = View.VISIBLE
             return
         }
         val params = PictureInPictureParams.Builder()
-            .setAspectRatio(Rational(16, 9))
+            .setAspectRatio(currentVideoRatio())
             .setAutoEnterEnabled(false)
             .setSeamlessResizeEnabled(false)
             .build()
         val entered = runCatching { enterPictureInPictureMode(params) }.getOrDefault(false)
         if (!entered) {
-            info.text = "Não foi possível abrir a janela PiP"
-            info.visibility = View.VISIBLE
+            info.text = "Não foi possível abrir a janela PiP\nToque para voltar ao player"
             info.visibility = View.VISIBLE
         }
+    }
+
+    /** Respeita vídeos verticais e quadrados, com proporção aceita pela janela PiP. */
+    private fun currentVideoRatio(): Rational {
+        val size = controller?.videoSize ?: return Rational(16, 9)
+        if (size.width <= 0 || size.height <= 0) return Rational(16, 9)
+        val measuredRatio = size.width.toFloat() * size.pixelWidthHeightRatio / size.height
+        if (!measuredRatio.isFinite() || measuredRatio <= 0f) return Rational(16, 9)
+        val ratio = measuredRatio.coerceIn(0.43f, 2.3f)
+        return Rational((ratio * 1000f).roundToInt().coerceAtLeast(1), 1000)
     }
 
     /** Expandir o PiP restaura diretamente o player principal, sem tela intermediária. */

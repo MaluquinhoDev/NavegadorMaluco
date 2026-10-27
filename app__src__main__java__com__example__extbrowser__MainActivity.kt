@@ -1060,7 +1060,7 @@ class MainActivity : ComponentActivity() {
                 setPadding(dp(12), dp(8), dp(12), dp(8))
                 setBackgroundColor(0xFF202B3A.toInt())
             }
-            val title = TextView(this@MainActivity).apply {
+            miniTitle = TextView(this@MainActivity).apply {
                 text = "▶ Mídia em reprodução"
                 setTextColor(android.graphics.Color.WHITE)
                 maxLines = 1
@@ -1068,7 +1068,7 @@ class MainActivity : ComponentActivity() {
                 contentDescription = "Abrir player de mídia"
                 setOnClickListener { showNativeVideoPlayer() }
             }
-            miniPlayerBar.addView(title, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
+            miniPlayerBar.addView(miniTitle, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
             miniPlayButton = uiAction("Pausar").apply {
                 text = "Pausar"
                 setOnClickListener {
@@ -4489,6 +4489,7 @@ class MainActivity : ComponentActivity() {
     }
 
     private lateinit var miniPlayerBar: LinearLayout
+    private lateinit var miniTitle: TextView
     private var miniController: MediaController? = null
     private var miniControllerFuture: com.google.common.util.concurrent.ListenableFuture<MediaController>? = null
     private val miniRefresh = object : Runnable {
@@ -4502,7 +4503,14 @@ class MainActivity : ComponentActivity() {
                     active, playerPanel != null, VideoPipActivity.active)
                 miniPlayerBar.visibility = if (display == PlayerDisplayCoordinator.Mode.MINI)
                     View.VISIBLE else View.GONE
+                val trackTitle = c.currentMediaItem?.mediaMetadata?.title?.toString()
+                    ?.takeIf { it.isNotBlank() }
+                    ?: "Mídia em reprodução"
+                miniTitle.text = "▶ $trackTitle"
+                miniTitle.contentDescription = "Abrir player: $trackTitle"
                 miniPlayButton.text = if (c.isPlaying) "Pausar" else "Play"
+                miniPlayButton.contentDescription = if (c.isPlaying) "Pausar reprodução"
+                    else "Retomar reprodução"
             }
             handler.postDelayed(this, 1000L)
         }
@@ -5134,9 +5142,23 @@ class MainActivity : ComponentActivity() {
             text = "Conectando ao player..."
             setTextColor(android.graphics.Color.WHITE)
             gravity = android.view.Gravity.CENTER
+            textSize = 14f
+            setPadding(dp(12), dp(12), dp(12), dp(12))
         }
         outer.addView(info, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
-        val progress = android.widget.SeekBar(this)
+        val progress = android.widget.SeekBar(this).apply {
+            minHeight = dp(48)
+            contentDescription = "Posição da reprodução"
+            isEnabled = false
+        }
+        val timeLabel = TextView(this).apply {
+            text = "00:00 / --:--"
+            textSize = 13f
+            setTextColor(Color.WHITE)
+            gravity = android.view.Gravity.CENTER
+            setPadding(dp(8), 0, dp(8), dp(2))
+            importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+        }
         val controls = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = android.view.Gravity.CENTER
@@ -5191,7 +5213,10 @@ class MainActivity : ComponentActivity() {
         outer.addView(View(this), LinearLayout.LayoutParams(1, 0, 1f))
         listOf(back, play, forward).forEach { controls.addView(it,
             LinearLayout.LayoutParams(0, dp(48), 1f).apply { marginStart = dp(3); marginEnd = dp(3) }) }
+        back.contentDescription = "Voltar 10 segundos"
+        forward.contentDescription = "Avançar 10 segundos"
         outer.addView(controls, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
+        outer.addView(timeLabel, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
         outer.addView(progress, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
         panel.addView(outer, FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT))
         // Aviso independente dos controles que podem sumir na tela cheia.
@@ -5452,15 +5477,22 @@ class MainActivity : ComponentActivity() {
                         progress.progress = if (total > 0L)
                             ((pos.coerceAtMost(total) * 1000L) / total).toInt() else 0
                     }
+                    progress.isEnabled = total > 0L && !ended
                     fun clock(ms: Long): String {
                         val sec = ms.coerceAtLeast(0L) / 1000L
                         return "%02d:%02d".format(sec / 60, sec % 60)
                     }
-                    info.text = if (ended)
+                    timeLabel.text = if (total > 0L) "${clock(pos)} / ${clock(total)}"
+                        else "${clock(pos)} / --:--"
+                    progress.contentDescription = if (total > 0L)
+                        "Posição da reprodução: ${clock(pos)} de ${clock(total)}"
+                        else "Reprodução ao vivo ou duração desconhecida"
+                    val statusText = if (ended)
                         "Controle de Atenção: acesso temporariamente limitado"
                     else playbackIssue ?: Media3PlaybackService.bufferingNotice() ?:
-                        if (total > 0L) "${clock(pos)} / ${clock(total)}"
-                        else "Áudio/vídeo nativo · ${clock(pos)}"
+                        ""
+                    info.text = statusText
+                    info.visibility = if (statusText.isBlank()) View.GONE else View.VISIBLE
                     val stalled = Media3PlaybackService.bufferingNotice() != null
                     val showRecovery = !ended && c.currentMediaItem != null &&
                         (stalled || c.playerError != null)
@@ -5480,6 +5512,11 @@ class MainActivity : ComponentActivity() {
                         c.playerError != null -> "Tentar novamente"
                         c.isPlaying -> "Pausar"
                         else -> "Reproduzir"
+                    }
+                    play.contentDescription = when {
+                        c.playerError != null -> "Tentar reproduzir novamente"
+                        c.isPlaying -> "Pausar reprodução"
+                        else -> "Iniciar ou retomar reprodução"
                     }
                     if (c.isPlaying && outer.visibility == View.VISIBLE &&
                         !handler.hasCallbacks(hideControls) && !videoFullscreen)
