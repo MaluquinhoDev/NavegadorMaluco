@@ -94,6 +94,8 @@ class MainActivity : ComponentActivity() {
     private data class ParkedTab(val url: String, val title: String, val constellation: String,
         val id: String = UUID.randomUUID().toString(), val profile: String = "")
     private val parkedTabs = mutableListOf<ParkedTab>()
+    private val pinnedTabIds = mutableSetOf<String>()
+    private var automaticParkingInProgress = false
     private val constellations = mutableListOf("Exploração", "Estudos", "Entretenimento", "Trabalho")
 
     private fun restoreConstellationNames() {
@@ -1008,6 +1010,7 @@ class MainActivity : ComponentActivity() {
         }
 
         val prefs = getSharedPreferences("tabs", MODE_PRIVATE)
+        pinnedTabIds.addAll(prefs.getStringSet("pinned_tab_ids_v1", emptySet()).orEmpty())
         restoreConstellationNames()
         val savedConstellations = prefs.getString("constellations_v1", null)
         if (savedConstellations != null) {
@@ -1537,11 +1540,11 @@ class MainActivity : ComponentActivity() {
                 }
                 if (tabs.size >= BrowserTabPolicy.MAX_RESIDENT_TABS) {
                     recordGoogleLoginAudit("Popup recusado: limite de WebViews residentes", source?.url, source)
-                    // O transporte WebView deve ser imediato; não o guardamos para
-                    // depois do diálogo. Usuário libera uma vaga e repete o clique.
+                    // O transporte WebView deve ser imediato. Liberar vaga em segundo
+                    // plano evita a seleção manual; o gesto precisa ser repetido.
                     handler.post {
                         if (!isFinishing && !isDestroyed)
-                            selectTabToPark("Liberar WebView para abrir janela do site") {
+                            withResidentSlot("Liberar WebView para abrir janela do site") {
                                 Toast.makeText(this@MainActivity,
                                     "Vaga liberada. Toque novamente no link para abrir a janela.",
                                     Toast.LENGTH_LONG).show()
@@ -1900,11 +1903,104 @@ class MainActivity : ComponentActivity() {
             Toast.makeText(this, "Limite de $MAX_TABS abas", Toast.LENGTH_LONG).show()
             return
         }
-        if (tabs.size >= BrowserTabPolicy.MAX_RESIDENT_TABS) {
-            selectTabToPark("Liberar memória para nova aba") {
-                openNewResidentTab(url, profile); onCreated?.invoke()
+        withResidentSlot("Liberar memória para nova aba") {
+            openNewResidentTab(url, profile); onCreated?.invoke()
+        }
+    }
+
+    private fun persistPinnedTabs() {
+        getSharedPreferences("tabs", MODE_PRIVATE).edit()
+            .putStringSet("pinned_tab_ids_v1", pinnedTabIds.toSet()).apply()
+    }
+
+    private fun toggleTabProtection(id: String) {
+        if (!pinnedTabIds.add(id)) pinnedTabIds.remove(id)
+        persistPinnedTabs()
+        Toast.makeText(this, if (id in pinnedTabIds) "Aba protegida da hibernação automática"
+            else "Aba disponível para hibernação automática", Toast.LENGTH_SHORT).show()
+    }
+
+    /** Sonda conservadora: resultado incerto não autoriza descartar uma WebView. */
+    private fun checkAutomaticParkingSafety(view: WebView, done: (Boolean) -> Unit) {
+        val script = """(function(){try{
+            const media=Array.from(document.querySelectorAll('audio,video'))
+                .some(m=>!m.paused&&!m.ended)||
+                !!(navigator.mediaSession&&navigator.mediaSession.playbackState==='playing');
+            const dirty=Array.from(document.querySelectorAll('input,textarea,select')).some(el=>{
+                if(el.type==='file')return !!(el.files&&el.files.length);
+                if(el.type==='checkbox'||el.type==='radio')return el.checked!==el.defaultChecked;
+                if(el.tagName==='SELECT')return Array.from(el.options).some(o=>o.selected!==o.defaultSelected);
+                return el.value!==el.defaultValue;
+            });
+            const editor=!!document.querySelector('[contenteditable="true"],[contenteditable=""]');
+            const embedded=Array.from(document.querySelectorAll('iframe')).some(f=>
+                /youtube|music|player|video|meet|zoom|teams/i.test(f.src||'')||
+                /autoplay|microphone|camera/i.test(f.getAttribute('allow')||''));
+            return JSON.stringify({safe:!(media||dirty||editor||embedded||window.onbeforeunload)});
+        }catch(e){return JSON.stringify({safe:false});}})()"""
+        var finished = false
+        val timeout = Runnable {
+            if (!finished) { finished = true; done(false) }
+        }
+        handler.postDelayed(timeout, 1800L)
+        runCatching {
+            view.evaluateJavascript(script) { result ->
+                if (finished) return@evaluateJavascript
+                finished = true
+                handler.removeCallbacks(timeout)
+                val safe = runCatching {
+                    org.json.JSONObject(JSONArray("[$result]").getString(0))
+                        .optBoolean("safe", false)
+                }.getOrDefault(false)
+                done(safe)
             }
-        } else { openNewResidentTab(url, profile); onCreated?.invoke() }
+        }.onFailure {
+            if (!finished) { finished = true; handler.removeCallbacks(timeout); done(false) }
+        }
+    }
+
+    /** LRU com exceções para áudio, formulários, abas protegidas e pop-ups em trânsito. */
+    private fun withResidentSlot(reason: String, afterAvailable: () -> Unit) {
+        if (tabs.size < BrowserTabPolicy.MAX_RESIDENT_TABS) { afterAvailable(); return }
+        if (automaticParkingInProgress) {
+            Toast.makeText(this, "Verificando abas inativas…", Toast.LENGTH_SHORT).show()
+            return
+        }
+        automaticParkingInProgress = true
+        val candidates = tabs.filter { tab ->
+            tab.id != tabs.getOrNull(activeIndex)?.id && tab.id !in pinnedTabIds &&
+                tab.view !in pendingPopups && tab.view !== queueSyncView &&
+                tab.view !== media3OriginView
+        }.sortedBy { it.lastUsed }.map { it.id }
+        fun manualFallback() {
+            automaticParkingInProgress = false
+            if (!isDestroyed && !isFinishing) selectTabToPark(reason, afterAvailable)
+        }
+        fun tryCandidate(position: Int) {
+            if (isDestroyed || isFinishing) { automaticParkingInProgress = false; return }
+            if (position >= candidates.size) { manualFallback(); return }
+            val id = candidates[position]
+            val index = tabs.indexOfFirst { it.id == id }
+            if (index < 0 || index == activeIndex || id in pinnedTabIds) {
+                tryCandidate(position + 1); return
+            }
+            val view = tabs[index].view
+            checkAutomaticParkingSafety(view) { safe ->
+                val current = tabs.indexOfFirst { it.id == id }
+                if (safe && current >= 0 && current != activeIndex &&
+                    view === tabs[current].view && id !in pinnedTabIds &&
+                    view !== queueSyncView && view !== media3OriginView) {
+                    val previousCount = tabs.size
+                    parkTab(current)
+                    automaticParkingInProgress = false
+                    if (tabs.size < previousCount) {
+                        Toast.makeText(this, "Aba inativa hibernada automaticamente", Toast.LENGTH_SHORT).show()
+                        afterAvailable()
+                    } else manualFallback()
+                } else tryCandidate(position + 1)
+            }
+        }
+        tryCandidate(0)
     }
 
     private fun openNewResidentTab(url: String, profile: String = "") {
@@ -1914,7 +2010,7 @@ class MainActivity : ComponentActivity() {
         showActive()
     }
 
-    /** Hibernar descarta o DOM e preserva endereço, título e constelação. Nunca é automático. */
+    /** Hibernar descarta o DOM e preserva endereço, título e constelação. */
     private fun parkTab(index: Int) {
         if (index !in tabs.indices || index == activeIndex) return
         val tab = tabs.removeAt(index)
@@ -1929,6 +2025,7 @@ class MainActivity : ComponentActivity() {
         synchronized(mediaCandidateLock) { mediaCandidates.remove(tab.view) }
         tab.view.stopLoading()
         tab.view.onPause()
+        (tab.view.parent as? android.view.ViewGroup)?.removeView(tab.view)
         tab.view.destroy()
         if (index < activeIndex) activeIndex--
         persistTabs()
@@ -1978,19 +2075,20 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun restoreParkedTab(index: Int) {
-        if (index !in parkedTabs.indices) return
+        val id = parkedTabs.getOrNull(index)?.id ?: return
         val restore = {
-            val stored = parkedTabs.removeAt(index)
-            val tab = Tab(createWebView(stored.profile), stored.title, stored.url,
-                stored.constellation, id = stored.id, profile = stored.profile)
-            tabs.add(tab)
-            restoreTabNavigation(tab)
-            activeIndex = tabs.lastIndex
-            showActive()
+            val currentIndex = parkedTabs.indexOfFirst { it.id == id }
+            if (currentIndex >= 0) {
+                val stored = parkedTabs.removeAt(currentIndex)
+                val tab = Tab(createWebView(stored.profile), stored.title, stored.url,
+                    stored.constellation, id = stored.id, profile = stored.profile)
+                tabs.add(tab)
+                restoreTabNavigation(tab)
+                activeIndex = tabs.lastIndex
+                showActive()
+            }
         }
-        if (tabs.size >= BrowserTabPolicy.MAX_RESIDENT_TABS)
-            selectTabToPark("Escolha uma aba para hibernar") { restore() }
-        else restore()
+        withResidentSlot("Liberar memória para restaurar aba") { restore() }
     }
 
     private fun moveTabToConstellation(id: String) {
@@ -2007,6 +2105,8 @@ class MainActivity : ComponentActivity() {
 
     private fun closeTab(index: Int) {
         val tab = tabs.removeAt(index)
+        pinnedTabIds.remove(tab.id)
+        persistPinnedTabs()
         deleteTabNavigation(tab.id)
         attentionBlockedSources.remove(tab.view)
         if (webHost.childCount > 0 && webHost.getChildAt(0) === tab.view) webHost.removeView(tab.view)
@@ -2042,7 +2142,8 @@ class MainActivity : ComponentActivity() {
         })
         root.addView(header)
         root.addView(TextView(this).apply {
-            text = "$totalTabCount de $MAX_TABS abas · ${tabs.size} em memória · ${parkedTabs.size} hibernadas"
+            text = "$totalTabCount de $MAX_TABS abas · ${tabs.size} em memória · ${parkedTabs.size} hibernadas\n" +
+                "Até 6 em memória · as menos usadas são hibernadas automaticamente quando seguras"
             textSize = 13f
             setTextColor(uiMuted())
             setPadding(0, dp(4), 0, dp(12))
@@ -2137,11 +2238,12 @@ class MainActivity : ComponentActivity() {
                         .take(100)
                     val url = resident?.view?.url ?: resident?.url ?: parked?.url ?: ""
                     val active = resident?.id == tabs.getOrNull(activeIndex)?.id
-                    val status = when {
+                    val baseStatus = when {
                         active -> "Em primeiro plano"
                         resident != null -> "Em memória · reprodução não verificada"
                         else -> "Hibernada · recarrega ao abrir"
                     }
+                    val status = if (id in pinnedTabIds) "Protegida · $baseStatus" else baseStatus
                     val row = LinearLayout(this).apply {
                         orientation = LinearLayout.HORIZONTAL
                         gravity = android.view.Gravity.CENTER_VERTICAL
@@ -2189,13 +2291,17 @@ class MainActivity : ComponentActivity() {
                         setOnClickListener {
                             dialog.dismiss()
                             val live = tabs.any { it.id == id }
-                            val actions = if (live) arrayOf("Mover de constelação", "Hibernar", "Fechar aba")
-                                else arrayOf("Mover de constelação", "Excluir hibernada")
+                            val protection = if (id in pinnedTabIds) "Permitir hibernação automática"
+                                else "Proteger da hibernação automática"
+                            val actions = if (live) arrayOf("Mover de constelação", protection,
+                                "Hibernar agora", "Fechar aba")
+                                else arrayOf("Mover de constelação", protection, "Excluir hibernada")
                             AlertDialog.Builder(this@MainActivity).setTitle(name)
                                 .setItems(actions) { _, selected ->
                                     when (selected) {
                                         0 -> moveTabToConstellation(id)
-                                        1 -> if (live) {
+                                        1 -> toggleTabProtection(id)
+                                        2 -> if (live) {
                                             if (tabs.getOrNull(activeIndex)?.id == id)
                                                 Toast.makeText(this@MainActivity,
                                                     "Abra outra aba antes de hibernar a atual", Toast.LENGTH_LONG).show()
@@ -2207,11 +2313,12 @@ class MainActivity : ComponentActivity() {
                                                 parkedTabs.indexOfFirst { it.id == id }
                                                     .takeIf { it >= 0 }?.let { index ->
                                                         parkedTabs.removeAt(index)
+                                                        pinnedTabIds.remove(id); persistPinnedTabs()
                                                         deleteTabNavigation(id)
                                                         persistTabs(); updateProfileIndicator()
                                                     }
                                             }.setNegativeButton("Cancelar", null).show()
-                                        2 -> AlertDialog.Builder(this@MainActivity)
+                                        3 -> AlertDialog.Builder(this@MainActivity)
                                             .setTitle("Fechar aba?")
                                             .setMessage(name)
                                             .setPositiveButton("Fechar") { _, _ ->
