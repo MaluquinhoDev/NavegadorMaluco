@@ -2640,6 +2640,68 @@ class MainActivity : ComponentActivity() {
             }.setNegativeButton("Fechar", null).show()
     }
 
+    /** Importa apenas itens visíveis na sequência do site, sem cookies nem tokens. */
+    private fun importNativeMediaQueue() {
+        val view = webView
+        val page = view.url.orEmpty()
+        if (!isYouTubeMusic(page) && youtubeVideoId(page) == null) {
+            Toast.makeText(this, "Abra uma fila do YouTube ou YouTube Music.", Toast.LENGTH_LONG).show()
+            return
+        }
+        val script = """(function(){
+            const valid=/^[A-Za-z0-9_-]{11}$/;
+            const music=location.hostname==='music.youtube.com';
+            const roots=music ?
+                ['ytmusic-player-queue','ytmusic-player-page #automix','ytmusic-section-list-renderer'] :
+                ['ytd-playlist-panel-renderer','ytd-playlist-video-list-renderer'];
+            const found=[], seen=new Set();
+            for(const selector of roots){
+                const root=document.querySelector(selector);
+                if(!root) continue;
+                for(const a of root.querySelectorAll('a[href*="watch"]')){
+                    try {
+                        const u=new URL(a.href, location.href);
+                        const id=u.searchParams.get('v');
+                        if(id && valid.test(id) && !seen.has(id)){
+                            seen.add(id); found.push(id);
+                            if(found.length>=100) break;
+                        }
+                    }catch(e){}
+                }
+                if(found.length) break;
+            }
+            return JSON.stringify({ids:found,music:music});
+        })()"""
+        view.evaluateJavascript(script) { encoded ->
+            if (isDestroyed || isFinishing || view !== webView || view.url != page)
+                return@evaluateJavascript
+            val data = runCatching {
+                org.json.JSONObject(org.json.JSONArray("[$encoded]").getString(0))
+            }.getOrNull()
+            val array = data?.optJSONArray("ids")
+            val ids = (0 until (array?.length() ?: 0)).mapNotNull { i ->
+                array?.optString(i)?.takeIf { it.matches(Regex("[A-Za-z0-9_-]{11}")) }
+            }.distinct()
+            if (ids.isEmpty()) {
+                AlertDialog.Builder(this).setTitle("Fila de reprodução")
+                    .setMessage("Nenhuma sequência acessível foi encontrada na página. Abra a fila ou playlist do site e mantenha a lista visível.")
+                    .setPositiveButton("OK", null).show()
+                return@evaluateJavascript
+            }
+            AlertDialog.Builder(this).setTitle("Importar fila · ${ids.size} faixa(s)")
+                .setMessage("Os itens visíveis serão adicionados à fila nativa. A fonte será extraída individualmente perto da reprodução. Sem repetição automática.")
+                .setPositiveButton("Adicionar") { _, _ ->
+                    val currentId = youtubeVideoId(page)
+                    val next = ids.dropWhile { currentId != null && it != currentId }
+                        .let { if (currentId != null && it.isNotEmpty()) it.drop(1) else ids }
+                    val added = Media3PlaybackService.appendQueue(next, isYouTubeMusic(page))
+                    Toast.makeText(this, "Fila: $added faixa(s) adicionada(s). " +
+                        Media3PlaybackService.queueStatus(), Toast.LENGTH_LONG).show()
+                }
+                .setNegativeButton("Cancelar", null).show()
+        }
+    }
+
     private fun showMediaMenu() {
         AlertDialog.Builder(this).setTitle("Reprodução e mídia")
             .setItems(arrayOf(
@@ -2650,6 +2712,8 @@ class MainActivity : ComponentActivity() {
                 "Histórico do player",
                 "Configurações de reprodução",
                 "Diagnósticos de mídia",
+                "Fila · importar músicas/vídeos seguintes",
+                "Fila · visualizar e limpar",
                 "■ Forçar interrupção de todas as mídias"
             )) { _, which ->
                 when (which) {
@@ -2660,7 +2724,14 @@ class MainActivity : ComponentActivity() {
                     4 -> showPlayerHistory()
                     5 -> showMediaOptions()
                     6 -> showMediaDiagnosticsMenu()
-                    7 -> forceStopAllMediaFromMenu()
+                    7 -> importNativeMediaQueue()
+                    8 -> AlertDialog.Builder(this).setTitle("Fila de reprodução")
+                        .setMessage(Media3PlaybackService.queueStatus() +
+                            "\\nA próxima fonte é obtida quando a mídia atual termina.")
+                        .setPositiveButton("Limpar fila") { _, _ ->
+                            Media3PlaybackService.clearPendingQueue()
+                        }.setNegativeButton("Fechar", null).show()
+                    9 -> forceStopAllMediaFromMenu()
                 }
             }.show()
     }
