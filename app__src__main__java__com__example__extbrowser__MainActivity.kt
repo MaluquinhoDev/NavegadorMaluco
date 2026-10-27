@@ -3304,6 +3304,8 @@ class MainActivity : ComponentActivity() {
         showActionHub("Ferramentas", "Controle da navegação e das permissões", listOf(
             MenuAction("Reprodução", "YouTube e YouTube Music", "Abrir no player nativo") { showYouTubeExtractor() },
             MenuAction("Reprodução", "Opções de mídia", "Configurar reprodução em segundo plano") { showMediaOptions() },
+            MenuAction("Rede e privacidade", "Cloudflare · DNS e WARP",
+                "DNS 1.1.1.1, filtros de segurança e teste da conexão") { showCloudflareMenu() },
             MenuAction("Privacidade", "Controle de Atenção", "Limites de uso por site") {
                 startActivity(Intent(this, AttentionActivity::class.java).apply {
                     putExtra("attention_current_page", webView.url ?: tabs[activeIndex].url)
@@ -3319,6 +3321,84 @@ class MainActivity : ComponentActivity() {
             MenuAction("Compatibilidade", "Seu Imposto no GeckoView", "Abrir chat no motor alternativo") { openSeuImpostoInGecko() },
             MenuAction("Avançado", "Diagnósticos", "Experimentos e relatórios") { showDiagnosticsMenu() }
         ))
+    }
+
+    /** O WebView usa a rede do Android: mudar DNS requer ação do usuário no sistema. */
+    private fun showCloudflareMenu() {
+        showActionHub("Cloudflare", "Integração com os serviços oficiais do Android", listOf(
+            MenuAction("DNS privado", "1.1.1.1 · padrão",
+                "DNS criptografado sem filtragem de conteúdo") {
+                configureCloudflareDns("one.one.one.one", "1.1.1.1 padrão")
+            },
+            MenuAction("DNS privado", "1.1.1.1 · bloquear malware",
+                "Filtro DNS para domínios associados a malware") {
+                configureCloudflareDns("security.cloudflare-dns.com", "1.1.1.1 para segurança")
+            },
+            MenuAction("DNS privado", "1.1.1.1 · famílias",
+                "Filtro DNS de malware e conteúdo adulto") {
+                configureCloudflareDns("family.cloudflare-dns.com", "1.1.1.1 para famílias")
+            },
+            MenuAction("WARP", "Abrir ou instalar WARP",
+                "Usar o aplicativo oficial para proteger também o tráfego de rede") {
+                openCloudflareWarp()
+            },
+            MenuAction("Diagnóstico", "Verificar conexão Cloudflare",
+                "Abrir o teste oficial 1.1.1.1/help no navegador") {
+                navigate("https://1.1.1.1/help")
+            },
+            MenuAction("Informações", "Como funciona no Navegador Maluco",
+                "Limitações do DNS, WARP e desafios de sites") {
+                AlertDialog.Builder(this)
+                    .setTitle("Cloudflare no Android")
+                    .setMessage("O DNS privado é uma configuração do aparelho, não um proxy " +
+                        "interno do navegador. Nenhum perfil é ativado apenas ao selecioná-lo aqui.\n\n" +
+                        "O modo WARP depende do aplicativo oficial da Cloudflare e da autorização VPN do Android. " +
+                        "Filtros DNS não substituem antivírus nem bloqueiam todo anúncio.\n\n" +
+                        "Os desafios Cloudflare/Turnstile pertencem aos sites visitados; " +
+                        "o Navegador Maluco não os ignora nem os resolve artificialmente.")
+                    .setPositiveButton("Entendi", null).show()
+            }
+        ))
+    }
+
+    private fun configureCloudflareDns(hostname: String, profile: String) {
+        AlertDialog.Builder(this).setTitle("Cloudflare · $profile")
+            .setMessage("Endereço do provedor DNS privado:\n$hostname\n\n" +
+                "Toque em Copiar e abrir configurações. No Android, selecione " +
+                "'Nome do host do provedor de DNS privado', cole o endereço e salve. " +
+                "A mudança afeta a rede do aparelho, inclusive outros aplicativos.")
+            .setPositiveButton("Copiar e abrir configurações") { _, _ ->
+                val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+                clipboard.setPrimaryClip(android.content.ClipData.newPlainText("DNS Cloudflare", hostname))
+                openAndroidPrivateDnsSettings()
+            }
+            .setNeutralButton("Copiar endereço") { _, _ ->
+                val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+                clipboard.setPrimaryClip(android.content.ClipData.newPlainText("DNS Cloudflare", hostname))
+                Toast.makeText(this, "DNS Cloudflare copiado", Toast.LENGTH_SHORT).show()
+            }
+            .setNegativeButton("Cancelar", null).show()
+    }
+
+    private fun openAndroidPrivateDnsSettings() {
+        // O atalho direto não é padronizado em todos os fabricantes Android.
+        val actions = listOf("android.settings.PRIVATE_DNS_SETTINGS",
+            android.provider.Settings.ACTION_WIRELESS_SETTINGS,
+            android.provider.Settings.ACTION_SETTINGS)
+        val opened = actions.any { action ->
+            runCatching { startActivity(Intent(action)); true }.getOrDefault(false)
+        }
+        if (!opened) Toast.makeText(this,
+            "Abra Configurações do Android → Rede → DNS privado", Toast.LENGTH_LONG).show()
+    }
+
+    private fun openCloudflareWarp() {
+        val packageName = "com.cloudflare.onedotonedotonedotone"
+        val launch = packageManager.getLaunchIntentForPackage(packageName)
+        if (launch != null && runCatching { startActivity(launch); true }.getOrDefault(false)) return
+        val market = Intent(Intent.ACTION_VIEW, Uri.parse("market://details?id=$packageName"))
+        if (!runCatching { startActivity(market); true }.getOrDefault(false))
+            navigate("https://play.google.com/store/apps/details?id=$packageName")
     }
 
     private fun showDiagnosticsMenu() {

@@ -5,6 +5,10 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
 
+    <queries>
+        <package android:name="com.cloudflare.onedotonedotonedotone" />
+    </queries>
+
     <application
         android:allowBackup="false"
         android:label="ExtBrowser"
