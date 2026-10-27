@@ -95,6 +95,10 @@ class MainActivity : ComponentActivity() {
     private var googleLoginAuditEnabled = false
     private var googleLoginAuditStarted = 0L
     private val googleLoginAuditEvents = ArrayDeque<String>()
+    private val googleLoginLastPage = java.util.WeakHashMap<WebView, String>()
+    private var googleLoginRedirectCount = 0
+    private var googleLoginPopupCount = 0
+    private var googleLoginAppNavigationCount = 0
 
     private fun googleCookieCompatEnabled(): Boolean =
         getSharedPreferences("google_login_diagnostic", MODE_PRIVATE)
@@ -145,6 +149,21 @@ class MainActivity : ComponentActivity() {
         googleLoginAuditEvents.addLast("+${elapsed}ms · $category · $event")
     }
 
+    /** Apenas categorias de domínio; nunca guarda URLs ou parâmetros de autenticação. */
+    private fun recordGoogleLoginTransition(view: WebView, url: String?, origin: String) {
+        if (!googleLoginAuditEnabled) return
+        val next = googleLoginHostCategory(url) ?: return
+        val previous = googleLoginLastPage.put(view, next)
+        if (previous != next)
+            recordGoogleLoginAudit("Transição ${previous ?: "origem não monitorada"} → $next · $origin", url, view)
+    }
+
+    private fun recordGoogleLoginAppNavigation(view: WebView, url: String?, reason: String) {
+        if (!googleLoginAuditEnabled || googleLoginHostCategory(url) == null) return
+        googleLoginAppNavigationCount++
+        recordGoogleLoginAudit("Carregamento iniciado pelo app · $reason", url, view)
+    }
+
     private fun googleLoginAuditReport(): String = buildString {
         appendLine("Navegador Maluco · diagnóstico de login Google")
         appendLine("Monitor: ${if (googleLoginAuditEnabled) "ativo" else "inativo"}")
@@ -157,6 +176,10 @@ class MainActivity : ComponentActivity() {
         appendLine("Cookies de terceiros (aba atual): ${CookieManager.getInstance().acceptThirdPartyCookies(webView)}")
         appendLine("Compatibilidade de cookies Google: ${googleCookieCompatEnabled()}")
         appendLine("Abas: $totalTabCount · residentes: ${tabs.size}")
+        appendLine("Redirecionamentos HTTP observados: $googleLoginRedirectCount")
+        appendLine("Janelas auxiliares solicitadas: $googleLoginPopupCount")
+        appendLine("Carregamentos iniciados pelo app: $googleLoginAppNavigationCount")
+        appendLine("Interpretação: página concluída não comprova autenticação.")
         appendLine("Eventos (${googleLoginAuditEvents.size}):")
         if (googleLoginAuditEvents.isEmpty()) appendLine("- Nenhum evento relevante registrado")
         else googleLoginAuditEvents.forEach { appendLine("- $it") }
@@ -990,6 +1013,7 @@ class MainActivity : ComponentActivity() {
                 v.settings.mediaPlaybackRequiresUserGesture = !instagramHybrid
                 val (cookieBefore, cookieAfter) = applyLoginCookiePolicy(v, url)
                 recordGoogleLoginAudit("Navegação iniciada · cookies terceiros: $cookieBefore → $cookieAfter", url, v)
+                recordGoogleLoginTransition(v, url, "início do documento")
                 val t = tabs.firstOrNull { it.view === v } ?: return
                 synchronized(mediaCandidateLock) { mediaCandidates.remove(v); mediaRequestOrigins.remove(v); mediaNetworkSignals.remove(v) }
                 val shownUrl = attentionBlockedSources[v] ?: url
@@ -1235,6 +1259,8 @@ class MainActivity : ComponentActivity() {
                 updateInstagramOverlay()
             }
             override fun doUpdateVisitedHistory(v: WebView, url: String, isReload: Boolean) {
+                recordGoogleLoginTransition(v, url,
+                    if (isReload) "histórico: recarga" else "histórico: endereço alterado")
                 if (!isReload && (url.startsWith("https://") || url.startsWith("http://")))
                     store.addHistory(url, v.title ?: url)
                 if (v === webView) Attention.onUrl(url)?.let { showBlocked(it) }
@@ -1245,8 +1271,16 @@ class MainActivity : ComponentActivity() {
                     val (before, after) = applyLoginCookiePolicy(v, target.toString())
                     if (before != after)
                         recordGoogleLoginAudit("Política antes da navegação: $before → $after", target.toString(), v)
-                    recordGoogleLoginAudit("Redirecionamento/navegação principal · " +
-                        (if (request.hasGesture()) "com gesto" else "sem gesto"), target.toString(), v)
+                    val redirect = android.os.Build.VERSION.SDK_INT >= 24 && request.isRedirect
+                    if (redirect && googleLoginAuditEnabled && googleLoginHostCategory(target.toString()) != null)
+                        googleLoginRedirectCount++
+                    recordGoogleLoginAudit("Navegação principal · " +
+                        (if (redirect) "redirecionamento HTTP" else "não marcado como redirecionamento HTTP") +
+                        " · " + (if (request.hasGesture()) "com gesto" else "sem gesto") +
+                        " · destino=" + (if (target.scheme == "http" || target.scheme == "https") "WebView" else "externo"),
+                        target.toString(), v)
+                    recordGoogleLoginTransition(v, target.toString(),
+                        if (redirect) "redirecionamento HTTP" else "navegação solicitada")
                 }
                 if (target.scheme == "extbrowser") {
                     if (v === webView) handleBreakAction(target)
@@ -1399,6 +1433,7 @@ class MainActivity : ComponentActivity() {
                     if (googleLoginAuditEvents.size >= 90) googleLoginAuditEvents.removeFirst()
                     googleLoginAuditEvents.addLast("+${elapsed}ms · $category · Nova janela solicitada · " +
                         (if (isUserGesture) "com gesto" else "sem gesto"))
+                    if (googleLoginHostCategory(source?.url) != null) googleLoginPopupCount++
                 }
                 if (!isUserGesture || resultMsg == null) {
                     recordGoogleLoginAudit("Popup recusado: sem gesto ou transporte", source?.url, source)
@@ -1743,6 +1778,7 @@ class MainActivity : ComponentActivity() {
         newView.onResume()
         if (newView.url == null && newView !in pendingPopups) {
             applyLoginCookiePolicy(newView, tabs[activeIndex].url)
+            recordGoogleLoginAppNavigation(newView, tabs[activeIndex].url, "reativação de aba")
             newView.loadUrl(tabs[activeIndex].url)
         }
         urlBar.setText(attentionBlockedSources[newView] ?: newView.url ?: tabs[activeIndex].url)
@@ -2483,6 +2519,10 @@ class MainActivity : ComponentActivity() {
         if (googleLoginAuditEnabled) {
             googleLoginAuditEvents.clear()
             googleLoginAuditStarted = SystemClock.elapsedRealtime()
+            googleLoginLastPage.clear()
+            googleLoginRedirectCount = 0
+            googleLoginPopupCount = 0
+            googleLoginAppNavigationCount = 0
             recordGoogleLoginAudit("Monitor iniciado · política de cookies observada", webView.url, webView)
         }
         Toast.makeText(this, if (googleLoginAuditEnabled) "Monitor Google iniciado"
@@ -5165,6 +5205,7 @@ class MainActivity : ComponentActivity() {
         }
         configureSiteDisplay(webView, url)
         applyLoginCookiePolicy(webView, url)
+        recordGoogleLoginAppNavigation(webView, url, "barra de endereços ou comando")
         webView.loadUrl(url)
         updateInstagramOverlay()
         urlBar.clearFocus()
