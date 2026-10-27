@@ -5243,9 +5243,11 @@ class MainActivity : ComponentActivity() {
             LinearLayout.LayoutParams(0, dp(48), 1f).apply { marginStart = dp(3); marginEnd = dp(3) }) }
         back.contentDescription = "Voltar 10 segundos"
         forward.contentDescription = "Avançar 10 segundos"
-        outer.addView(controls, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
+        // Hierarquia do player: contador, ajuste do tempo e somente depois
+        // retroceder / pausar / avançar. Vale para vertical e horizontal.
         outer.addView(timeLabel, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
         outer.addView(progress, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
+        outer.addView(controls, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
         panel.addView(outer, FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT))
         // Aviso independente dos controles que podem sumir na tela cheia.
         val attentionBanner = TextView(this).apply {
