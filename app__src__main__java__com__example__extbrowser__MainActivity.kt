@@ -2053,6 +2053,12 @@ class MainActivity : ComponentActivity() {
     /** Atalho de mídia: escolhe automaticamente somente quando há uma fonte inequívoca. */
     private fun playPageMediaDirectly() {
         val current = webView
+        if (isYouTubeMusic(current.url)) {
+            // Em Music, os candidatos da WebView podem ser segmentos de outra faixa.
+            // Primeiro confirma a música ativa e apresenta as fontes do extrator.
+            showYouTubeExtractor()
+            return
+        }
         scanDeclaredMedia(current) {
             scanYouTubeDeclaredManifests(current) {
             if (tabs.none { it.view === current }) return@scanYouTubeDeclaredManifests
@@ -2187,14 +2193,81 @@ class MainActivity : ComponentActivity() {
             }.show()
     }
 
-    /** Painel único: expõe cada teste separadamente e evita confundir HTTP com Media3. */
-    private fun showYouTubeTestPanel() {
-        val page = webView.url
-        val videoId = youtubeVideoId(page)
-        if (videoId == null) {
-            Toast.makeText(this, "Abra primeiro um vídeo do YouTube.", Toast.LENGTH_LONG).show()
+    private data class YoutubeTarget(val videoId: String, val page: String,
+        val music: Boolean, val detectedBy: String) {
+        val canonical: String get() = "https://www.youtube.com/watch?v=$videoId"
+    }
+
+    private fun isYouTubeMusic(url: String?): Boolean =
+        runCatching { Uri.parse(url).host?.lowercase(java.util.Locale.ROOT) == "music.youtube.com" }
+            .getOrDefault(false)
+
+    /** O Music é uma SPA: a faixa ativa pode estar no player antes de aparecer na URL. */
+    private fun resolveYoutubeTarget(view: WebView, done: (YoutubeTarget?) -> Unit) {
+        val page = view.url ?: run { done(null); return }
+        val urlId = youtubeVideoId(page)
+        if (!isYouTubeMusic(page)) {
+            done(urlId?.let { YoutubeTarget(it, page, false, "URL da página") })
             return
         }
+        val js = """(function(){
+            const valid = /^[A-Za-z0-9_-]{11}${'$'}/;
+            function idFrom(href) {
+                try { const u = new URL(href, location.href);
+                    if (u.hostname !== 'music.youtube.com' && u.hostname !== 'www.youtube.com') return null;
+                    const id = u.pathname === '/watch' ? u.searchParams.get('v') : null;
+                    return id && valid.test(id) ? id : null;
+                } catch (_) { return null; }
+            }
+            const bar = document.querySelector('ytmusic-player-bar');
+            const musicPlayer = document.querySelector('ytmusic-player');
+            try {
+                const response = musicPlayer && typeof musicPlayer.getPlayerResponse === 'function'
+                    ? musicPlayer.getPlayerResponse() : null;
+                const id = response && response.videoDetails && response.videoDetails.videoId;
+                if (id && valid.test(id))
+                    return JSON.stringify({id,origin:'resposta do player Music'});
+            } catch (_) {}
+            for (const a of bar ? bar.querySelectorAll('a[href*="watch"]') : []) {
+                const id = idFrom(a.href); if (id) return JSON.stringify({id,origin:'barra do player'});
+            }
+            for (const a of musicPlayer ? musicPlayer.querySelectorAll('a[href*="watch"]') : []) {
+                const id = idFrom(a.href); if (id) return JSON.stringify({id,origin:'player do Music'});
+            }
+            const id = idFrom(location.href);
+            return JSON.stringify({id:id || '',origin:id ? 'URL da página' : 'não identificado'});
+        })()"""
+        view.evaluateJavascript(js) { encoded ->
+            if (isFinishing || isDestroyed || view !== webView || view.url != page) return@evaluateJavascript
+            val result = runCatching {
+                org.json.JSONObject(org.json.JSONArray("[$encoded]").getString(0))
+            }.getOrNull()
+            val id = result?.optString("id")?.takeIf {
+                it.matches(Regex("[A-Za-z0-9_-]{11}"))
+            } ?: urlId
+            done(id?.let { YoutubeTarget(it, page, true,
+                result?.optString("origin")?.takeIf { it != "não identificado" }
+                    ?: "URL da página") })
+        }
+    }
+
+    /** Painel único: identificação, extração, HTTP e reprodução aparecem em sequência. */
+    private fun showYouTubeTestPanel() {
+        resolveYoutubeTarget(webView) { target ->
+            if (target == null) {
+                AlertDialog.Builder(this).setTitle("YouTube Music · faixa não identificada")
+                    .setMessage("Abra uma música e inicie a reprodução. A URL e a barra do player " +
+                        "ainda não apresentaram um identificador de faixa válido.")
+                    .setNeutralButton("Examinar página") { _, _ ->
+                        webView.url?.let { inspectYouTubePageSources(webView, it) }
+                    }
+                    .setPositiveButton("Fechar", null).show()
+            } else showResolvedYouTubeTestPanel(target)
+        }
+    }
+
+    private fun showResolvedYouTubeTestPanel(target: YoutubeTarget) {
+        val videoId = target.videoId
         if (youtubeDiagnosticsVideoId != videoId) {
             youtubeDiagnosticsVideoId = videoId
             youtubeExtractionResult = "Ainda não executado"
@@ -2220,10 +2293,13 @@ class MainActivity : ComponentActivity() {
                 textSize = 14f
             })
         }
-        description("1 · Extrator e PO Token", "Extração: $youtubeExtractionResult\n" +
+        description("1 · Identificação", "Serviço: ${if (target.music) "YouTube Music" else "YouTube"}\n" +
+            "Faixa identificada pela: ${target.detectedBy}\n" +
+            "Identificador: ${target.videoId}")
+        description("2 · Extrator e PO Token", "Extração: $youtubeExtractionResult\n" +
             "PO Token: ${YoutubeExtractor.poTokenStatus}")
-        description("2 · Fonte HTTP", youtubeSourceHttpResult)
-        description("3 · Reprodução no Media3", youtubeMedia3Result)
+        description("3 · Fonte HTTP", youtubeSourceHttpResult)
+        description("4 · Reprodução no Media3", youtubeMedia3Result)
         layout.addView(android.widget.TextView(this).apply {
             text = "HTTP 200 na API não garante reprodução. Uma URL encontrada na página " +
                 "também pode receber 403 no servidor de mídia. O Media3 mantém seus controles nativos."
@@ -2239,14 +2315,15 @@ class MainActivity : ComponentActivity() {
             layout.addView(button)
             buttons += button to command
         }
-        action("1 · Testar extrator + PO Token") { showYouTubeExtractor() }
-        action("2 · Examinar fontes da página") { inspectYouTubePageSources(webView, page!!) }
+        action("Extrair faixa para o player nativo") { showYouTubeExtractor() }
+        action("Examinar fontes declaradas na página") { inspectYouTubePageSources(webView, target.page) }
         val scroll = android.widget.ScrollView(this).apply {
             isFillViewport = false
             addView(layout)
         }
         val dialog = AlertDialog.Builder(this)
-            .setTitle("YouTube · painel de testes")
+            .setTitle(if (target.music) "YouTube Music · reprodução e testes"
+                else "YouTube · reprodução e testes")
             .setView(scroll)
             .setNegativeButton("Fechar", null)
             .create()
@@ -2259,34 +2336,52 @@ class MainActivity : ComponentActivity() {
     /** Extrai formatos no worker sem bloquear a WebView nem expor URLs assinadas no log. */
     private fun showYouTubeExtractor() {
         val current = webView
-        val page = current.url
-        if (youtubeVideoId(page) == null) {
-            Toast.makeText(this, "Abra primeiro um vídeo do YouTube.", Toast.LENGTH_LONG).show()
-            return
+        resolveYoutubeTarget(current) { target ->
+            if (target == null) {
+                Toast.makeText(this, "Abra uma música ou vídeo antes de extrair.", Toast.LENGTH_LONG).show()
+            } else extractResolvedYouTube(current, target)
         }
+    }
+
+    private fun extractResolvedYouTube(current: WebView, target: YoutubeTarget) {
+        val page = target.page
         youtubeExtractionResult = "Executando…"
-        Toast.makeText(this, "Testando extração e PO Token…", Toast.LENGTH_SHORT).show()
+        Toast.makeText(this, "Extraindo ${if (target.music) "música" else "vídeo"}…",
+            Toast.LENGTH_SHORT).show()
         Thread {
-            val result = runCatching { YoutubeExtractor.extractWithReport(page!!) }
+            // Preserva a rota original do NewPipe; no Music tenta também o ID canônico
+            // apenas após falha, evitando forçar a interpretação de página de playlist.
+            var route = "página original"
+            var result = runCatching { YoutubeExtractor.extractWithReport(page) }
+            if (target.music && (result.isFailure || result.getOrNull()?.sources.isNullOrEmpty()) &&
+                page != target.canonical) {
+                route = "vídeo canônico"
+                result = runCatching { YoutubeExtractor.extractWithReport(target.canonical) }
+            }
             runOnUiThread {
                 if (isFinishing || isDestroyed || current !== webView || current.url != page)
                     return@runOnUiThread
                 result.onSuccess { report ->
-                    val sources = MediaSourceCatalog.ordered(report.sources)
-                    youtubeExtractionResult = "${sources.size} formato(s) · ${report.requests} " +
+                    val ordered = MediaSourceCatalog.ordered(report.sources)
+                    // Music prioriza faixas de áudio; a ordem do YouTube normal não muda.
+                    val sources = if (target.music) ordered.sortedBy {
+                        if (it.label.startsWith("Áudio")) 0
+                        else if (it.label.startsWith("Vídeo + áudio")) 1 else 2
+                    } else ordered
+                    youtubeExtractionResult = "$route · ${sources.size} formato(s) · ${report.requests} " +
                         "requisição(ões) · HTTP ${report.httpErrors.ifEmpty { mapOf() }}"
                     android.util.Log.i("NavegadorMedia3", "ExtratorYouTube: requests=${report.requests}; " +
                         "httpErrors=${report.httpErrors}; formatos=${sources.size}; " +
                         "tempoMs=${report.elapsedMs}")
                     if (sources.isEmpty()) {
-                        AlertDialog.Builder(this).setTitle("Extrator YouTube")
+                        AlertDialog.Builder(this).setTitle("Extrator · ${if (target.music) "YouTube Music" else "YouTube"}")
                             .setMessage("PO Token: ${YoutubeExtractor.poTokenStatus}\n\n" +
                                 "Nenhuma fonte disponível. Requisições: ${report.requests}; " +
                                 "HTTP: ${if (report.httpErrors.isEmpty()) "sem erros registrados" else report.httpErrors}. " +
                                 "O YouTube pode disponibilizar apenas formatos protegidos ou " +
                                 "incompatíveis com a extração atual.")
                             .setPositiveButton("Examinar página") { _, _ ->
-                                inspectYouTubePageSources(current, page!!)
+                                inspectYouTubePageSources(current, page)
                             }
                             .setNegativeButton("Fechar", null).show()
                         return@onSuccess
@@ -2296,10 +2391,11 @@ class MainActivity : ComponentActivity() {
                     // Não combinar setMessage com setItems: o AlertDialog exibe a
                     // mensagem no lugar da lista e impede selecionar uma fonte.
                     AlertDialog.Builder(this)
-                        .setTitle("YouTube · ${sources.size} formato(s)")
+                        .setTitle("${if (target.music) "YouTube Music" else "YouTube"} · ${sources.size} formato(s)")
                         .setItems(labels) { _, i ->
                             val selected = sources[i]
-                            if (selected.playable) verifyExtractedYouTubeSource(current, page!!, selected)
+                            if (selected.playable) verifyExtractedYouTubeSource(current, page,
+                                selected, target.videoId)
                             else AlertDialog.Builder(this).setTitle("Vídeo sem áudio")
                                 .setMessage("Este formato tem áudio separado. A reprodução conjunta " +
                                     "ainda precisa ser integrada ao Media3.")
@@ -2313,7 +2409,7 @@ class MainActivity : ComponentActivity() {
                         "Falha no extrator: ${err.javaClass.simpleName}; " +
                             "causa=${err.cause?.javaClass?.simpleName ?: "desconhecida"}; " +
                             "requests=${failure?.requests ?: 0}; http=${failure?.httpErrors.orEmpty()}")
-                    AlertDialog.Builder(this).setTitle("Extrator YouTube")
+                    AlertDialog.Builder(this).setTitle("Extrator · ${if (target.music) "YouTube Music" else "YouTube"}")
                         .setMessage("PO Token: ${YoutubeExtractor.poTokenStatus}\n\n" + (when {
                             err.cause?.javaClass?.simpleName == "SignInConfirmNotBotException" ->
                                 "O YouTube exigiu confirmação antirrobô do extrator anônimo. " +
@@ -2333,7 +2429,7 @@ class MainActivity : ComponentActivity() {
                             "HTTP ${failure?.httpErrors.orEmpty()}, " +
                             "erro ${err.cause?.javaClass?.simpleName ?: err.javaClass.simpleName}.")
                         .setPositiveButton("Examinar página") { _, _ ->
-                            inspectYouTubePageSources(current, page!!)
+                            inspectYouTubePageSources(current, page)
                         }
                         .setNegativeButton("Fechar", null).show()
                 }
@@ -2347,8 +2443,21 @@ class MainActivity : ComponentActivity() {
      */
     private fun inspectYouTubePageSources(view: WebView, page: String) {
         val script = """(function(){
-            let response = window.ytInitialPlayerResponse || null;
-            let origin = response ? 'ytInitialPlayerResponse' : 'ausente';
+            const music = location.hostname === 'music.youtube.com';
+            let response = null;
+            let origin = 'ausente';
+            if (music) {
+                try {
+                    const p = document.querySelector('ytmusic-player');
+                    if (p && typeof p.getPlayerResponse === 'function') {
+                        response = p.getPlayerResponse(); origin = 'ytmusic-player';
+                    }
+                } catch (_) {}
+            }
+            if (!response && window.ytInitialPlayerResponse) {
+                response = window.ytInitialPlayerResponse;
+                origin = 'ytInitialPlayerResponse';
+            }
             if (!response) {
                 try {
                     const p = document.querySelector('ytd-player');
@@ -2386,7 +2495,15 @@ class MainActivity : ComponentActivity() {
                     audio ? 'Áudio' : 'Vídeo sem áudio';
                 add(kind+' · '+String(f.qualityLabel || f.itag || 'página'), f.url, audio);
             }
-            return JSON.stringify({origin:origin,playability:String(response &&
+            const player = document.querySelector(music ? 'ytmusic-player' : 'ytd-player');
+            const media = player && player.querySelector('video, audio') ||
+                document.querySelector('video, audio');
+            const dom = media ? {ready:media.readyState,network:media.networkState,
+                playing:!media.paused,source:media.currentSrc && media.currentSrc.startsWith('blob:')
+                    ? 'blob' : media.currentSrc && media.currentSrc.startsWith('https:')
+                    ? 'https' : 'indisponível'} : null;
+            return JSON.stringify({origin:origin,music:music,playerPresent:!!player,dom:dom,
+                playability:String(response &&
                 response.playabilityStatus && response.playabilityStatus.status || 'desconhecido'),
                 total:formats.length,cipher:cipher,direct:direct,sources:sources});
         })()"""
@@ -2410,14 +2527,20 @@ class MainActivity : ComponentActivity() {
                 if (url.startsWith("https://")) usable += YoutubeExtractor.Source(
                     item.optString("kind").take(80), url, item.optBoolean("playable"))
             }
-            val summary = "Origem: ${report.optString("origin")}\n" +
+            val html5 = report.optJSONObject("dom")
+            val summary = "Serviço: ${if (report.optBoolean("music")) "YouTube Music" else "YouTube"}\n" +
+                "Player da página: ${if (report.optBoolean("playerPresent")) "detectado" else "não detectado"}\n" +
+                "Origem dos dados: ${report.optString("origin")}\n" +
                 "Estado: ${report.optString("playability")}\n" +
                 "Formatos declarados: ${report.optInt("total")}\n" +
                 "URLs diretas: ${report.optInt("direct")}\n" +
                 "Formatos com assinatura: ${report.optInt("cipher")}\n" +
-                "Fontes utilizáveis identificadas: ${usable.size}"
+                "Fontes utilizáveis identificadas: ${usable.size}\n" +
+                "HTML5: ${if (html5 == null) "ausente" else "${html5.optString("source")} · " +
+                    "ready=${html5.optInt("ready")} · network=${html5.optInt("network")}"}"
             android.util.Log.i("NavegadorMedia3", "YouTubePagina: " + summary.replace('\n', ';'))
-            AlertDialog.Builder(this).setTitle("YouTube · diagnóstico da página")
+            AlertDialog.Builder(this).setTitle(if (report.optBoolean("music"))
+                "YouTube Music · diagnóstico da página" else "YouTube · diagnóstico da página")
                 .setMessage(summary)
                 .setPositiveButton("Ver fontes (${usable.size})") { _, _ ->
                     if (usable.isEmpty()) {
@@ -2439,7 +2562,8 @@ class MainActivity : ComponentActivity() {
 
     /** Comprova a autorização HTTP antes de enviar uma URL temporária ao Media3. */
     private fun verifyExtractedYouTubeSource(
-        originalView: WebView, page: String, source: YoutubeExtractor.Source
+        originalView: WebView, page: String, source: YoutubeExtractor.Source,
+        videoId: String? = youtubeVideoId(page)
     ) {
         Toast.makeText(this, "Verificando acesso ao formato...", Toast.LENGTH_SHORT).show()
         val agent = android.webkit.WebSettings.getDefaultUserAgent(this)
@@ -2469,7 +2593,7 @@ class MainActivity : ComponentActivity() {
                                 source.label.startsWith("DASH") -> "application/dash+xml"
                                 else -> null
                             }
-                            startMedia3(source.url, mime)
+                            startMedia3(source.url, mime, videoId)
                         }
                         .setNegativeButton("Cancelar", null).show()
                 } else if (check.status == 401 || check.status == 410 || check.status == 429) {
@@ -2484,7 +2608,7 @@ class MainActivity : ComponentActivity() {
                         source.label.startsWith("DASH") -> "application/dash+xml"
                         else -> null
                     }
-                    startMedia3(source.url, mime)
+                    startMedia3(source.url, mime, videoId)
                 }
             }
         }.start()
@@ -2520,7 +2644,7 @@ class MainActivity : ComponentActivity() {
         AlertDialog.Builder(this).setTitle("Reprodução e mídia")
             .setItems(arrayOf(
                 "▶ Reproduzir mídia desta página",
-                "▶ YouTube · tocar no player nativo",
+                "▶ YouTube / Music · tocar no player nativo",
                 "Abrir controles do player nativo",
                 "Janela flutuante · PiP",
                 "Histórico do player",
@@ -2544,7 +2668,7 @@ class MainActivity : ComponentActivity() {
     private fun showMediaDiagnosticsMenu() {
         AlertDialog.Builder(this).setTitle("Diagnósticos · mídia")
             .setItems(arrayOf(
-                "YouTube · painel PO Token, HTTP e Media3",
+                "YouTube / Music · identificação, extração, HTTP e Media3",
                 "Listar vídeos e fontes detectadas",
                 "Inspecionar manifestos HLS / DASH",
                 "Examinar player HTML5 da página"
@@ -2577,7 +2701,7 @@ class MainActivity : ComponentActivity() {
     private fun showToolsMenu() {
         AlertDialog.Builder(this).setTitle("Ferramentas do navegador")
             .setItems(arrayOf(
-                "YouTube · tocar no player nativo",
+                "YouTube / Music · tocar no player nativo",
                 "Seu Imposto · chat compatível (GeckoView)",
                 "Controle de Atenção · sites e limites",
                 "Extensões",
@@ -2606,7 +2730,7 @@ class MainActivity : ComponentActivity() {
     private fun showDiagnosticsMenu() {
         AlertDialog.Builder(this).setTitle("Diagnósticos e testes")
             .setItems(arrayOf(
-                "YouTube · PO Token, HTTP e reprodução",
+                "YouTube / Music · identificação, PO Token, HTTP e reprodução",
                 "Seu Imposto · foco, chat e rede",
                 "Mídia · elementos HTML5 e manifestos",
                 "Teclado · teste HTML isolado",
@@ -4633,8 +4757,10 @@ class MainActivity : ComponentActivity() {
         refreshYoutubeButton.setOnClickListener {
             val c = player ?: return@setOnClickListener
             val original = c.currentMediaItem ?: return@setOnClickListener
-            val page = original.mediaMetadata.extras?.getString("nm_attention_page")
-            if (youtubeVideoId(page) == null || refreshingYoutube ||
+            val extras = original.mediaMetadata.extras
+            val page = extras?.getString("nm_attention_page")
+            val videoId = extras?.getString("nm_youtube_video_id") ?: youtubeVideoId(page)
+            if (videoId == null || refreshingYoutube ||
                 enforceAttentionForPlayerControls()) return@setOnClickListener
             val previousUri = original.localConfiguration?.uri ?: return@setOnClickListener
             refreshingYoutube = true
@@ -4642,7 +4768,15 @@ class MainActivity : ComponentActivity() {
             playbackIssue = "Renovando URL e PO Token do YouTube…"
             showControls()
             Thread {
-                val fresh = runCatching { YoutubeExtractor.extractWithReport(page!!) }
+                val canonical = "https://www.youtube.com/watch?v=$videoId"
+                val fresh = runCatching {
+                    val fromPage = page?.let { runCatching {
+                        YoutubeExtractor.extractWithReport(it)
+                    }.getOrNull() }
+                    if (!isYouTubeMusic(page) && fromPage != null && fromPage.sources.isNotEmpty())
+                        fromPage
+                    else YoutubeExtractor.extractWithReport(canonical)
+                }
                 runOnUiThread {
                     if (closed || isDestroyed || isFinishing) return@runOnUiThread
                     refreshingYoutube = false
@@ -4652,6 +4786,8 @@ class MainActivity : ComponentActivity() {
                     val oldItag = previousUri.getQueryParameter("itag")
                     val chosen = sources.firstOrNull { oldItag != null &&
                         Uri.parse(it.url).getQueryParameter("itag") == oldItag } ?: sources.firstOrNull {
+                        isYouTubeMusic(page) && it.label.startsWith("Áudio")
+                    } ?: sources.firstOrNull {
                         it.label.startsWith("Vídeo + áudio")
                     } ?: sources.firstOrNull()
                     if (chosen == null) {
@@ -4739,8 +4875,11 @@ class MainActivity : ComponentActivity() {
                         handler.removeCallbacks(hideControls)
                     }
                     refreshYoutubeButton.visibility = if (showRecovery &&
-                        youtubeVideoId(c.currentMediaItem?.mediaMetadata?.extras
-                            ?.getString("nm_attention_page")) != null) View.VISIBLE else View.GONE
+                        (c.currentMediaItem?.mediaMetadata?.extras
+                            ?.getString("nm_youtube_video_id") != null ||
+                            youtubeVideoId(c.currentMediaItem?.mediaMetadata?.extras
+                                ?.getString("nm_attention_page")) != null))
+                        View.VISIBLE else View.GONE
                     play.text = when {
                         c.playerError != null -> "Tentar novamente"
                         c.isPlaying -> "Pausar"
@@ -4877,7 +5016,7 @@ class MainActivity : ComponentActivity() {
     private var media3OriginView: WebView? = null
     private var media3OriginUrl: String? = null
 
-    private fun startMedia3(url: String, mimeType: String? = null) {
+    private fun startMedia3(url: String, mimeType: String? = null, youtubeId: String? = null) {
         val u = Uri.parse(url)
         if (u.scheme !in listOf("http", "https") || u.host.isNullOrBlank()) return
         val sourceView = webView
@@ -5019,6 +5158,9 @@ class MainActivity : ComponentActivity() {
                     val mediaInfo = android.os.Bundle().apply {
                         putString("nm_page_origin", selectedOrigin)
                         putString("nm_attention_page", sourceView.url ?: "")
+                        youtubeId?.takeIf { it.matches(Regex("[A-Za-z0-9_-]{11}")) }?.let {
+                            putString("nm_youtube_video_id", it)
+                        }
                     }
                     val item = MediaItem.Builder().setUri(u)
                         .apply { if (mimeType != null) setMimeType(mimeType) }
