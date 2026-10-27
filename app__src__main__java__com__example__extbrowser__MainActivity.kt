@@ -2,6 +2,7 @@ package com.example.extbrowser
 
 import android.annotation.SuppressLint
 import android.app.AlertDialog
+import android.app.Dialog
 import android.app.PictureInPictureParams
 import android.content.pm.PackageManager
 import android.util.Rational
@@ -20,6 +21,8 @@ import android.webkit.ValueCallback
 import android.widget.FrameLayout
 import android.content.ActivityNotFoundException
 import android.graphics.Bitmap
+import android.graphics.Color
+import android.graphics.drawable.GradientDrawable
 import android.net.Uri
 import android.os.Bundle
 import android.os.Handler
@@ -28,6 +31,8 @@ import android.os.Message
 import android.os.Parcel
 import android.os.SystemClock
 import android.text.InputType
+import android.text.Editable
+import android.text.TextWatcher
 import android.view.View
 import android.view.WindowManager
 import android.view.MotionEvent
@@ -89,7 +94,39 @@ class MainActivity : ComponentActivity() {
     private data class ParkedTab(val url: String, val title: String, val constellation: String,
         val id: String = UUID.randomUUID().toString(), val profile: String = "")
     private val parkedTabs = mutableListOf<ParkedTab>()
-    private val constellations = listOf("Exploração", "Estudos", "Entretenimento", "Trabalho")
+    private val constellations = mutableListOf("Exploração", "Estudos", "Entretenimento", "Trabalho")
+
+    private fun restoreConstellationNames() {
+        val raw = getSharedPreferences("tabs", MODE_PRIVATE).getString("constellation_names_v1", null)
+            ?: return
+        val saved = runCatching { JSONArray(raw) }.getOrNull() ?: return
+        for (index in 0 until minOf(saved.length(), 16)) {
+            val name = saved.optString(index).trim().take(28)
+            if (name.isNotEmpty() && name !in constellations) constellations.add(name)
+        }
+    }
+
+    private fun createConstellation(afterCreate: () -> Unit) {
+        val field = EditText(this).apply {
+            hint = "Nome da constelação"
+            setSingleLine(true)
+            setPadding(dp(16), dp(8), dp(16), dp(8))
+        }
+        AlertDialog.Builder(this).setTitle("Nova constelação")
+            .setView(field)
+            .setPositiveButton("Criar") { _, _ ->
+                val name = field.text.toString().trim().take(28)
+                if (name.isBlank() || name in constellations || constellations.size >= 20) {
+                    Toast.makeText(this, "Nome inválido, repetido ou limite de grupos atingido", Toast.LENGTH_LONG).show()
+                } else {
+                    constellations.add(name)
+                    val saved = JSONArray().apply { constellations.forEach { put(it) } }
+                    getSharedPreferences("tabs", MODE_PRIVATE).edit()
+                        .putString("constellation_names_v1", saved.toString()).apply()
+                    afterCreate()
+                }
+            }.setNegativeButton("Cancelar", null).show()
+    }
     private val totalTabCount get() = tabs.size + parkedTabs.size
 
     private fun supportedGoogleProfile(): Boolean =
@@ -370,6 +407,29 @@ class MainActivity : ComponentActivity() {
     private var loaded = false
     private fun isDarkTheme() = getSharedPreferences("appearance", MODE_PRIVATE)
         .getString("theme", "light") == "dark"
+
+    private fun dp(value: Int): Int = (value * resources.displayMetrics.density + 0.5f).toInt()
+    private fun uiBackground() = if (isDarkTheme()) 0xFF101720.toInt() else 0xFFF4F6FA.toInt()
+    private fun uiSurface() = if (isDarkTheme()) 0xFF202B39.toInt() else Color.WHITE
+    private fun uiForeground() = if (isDarkTheme()) Color.WHITE else 0xFF182536.toInt()
+    private fun uiMuted() = if (isDarkTheme()) 0xFFB7C3D0.toInt() else 0xFF536477.toInt()
+    private fun uiAccent() = if (isDarkTheme()) 0xFF8CCBFF.toInt() else 0xFF1769A6.toInt()
+    private fun uiOutline() = if (isDarkTheme()) 0xFF405366.toInt() else 0xFFDCE3EC.toInt()
+    private fun uiShape(color: Int, radius: Int = 14, outline: Boolean = false): GradientDrawable =
+        GradientDrawable().apply {
+            setColor(color)
+            cornerRadius = dp(radius).toFloat()
+            if (outline) setStroke(dp(1), uiOutline())
+        }
+    private fun uiAction(label: String, primary: Boolean = false): Button = Button(this).apply {
+        text = label
+        setAllCaps(false)
+        textSize = 13f
+        minHeight = dp(48)
+        minimumHeight = dp(48)
+        setTextColor(if (primary) Color.WHITE else uiForeground())
+        background = uiShape(if (primary) 0xFF1769A6.toInt() else uiSurface(), 12, !primary)
+    }
 
     private fun showThemePicker() {
         val names = arrayOf("Claro", "Escuro")
@@ -822,34 +882,41 @@ class MainActivity : ComponentActivity() {
         urlBar = EditText(this).apply {
             setSingleLine()
             hint = "URL ou busca"
+            textSize = 15f
+            minHeight = dp(48)
+            setSingleLine(true)
+            setPadding(dp(14), 0, dp(12), 0)
+            background = uiShape(uiSurface(), 14, true)
             imeOptions = EditorInfo.IME_ACTION_GO
             inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_URI
             setOnEditorActionListener { _, id, _ ->
                 if (id == EditorInfo.IME_ACTION_GO) { navigate(text.toString()); true } else false
             }
         }
-        tabsButton = Button(this).apply { text = "Abas"; setOnClickListener { showTabs() } }
+        tabsButton = uiAction("Abas").apply { setOnClickListener { showTabs() } }
         favoriteButton = Button(this).apply { text = "☆"; setOnClickListener { toggleFavorite() } }
-        val backButton = Button(this).apply {
+        val backButton = uiAction("‹").apply {
             text = "‹"
             contentDescription = "Voltar na página"
             setOnClickListener { if (webView.canGoBack()) webView.goBack() }
         }
-        val forwardButton = Button(this).apply {
+        val forwardButton = uiAction("›").apply {
             text = "›"
             contentDescription = "Avançar na página"
             setOnClickListener { if (webView.canGoForward()) webView.goForward() }
         }
-        val mediaButton = Button(this).apply { text = "Mídia"; setOnClickListener { showMediaMenu() } }
-        val menuButton = Button(this).apply { text = "Menu"; setOnClickListener { showMainMenu() } }
+        val mediaButton = uiAction("Mídia").apply { setOnClickListener { showMediaMenu() } }
+        val menuButton = uiAction("Menu").apply { setOnClickListener { showMainMenu() } }
         // Navegação frequente em uma linha; endereço na linha superior.
         val actions = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             listOf(backButton, forwardButton, tabsButton, mediaButton, menuButton).forEach {
-                addView(it, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
+                addView(it, LinearLayout.LayoutParams(0, dp(48), 1f).apply {
+                    marginStart = dp(2); marginEnd = dp(2)
+                })
             }
         }
-        val reloadButton = Button(this).apply {
+        val reloadButton = uiAction("↻").apply {
             text = "↻"
             contentDescription = "Recarregar página atual"
             setOnClickListener {
@@ -858,13 +925,20 @@ class MainActivity : ComponentActivity() {
         }
         val addressRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
+            gravity = android.view.Gravity.CENTER_VERTICAL
             addView(urlBar, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
-            addView(reloadButton, LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT))
+            addView(reloadButton, LinearLayout.LayoutParams(dp(48), dp(48)).apply {
+                marginStart = dp(6)
+            })
         }
         browserBar = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
+            setBackgroundColor(uiBackground())
+            setPadding(dp(8), dp(6), dp(8), dp(6))
             addView(addressRow, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
-            addView(actions, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
+            addView(actions, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply {
+                topMargin = dp(6)
+            })
         }
                 statusView = TextView(this).apply { textSize = 12f; visibility = View.GONE; setPadding(16, 4, 16, 4) }
         statusDefaultColor = statusView.currentTextColor
@@ -878,7 +952,7 @@ class MainActivity : ComponentActivity() {
                 orientation = LinearLayout.HORIZONTAL
                 gravity = android.view.Gravity.CENTER_VERTICAL
                 visibility = View.GONE
-                setPadding(12, 4, 12, 4)
+                setPadding(dp(12), dp(8), dp(12), dp(8))
                 setBackgroundColor(0xFF202B3A.toInt())
             }
             val title = TextView(this@MainActivity).apply {
@@ -887,15 +961,14 @@ class MainActivity : ComponentActivity() {
                 setOnClickListener { showNativeVideoPlayer() }
             }
             miniPlayerBar.addView(title, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
-            miniPlayButton = Button(this@MainActivity).apply {
+            miniPlayButton = uiAction("Pausar").apply {
                 text = "Pausar"
                 setOnClickListener {
                     miniController?.let { if (it.isPlaying) it.pause() else it.play() }
                 }
             }
             miniPlayerBar.addView(miniPlayButton)
-            miniPlayerBar.addView(Button(this@MainActivity).apply {
-                text = "Abrir vídeo"
+            miniPlayerBar.addView(uiAction("Abrir").apply {
                 setOnClickListener { showNativeVideoPlayer() }
             })
             addView(miniPlayerBar, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
@@ -935,6 +1008,7 @@ class MainActivity : ComponentActivity() {
         }
 
         val prefs = getSharedPreferences("tabs", MODE_PRIVATE)
+        restoreConstellationNames()
         val savedConstellations = prefs.getString("constellations_v1", null)
         if (savedConstellations != null) {
             runCatching {
@@ -1946,159 +2020,241 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun showTabs() {
-        val density = resources.displayMetrics.density
-        fun dp(n: Int) = (n * density + 0.5f).toInt()
-        val container = LinearLayout(this).apply {
+        val dialog = Dialog(this)
+        val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(dp(12), dp(10), dp(12), dp(8))
+            setPadding(dp(16), dp(16), dp(16), dp(12))
+            setBackgroundColor(uiBackground())
         }
-        container.addView(TextView(this).apply {
-            text = "Constelações"
+        val header = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = android.view.Gravity.CENTER_VERTICAL
+        }
+        header.addView(TextView(this).apply {
+            text = "✦ Constelações"
             textSize = 24f
+            setTextColor(uiForeground())
             setTypeface(null, android.graphics.Typeface.BOLD)
+        }, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
+        header.addView(uiAction("Fechar").apply {
+            contentDescription = "Fechar gerenciador de constelações"
+            setOnClickListener { dialog.dismiss() }
         })
-        val search = android.widget.EditText(this).apply {
-            hint = "Buscar abas ou endereços"
-            contentDescription = "Pesquisar em todas as constelações"
-            isSingleLine = true
-        }
-        container.addView(search)
-        val groupsForSearch = mutableListOf<Pair<android.view.View, MutableList<Pair<android.view.View, String>>>>()
-        val scroll = ScrollView(this)
-        val list = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(16, 8, 16, 12)
-        }
-        scroll.addView(list)
-        container.addView(scroll, LinearLayout.LayoutParams(MATCH_PARENT, 0, 1f))
-        val stats = TextView(this).apply {
-            text = "$totalTabCount/$MAX_TABS páginas · ${tabs.size}/${BrowserTabPolicy.MAX_RESIDENT_TABS} residentes\n" +
-                "As hibernadas economizam memória e são recarregadas ao abrir."
+        root.addView(header)
+        root.addView(TextView(this).apply {
+            text = "$totalTabCount de $MAX_TABS abas · ${tabs.size} em memória · ${parkedTabs.size} hibernadas"
             textSize = 13f
-            setPadding(8, 4, 8, 16)
-        }
-        list.addView(stats)
-        container.addView(Button(this).apply {
-            text = "Contas e perfis"
-            contentDescription = "Gerenciar perfis e contas Google"
-            setOnClickListener { showAccountProfilesMenu() }
+            setTextColor(uiMuted())
+            setPadding(0, dp(4), 0, dp(12))
         })
-        lateinit var dialog: AlertDialog
-        for (group in constellations) {
-            val residents = tabs.filter { it.constellation == group }
-            val sleeping = parkedTabs.filter { it.constellation == group }
-            if (residents.isEmpty() && sleeping.isEmpty()) continue
-            val header = TextView(this).apply {
-                val symbol = when (group) {
-                    "Exploração" -> "◈"
-                    "Estudos" -> "▤"
-                    "Entretenimento" -> "♫"
-                    "Trabalho" -> "▣"
-                    else -> "✦"
+        val search = EditText(this).apply {
+            hint = "Buscar título, endereço ou constelação"
+            setSingleLine(true)
+            textSize = 15f
+            minHeight = dp(48)
+            setPadding(dp(12), 0, dp(12), 0)
+            background = uiShape(uiSurface(), 12, true)
+        }
+        root.addView(search, LinearLayout.LayoutParams(MATCH_PARENT, dp(48)))
+        val filters = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            setPadding(0, dp(10), 0, dp(10))
+        }
+        root.addView(filters)
+        val scroll = ScrollView(this).apply { isFillViewport = true }
+        val list = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        scroll.addView(list)
+        root.addView(scroll, LinearLayout.LayoutParams(MATCH_PARENT, 0, 1f))
+        root.addView(uiAction("+ Nova constelação").apply {
+            setOnClickListener { dialog.dismiss(); createConstellation { showTabs() } }
+        }, LinearLayout.LayoutParams(MATCH_PARENT, dp(48)))
+        val bottom = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            setPadding(0, dp(10), 0, 0)
+        }
+        bottom.addView(uiAction("Nova aba", true).apply {
+            setOnClickListener { dialog.dismiss(); newTab() }
+        }, LinearLayout.LayoutParams(0, dp(48), 1f))
+        bottom.addView(uiAction("Hibernar").apply {
+            setOnClickListener { dialog.dismiss(); selectTabToPark("Escolher aba para hibernar") }
+        }, LinearLayout.LayoutParams(0, dp(48), 1f).apply { marginStart = dp(8) })
+        bottom.addView(uiAction("Perfis").apply {
+            setOnClickListener { dialog.dismiss(); showAccountProfilesMenu() }
+        }, LinearLayout.LayoutParams(0, dp(48), 1f).apply { marginStart = dp(8) })
+        root.addView(bottom)
+
+        var stateFilter = 0 // Todas, em memória, hibernadas
+        val names = listOf("Todas", "Em memória", "Hibernadas")
+        fun openTab(id: String) {
+            dialog.dismiss()
+            val liveIndex = tabs.indexOfFirst { it.id == id }
+            if (liveIndex >= 0) { activeIndex = liveIndex; showActive() }
+            else parkedTabs.indexOfFirst { it.id == id }.takeIf { it >= 0 }?.let(::restoreParkedTab)
+        }
+        fun render() {
+            list.removeAllViews()
+            val query = search.text.toString().trim()
+            var shown = 0
+            for ((groupIndex, group) in constellations.withIndex()) {
+                val icon = listOf("◈", "▤", "♫", "▣").getOrElse(groupIndex) { "✦" }
+                val accent = listOf(0xFF3689BE.toInt(), 0xFF8B70C9.toInt(),
+                    0xFFD38A31.toInt(), 0xFF32947C.toInt())
+                    .getOrElse(groupIndex) { 0xFF3689BE.toInt() }
+                val groupLive = tabs.filter { it.constellation == group }
+                    .sortedByDescending { it.lastUsed }
+                val groupParked = parkedTabs.filter { it.constellation == group }
+                val candidates = (if (stateFilter != 2) groupLive.map { it.id } else emptyList()) +
+                    (if (stateFilter != 1) groupParked.map { it.id } else emptyList())
+                val matching = candidates.filter { id ->
+                    val live = groupLive.firstOrNull { it.id == id }
+                    val parked = groupParked.firstOrNull { it.id == id }
+                    query.isBlank() || listOf(group, live?.view?.title, live?.title,
+                        live?.view?.url, parked?.title, parked?.url)
+                        .any { it?.contains(query, ignoreCase = true) == true }
                 }
-                text = "$symbol $group · ${residents.size + sleeping.size}"
-                textSize = 18f
-                setTypeface(null, android.graphics.Typeface.BOLD)
-                setPadding(8, 18, 8, 8)
-            }
-            list.addView(header)
-            val matchingRows = mutableListOf<Pair<android.view.View, String>>()
-            groupsForSearch.add(header to matchingRows)
-            for (id in residents.map { it.id } + sleeping.map { it.id }) {
-                val resident = tabs.firstOrNull { it.id == id }
-                val parked = parkedTabs.firstOrNull { it.id == id }
-                val isLive = resident != null
-                val name = (resident?.view?.title ?: resident?.title ?: parked?.title ?: "Página").take(85)
-                val line = LinearLayout(this).apply {
-                    orientation = LinearLayout.HORIZONTAL
-                    gravity = android.view.Gravity.CENTER_VERTICAL
-                    minimumHeight = dp(64)
-                    setPadding(dp(10), dp(8), dp(6), dp(8))
-                    background = android.graphics.drawable.GradientDrawable().apply {
-                        cornerRadius = dp(10).toFloat()
-                        setColor(if (resident?.id == tabs.getOrNull(activeIndex)?.id)
-                            0x223F8DCB else 0x0D808080)
+                if (matching.isEmpty() && (query.isNotBlank() || stateFilter != 0 ||
+                    groupLive.isNotEmpty() || groupParked.isNotEmpty())) continue
+                shown += matching.size
+                list.addView(TextView(this).apply {
+                    text = "$icon  $group  ·  ${matching.size}"
+                    textSize = 18f
+                    setTextColor(uiForeground())
+                    setTypeface(null, android.graphics.Typeface.BOLD)
+                    setPadding(dp(4), dp(14), 0, dp(8))
+                })
+                if (matching.isEmpty()) {
+                    list.addView(TextView(this).apply {
+                        text = "Sem abas · mova uma página pelo menu de ações"
+                        textSize = 12f
+                        setTextColor(uiMuted())
+                        setPadding(dp(12), dp(2), dp(8), dp(12))
+                    })
+                }
+                for (id in matching) {
+                    val resident = tabs.firstOrNull { it.id == id }
+                    val parked = parkedTabs.firstOrNull { it.id == id }
+                    val name = (resident?.view?.title ?: resident?.title ?: parked?.title ?: "Página")
+                        .take(100)
+                    val url = resident?.view?.url ?: resident?.url ?: parked?.url ?: ""
+                    val active = resident?.id == tabs.getOrNull(activeIndex)?.id
+                    val status = when {
+                        active -> "Em primeiro plano"
+                        resident != null -> "Em memória · reprodução não verificada"
+                        else -> "Hibernada · recarrega ao abrir"
                     }
-                }
-                val details = TextView(this).apply {
-                    text = name + (if ((resident?.profile ?: parked?.profile) == isolatedGoogleProfile)
-                        " · Perfil Google isolado" else "") + "\n" + when {
-                        resident?.id == tabs.getOrNull(activeIndex)?.id -> "● Em primeiro plano"
-                        isLive -> "● Na memória"
-                        else -> "◌ Hibernada · toque para restaurar"
+                    val row = LinearLayout(this).apply {
+                        orientation = LinearLayout.HORIZONTAL
+                        gravity = android.view.Gravity.CENTER_VERTICAL
+                        setPadding(dp(12), dp(10), dp(6), dp(10))
+                        background = uiShape(if (active) {
+                            if (isDarkTheme()) 0xFF25455E.toInt() else 0xFFE2F1FD.toInt()
+                        } else uiSurface(), 14, true)
+                        isClickable = true
+                        isFocusable = true
+                        contentDescription = "$name, $status, toque para ${if (resident != null) "abrir" else "restaurar"}"
+                        setOnClickListener { openTab(id) }
                     }
-                    textSize = 15f
-                    maxLines = 3
-                    ellipsize = android.text.TextUtils.TruncateAt.END
-                }
-                line.addView(details, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
-                line.isClickable = true
-                line.isFocusable = true
-                line.contentDescription = (if (isLive) "Abrir " else "Restaurar ") + name
-                line.setOnClickListener {
-                    dialog.dismiss()
-                    val liveIndex = tabs.indexOfFirst { it.id == id }
-                    if (liveIndex >= 0) { activeIndex = liveIndex; showActive() }
-                    else parkedTabs.indexOfFirst { it.id == id }.takeIf { it >= 0 }?.let(::restoreParkedTab)
-                }
-                line.addView(Button(this).apply {
-                    text = "⋮"
-                    minWidth = dp(48)
-                    minHeight = dp(48)
-                    contentDescription = "Ações de $name"
-                    setOnClickListener {
-                        dialog.dismiss()
-                        val activeTab = tabs.getOrNull(activeIndex)?.id == id
-                        val actions = if (isLive) arrayOf("Mover de constelação", "Hibernar", "Fechar")
-                            else arrayOf("Mover de constelação", "Excluir hibernada")
-                        AlertDialog.Builder(this@MainActivity).setTitle(name)
-                            .setItems(actions) { _, action ->
-                                when (action) {
-                                    0 -> moveTabToConstellation(id)
-                                    1 -> if (isLive) {
-                                        if (activeTab) Toast.makeText(this@MainActivity,
-                                            "Abra outra aba antes de hibernar a atual", Toast.LENGTH_LONG).show()
-                                        else confirmParkTab(id)
-                                    } else parkedTabs.indexOfFirst { it.id == id }.takeIf { it >= 0 }?.let {
-                                        parkedTabs.removeAt(it); deleteTabNavigation(id); persistTabs()
-                                        updateProfileIndicator()
+                    row.addView(TextView(this).apply {
+                        text = if (active) "●" else if (resident != null) "◉" else "◌"
+                        textSize = 22f
+                        setTextColor(if (active) accent else uiMuted())
+                        gravity = android.view.Gravity.CENTER
+                    }, LinearLayout.LayoutParams(dp(32), dp(48)))
+                    val detail = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+                    detail.addView(TextView(this).apply {
+                        text = name
+                        textSize = 15f
+                        setTextColor(uiForeground())
+                        setTypeface(null, if (active) android.graphics.Typeface.BOLD else android.graphics.Typeface.NORMAL)
+                        maxLines = 2
+                        ellipsize = android.text.TextUtils.TruncateAt.END
+                    })
+                    detail.addView(TextView(this).apply {
+                        text = (runCatching { Uri.parse(url).host }.getOrNull() ?: "Página") +
+                            if ((resident?.profile ?: parked?.profile) == isolatedGoogleProfile) " · Perfil 2" else ""
+                        textSize = 12f
+                        setTextColor(uiMuted())
+                        maxLines = 1
+                        ellipsize = android.text.TextUtils.TruncateAt.END
+                    })
+                    detail.addView(TextView(this).apply {
+                        text = status
+                        textSize = 12f
+                        setTextColor(if (active) uiAccent() else uiMuted())
+                    })
+                    row.addView(detail, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
+                    row.addView(uiAction("⋮").apply {
+                        minWidth = dp(48)
+                        contentDescription = "Ações da aba $name"
+                        setOnClickListener {
+                            dialog.dismiss()
+                            val live = tabs.any { it.id == id }
+                            val actions = if (live) arrayOf("Mover de constelação", "Hibernar", "Fechar aba")
+                                else arrayOf("Mover de constelação", "Excluir hibernada")
+                            AlertDialog.Builder(this@MainActivity).setTitle(name)
+                                .setItems(actions) { _, selected ->
+                                    when (selected) {
+                                        0 -> moveTabToConstellation(id)
+                                        1 -> if (live) {
+                                            if (tabs.getOrNull(activeIndex)?.id == id)
+                                                Toast.makeText(this@MainActivity,
+                                                    "Abra outra aba antes de hibernar a atual", Toast.LENGTH_LONG).show()
+                                            else confirmParkTab(id)
+                                        } else AlertDialog.Builder(this@MainActivity)
+                                            .setTitle("Excluir aba hibernada?")
+                                            .setMessage(name)
+                                            .setPositiveButton("Excluir") { _, _ ->
+                                                parkedTabs.indexOfFirst { it.id == id }
+                                                    .takeIf { it >= 0 }?.let { index ->
+                                                        parkedTabs.removeAt(index)
+                                                        deleteTabNavigation(id)
+                                                        persistTabs(); updateProfileIndicator()
+                                                    }
+                                            }.setNegativeButton("Cancelar", null).show()
+                                        2 -> AlertDialog.Builder(this@MainActivity)
+                                            .setTitle("Fechar aba?")
+                                            .setMessage(name)
+                                            .setPositiveButton("Fechar") { _, _ ->
+                                                tabs.indexOfFirst { it.id == id }
+                                                    .takeIf { it >= 0 }?.let(::closeTab)
+                                            }.setNegativeButton("Cancelar", null).show()
                                     }
-                                    2 -> tabs.indexOfFirst { it.id == id }.takeIf { it >= 0 }?.let(::closeTab)
-                                }
-                            }.setNegativeButton("Voltar", null).show()
-                    }
-                })
-                list.addView(line, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply {
-                    bottomMargin = dp(6)
-                })
-                matchingRows.add(line to (name + " " +
-                    (resident?.view?.url ?: resident?.url ?: parked?.url ?: "") + " " + group))
-            }
-        }
-        search.addTextChangedListener(object : android.text.TextWatcher {
-            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
-            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {
-                val term = s?.toString()?.trim().orEmpty()
-                groupsForSearch.forEach { (header, rows) ->
-                    var visibleCount = 0
-                    rows.forEach { (row, keywords) ->
-                        val visible = term.isBlank() || keywords.contains(term, ignoreCase = true)
-                        row.visibility = if (visible) android.view.View.VISIBLE else android.view.View.GONE
-                        if (visible) visibleCount++
-                    }
-                    header.visibility = if (visibleCount > 0) android.view.View.VISIBLE else android.view.View.GONE
+                                }.setNegativeButton("Cancelar", null).show()
+                        }
+                    }, LinearLayout.LayoutParams(dp(48), dp(48)))
+                    list.addView(row, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply {
+                        bottomMargin = dp(8)
+                    })
                 }
             }
-            override fun afterTextChanged(s: android.text.Editable?) {}
+            if (shown == 0) list.addView(TextView(this).apply {
+                text = "Nenhuma aba encontrada para este filtro."
+                textSize = 15f
+                setTextColor(uiMuted())
+                setPadding(dp(8), dp(24), dp(8), dp(24))
+            })
+        }
+        // Atualização independente: evita recriar o campo de busca e perder o foco.
+        fun refreshFilters() {
+            filters.removeAllViews()
+            names.forEachIndexed { index, name ->
+                filters.addView(uiAction(name, index == stateFilter).apply {
+                    setOnClickListener { stateFilter = index; refreshFilters(); render() }
+                }, LinearLayout.LayoutParams(0, dp(48), 1f).apply {
+                    marginStart = dp(2); marginEnd = dp(2)
+                })
+            }
+        }
+        search.addTextChangedListener(object : TextWatcher {
+            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) = Unit
+            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) = render()
+            override fun afterTextChanged(s: Editable?) = Unit
         })
-        dialog = AlertDialog.Builder(this)
-            .setView(container)
-            .setPositiveButton("Nova aba") { _, _ -> newTab() }
-            .setNeutralButton("Hibernar") { _, _ -> selectTabToPark("Escolher aba para hibernar") }
-            .setNegativeButton("Fechar", null)
-            .create()
+        refreshFilters()
+        render()
+        dialog.setContentView(root)
         dialog.show()
-        dialog.window?.setLayout(MATCH_PARENT, MATCH_PARENT)
+        dialog.window?.setLayout(minOf(resources.displayMetrics.widthPixels, dp(720)), MATCH_PARENT)
     }
 
     private fun toggleFavorite() {
@@ -4736,17 +4892,19 @@ class MainActivity : ComponentActivity() {
             orientation = LinearLayout.HORIZONTAL
             gravity = android.view.Gravity.CENTER
         }
-        val back = Button(this).apply { text = "−10 s" }
-        val play = Button(this).apply { text = "Play/Pause" }
-        val forward = Button(this).apply { text = "+10 s" }
-        val rotate = Button(this).apply { text = "Girar" }
-        val fullscreenButton = Button(this).apply { text = "Tela cheia" }
-        val pipButton = Button(this).apply { text = "PiP" }
-        val close = Button(this).apply { text = "Fechar" }
-        val navControls = LinearLayout(this)
+        val back = uiAction("−10 s")
+        val play = uiAction("Reproduzir", true)
+        val forward = uiAction("+10 s")
+        val rotate = uiAction("Girar")
+        val fullscreenButton = uiAction("Tela cheia")
+        val pipButton = uiAction("PiP")
+        val close = uiAction("Fechar")
+        val navControls = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        val displayControls = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         listOf(close, rotate, fullscreenButton, pipButton).forEach { navControls.addView(it,
-            LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f)) }
-        outer.addView(navControls)
+            LinearLayout.LayoutParams(0, dp(48), 1f).apply { marginStart = dp(2); marginEnd = dp(2) }) }
+        outer.addView(navControls, LinearLayout.LayoutParams(MATCH_PARENT, dp(48)))
+        outer.addView(displayControls, LinearLayout.LayoutParams(MATCH_PARENT, dp(48)))
         // Controles de recuperação só aparecem durante espera prolongada ou falha.
         val recoveryRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -4767,7 +4925,7 @@ class MainActivity : ComponentActivity() {
         outer.addView(recoveryRow, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
         outer.addView(View(this), LinearLayout.LayoutParams(1, 0, 1f))
         listOf(back, play, forward).forEach { controls.addView(it,
-            LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f)) }
+            LinearLayout.LayoutParams(0, dp(48), 1f).apply { marginStart = dp(3); marginEnd = dp(3) }) }
         outer.addView(controls, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
         outer.addView(progress, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
         panel.addView(outer, FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT))
@@ -4825,8 +4983,7 @@ class MainActivity : ComponentActivity() {
                 surface.layoutParams = FrameLayout.LayoutParams(w, h, android.view.Gravity.CENTER)
         }
         panel.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ -> updateVideoAspect() }
-        val attentionButton = Button(this).apply {
-            text = "Tempo"
+        val attentionButton = uiAction("Tempo").apply {
             contentDescription = "Consultar tempo do Controle de Atenção"
             setOnClickListener {
                 val page = player?.currentMediaItem?.mediaMetadata?.extras
@@ -4852,9 +5009,13 @@ class MainActivity : ComponentActivity() {
                     .setMessage(message).setPositiveButton("OK", null).show()
             }
         }
-        navControls.addView(attentionButton, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
-        val aspectButton = Button(this).apply { text = "Ajustar" }
-        navControls.addView(aspectButton, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
+        displayControls.addView(attentionButton, LinearLayout.LayoutParams(0, dp(48), 1f).apply {
+            marginStart = dp(2); marginEnd = dp(2)
+        })
+        val aspectButton = uiAction("Ajustar")
+        displayControls.addView(aspectButton, LinearLayout.LayoutParams(0, dp(48), 1f).apply {
+            marginStart = dp(2); marginEnd = dp(2)
+        })
         // Alterar o enquadramento nunca deve reativar áudio de uma sessão limitada.
         fun enforceAttentionForPlayerControls(): Boolean {
             val page = player?.currentMediaItem?.mediaMetadata?.extras
@@ -5597,16 +5758,104 @@ class MainActivity : ComponentActivity() {
     private fun showSavedPages(favorites: Boolean) {
         val pages = if (favorites) store.favorites() else store.history()
         if (pages.isEmpty()) { Toast.makeText(this, "Nenhum registro", Toast.LENGTH_SHORT).show(); return }
-        val labels = pages.map { (it.title.ifBlank { it.url }).take(60) + "\n" + it.url.take(75) }.toTypedArray()
-        AlertDialog.Builder(this).setTitle(if (favorites) "Favoritos" else "Histórico")
-            .setItems(labels) { _, index -> navigate(pages[index].url) }
-            .setNeutralButton(if (favorites) "Remover favorito" else "Limpar histórico") { _, _ ->
-                if (favorites) showRemoveFavorite(pages) else AlertDialog.Builder(this)
+        val dialog = Dialog(this)
+        val root = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setBackgroundColor(uiBackground())
+            setPadding(dp(16), dp(16), dp(16), dp(12))
+        }
+        val top = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = android.view.Gravity.CENTER_VERTICAL
+        }
+        top.addView(TextView(this).apply {
+            text = if (favorites) "★ Favoritos" else "◷ Histórico"
+            textSize = 24f
+            setTextColor(uiForeground())
+            setTypeface(null, android.graphics.Typeface.BOLD)
+        }, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
+        top.addView(uiAction("Fechar").apply { setOnClickListener { dialog.dismiss() } })
+        root.addView(top)
+        root.addView(TextView(this).apply {
+            text = "${pages.size} página(s) salvas"
+            textSize = 13f
+            setTextColor(uiMuted())
+            setPadding(0, dp(4), 0, dp(12))
+        })
+        val search = EditText(this).apply {
+            hint = "Buscar por título ou endereço"
+            setSingleLine(true)
+            textSize = 15f
+            setPadding(dp(12), 0, dp(12), 0)
+            background = uiShape(uiSurface(), 12, true)
+        }
+        root.addView(search, LinearLayout.LayoutParams(MATCH_PARENT, dp(48)))
+        val scroll = ScrollView(this)
+        val content = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(0, dp(12), 0, 0)
+        }
+        scroll.addView(content)
+        root.addView(scroll, LinearLayout.LayoutParams(MATCH_PARENT, 0, 1f))
+        fun render() {
+            content.removeAllViews()
+            val query = search.text.toString().trim()
+            val filtered = pages.filter { query.isEmpty() ||
+                it.title.contains(query, true) || it.url.contains(query, true) }
+            if (filtered.isEmpty()) content.addView(TextView(this).apply {
+                text = "Nenhuma página encontrada."
+                textSize = 15f
+                setTextColor(uiMuted())
+                setPadding(dp(8), dp(20), dp(8), dp(20))
+            })
+            filtered.forEach { page ->
+                val row = LinearLayout(this).apply {
+                    orientation = LinearLayout.VERTICAL
+                    setPadding(dp(14), dp(12), dp(14), dp(12))
+                    background = uiShape(uiSurface(), 14, true)
+                    isClickable = true
+                    isFocusable = true
+                    contentDescription = "Abrir ${page.title.ifBlank { page.url }}"
+                    setOnClickListener { dialog.dismiss(); navigate(page.url) }
+                }
+                row.addView(TextView(this).apply {
+                    text = page.title.ifBlank { page.url }
+                    textSize = 16f
+                    setTextColor(uiForeground())
+                    maxLines = 2
+                    ellipsize = android.text.TextUtils.TruncateAt.END
+                })
+                row.addView(TextView(this).apply {
+                    text = page.url
+                    textSize = 12f
+                    setTextColor(uiMuted())
+                    maxLines = 2
+                    ellipsize = android.text.TextUtils.TruncateAt.END
+                })
+                content.addView(row, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply {
+                    bottomMargin = dp(8)
+                })
+            }
+        }
+        search.addTextChangedListener(object : TextWatcher {
+            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) = Unit
+            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) = render()
+            override fun afterTextChanged(s: Editable?) = Unit
+        })
+        root.addView(uiAction(if (favorites) "Gerenciar favoritos" else "Limpar histórico").apply {
+            setOnClickListener {
+                dialog.dismiss()
+                if (favorites) showRemoveFavorite(pages)
+                else AlertDialog.Builder(this@MainActivity)
                     .setTitle("Apagar todo o histórico?")
                     .setPositiveButton("Apagar") { _, _ -> store.clearHistory() }
                     .setNegativeButton("Cancelar", null).show()
             }
-            .setNegativeButton("Voltar", null).show()
+        }, LinearLayout.LayoutParams(MATCH_PARENT, dp(48)))
+        render()
+        dialog.setContentView(root)
+        dialog.show()
+        dialog.window?.setLayout(minOf(resources.displayMetrics.widthPixels, dp(720)), MATCH_PARENT)
     }
     private fun showRemoveFavorite(pages: List<SavedPage>) {
         AlertDialog.Builder(this).setTitle("Remover favorito")
