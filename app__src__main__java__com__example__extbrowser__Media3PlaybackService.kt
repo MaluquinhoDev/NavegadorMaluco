@@ -45,6 +45,8 @@ class Media3PlaybackService : MediaSessionService() {
         }
         fun queueStatus(): String = liveService?.queueSummary() ?: "Player não iniciado"
         fun clearPendingQueue() { liveService?.clearPendingQueue() }
+        fun synchronizeQueue(ids: List<String>, music: Boolean, currentId: String?): Int =
+            liveService?.replaceUpcomingQueue(ids, music, currentId) ?: 0
 
         fun stopExistingPlayback() {
             liveService?.stopAndClear()
@@ -61,6 +63,7 @@ class Media3PlaybackService : MediaSessionService() {
     private val pendingTracks = ArrayDeque<QueuedTrack>()
     private var fetchingNext = false
     private var queueRevision = 0
+    private var queueFailure: String? = null
     private fun persistQueue() {
         val array = org.json.JSONArray()
         pendingTracks.forEach {
@@ -90,23 +93,46 @@ class Media3PlaybackService : MediaSessionService() {
             }
         }
         persistQueue()
+        if (count > 0) queueFailure = null
         return count
+    }
+    /** A página é autoridade apenas sobre a ordem futura; nunca troca a faixa em execução. */
+    @Synchronized private fun replaceUpcomingQueue(
+        ids: List<String>, music: Boolean, currentId: String?
+    ): Int {
+        val valid = ids.take(100).filter { it.matches(Regex("[A-Za-z0-9_-]{11}")) }.distinct()
+        if (valid.isEmpty()) return pendingTracks.size // DOM temporariamente incompleto
+        val playingId = player?.currentMediaItem?.mediaMetadata?.extras
+            ?.getString("nm_youtube_video_id") ?: currentId
+        val position = valid.indexOf(playingId)
+        // Não descartar a fila quando a página ainda não carregou o item atual.
+        if (playingId != null && position < 0) return pendingTracks.size
+        val upcoming = if (position >= 0) valid.drop(position + 1) else valid
+        val replacement = upcoming.take(100).map { QueuedTrack(it, music) }
+        if (replacement != pendingTracks.toList()) {
+            queueRevision++
+            pendingTracks.clear()
+            pendingTracks.addAll(replacement)
+            persistQueue()
+        }
+        return pendingTracks.size
     }
     @Synchronized private fun clearPendingQueue() {
         queueRevision++
         pendingTracks.clear()
+        queueFailure = null
         persistQueue()
     }
     @Synchronized private fun queueSummary(): String =
-        "${pendingTracks.size} item(ns) pendente(s)"
+        "${pendingTracks.size} item(ns) pendente(s)" +
+            (queueFailure?.let { " · $it" } ?: "")
     /** Somente o serviço avança a fila; nunca cria reprodução em loop. */
     private fun advanceQueue() {
         if (fetchingNext) return
         val exo = player ?: return
-        val next = synchronized(this) {
-            if (pendingTracks.isEmpty()) null else pendingTracks.removeFirst().also { persistQueue() }
-        } ?: return
+        val next = synchronized(this) { pendingTracks.firstOrNull() } ?: return
         val revision = queueRevision
+        val completedItem = exo.currentMediaItem
         fetchingNext = true
         val page = if (next.music) "https://music.youtube.com/watch?v=${next.id}"
             else "https://www.youtube.com/watch?v=${next.id}"
@@ -132,10 +158,15 @@ class Media3PlaybackService : MediaSessionService() {
                 ?: report?.sources?.firstOrNull { it.playable }
             attentionHandler.post {
                 fetchingNext = false
-                if (revision != queueRevision || exo.playbackState != Player.STATE_ENDED) return@post
+                if (revision != queueRevision) {
+                    if (exo.playbackState == Player.STATE_ENDED) advanceQueue()
+                    return@post
+                }
+                if (exo.playbackState != Player.STATE_ENDED ||
+                    exo.currentMediaItem !== completedItem) return@post
                 if (source == null || Attention.checkNavigation(page) != null) {
                     // Falha fechada: não pula silenciosamente músicas indisponíveis.
-                    clearPendingQueue()
+                    queueFailure = "Falha ao preparar ${next.id}; fila preservada"
                     exo.stop()
                     exo.clearMediaItems()
                     Log.w(TAG, "Fila interrompida: fonte indisponível ou limite de atenção")
@@ -155,6 +186,13 @@ class Media3PlaybackService : MediaSessionService() {
                 exo.setMediaItem(item)
                 exo.prepare()
                 exo.play()
+                synchronized(this) {
+                    if (pendingTracks.firstOrNull() == next) {
+                        pendingTracks.removeFirst()
+                        persistQueue()
+                    }
+                }
+                queueFailure = null
             }
         }.start()
     }

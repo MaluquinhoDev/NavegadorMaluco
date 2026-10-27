@@ -596,6 +596,9 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun forceStopAllMediaFromMenu() {
+        queueSyncView = null
+        queueSyncPage = null
+        handler.removeCallbacks(queueSyncTicker)
         StopAllMediaReceiver.stopAll(this)
         Toast.makeText(this, "Todas as reproduções foram interrompidas", Toast.LENGTH_SHORT).show()
     }
@@ -2640,14 +2643,30 @@ class MainActivity : ComponentActivity() {
             }.setNegativeButton("Fechar", null).show()
     }
 
-    /** Importa apenas itens visíveis na sequência do site, sem cookies nem tokens. */
-    private fun importNativeMediaQueue() {
-        val view = webView
-        val page = view.url.orEmpty()
-        if (!isYouTubeMusic(page) && youtubeVideoId(page) == null) {
-            Toast.makeText(this, "Abra uma fila do YouTube ou YouTube Music.", Toast.LENGTH_LONG).show()
-            return
+    private var queueSyncView: WebView? = null
+    private var queueSyncPage: String? = null
+    private val queueSyncTicker = object : Runnable {
+        override fun run() {
+            val view = queueSyncView ?: return
+            val page = queueSyncPage ?: return
+            if (isDestroyed || isFinishing || view.url != page) {
+                queueSyncView = null
+                queueSyncPage = null
+                return
+            }
+            if (browserIsResumed) capturePageQueue(view, page) { ids, music ->
+                if (ids.isNotEmpty() && queueSyncView === view && view.url == page)
+                    Media3PlaybackService.synchronizeQueue(ids, music, youtubeVideoId(page))
+            }
+            handler.postDelayed(this, 15000L)
         }
+    }
+
+    /** Apenas a sequência exposta na página, não os dados privados de recomendações. */
+    private fun capturePageQueue(
+        view: WebView, page: String, callback: (List<String>, Boolean) -> Unit
+    ) {
+        if (view.url != page) return
         val script = """(function(){
             const valid=/^[A-Za-z0-9_-]{11}$/;
             const music=location.hostname==='music.youtube.com';
@@ -2656,25 +2675,25 @@ class MainActivity : ComponentActivity() {
                 ['ytd-playlist-panel-renderer','ytd-playlist-video-list-renderer'];
             const found=[], seen=new Set();
             for(const selector of roots){
-                const root=document.querySelector(selector);
-                if(!root) continue;
-                for(const a of root.querySelectorAll('a[href*="watch"]')){
-                    try {
-                        const u=new URL(a.href, location.href);
-                        const id=u.searchParams.get('v');
-                        if(id && valid.test(id) && !seen.has(id)){
-                            seen.add(id); found.push(id);
-                            if(found.length>=100) break;
-                        }
-                    }catch(e){}
+                for(const root of document.querySelectorAll(selector)){
+                    for(const a of root.querySelectorAll('a[href*="watch"]')){
+                        try {
+                            const u=new URL(a.href, location.href);
+                            const id=u.searchParams.get('v');
+                            if(id && valid.test(id) && !seen.has(id)){
+                                seen.add(id); found.push(id);
+                                if(found.length>=100) break;
+                            }
+                        }catch(e){}
+                    }
+                    if(found.length>=100) break;
                 }
                 if(found.length) break;
             }
             return JSON.stringify({ids:found,music:music});
         })()"""
         view.evaluateJavascript(script) { encoded ->
-            if (isDestroyed || isFinishing || view !== webView || view.url != page)
-                return@evaluateJavascript
+            if (isDestroyed || isFinishing || view.url != page) return@evaluateJavascript
             val data = runCatching {
                 org.json.JSONObject(org.json.JSONArray("[$encoded]").getString(0))
             }.getOrNull()
@@ -2682,6 +2701,20 @@ class MainActivity : ComponentActivity() {
             val ids = (0 until (array?.length() ?: 0)).mapNotNull { i ->
                 array?.optString(i)?.takeIf { it.matches(Regex("[A-Za-z0-9_-]{11}")) }
             }.distinct()
+            callback(ids, data?.optBoolean("music") == true)
+        }
+    }
+
+    /** Importa a sequência visível e acompanha suas alterações enquanto a aba estiver aberta. */
+    private fun importNativeMediaQueue() {
+        val view = webView
+        val page = view.url.orEmpty()
+        if (!isYouTubeMusic(page) && youtubeVideoId(page) == null) {
+            Toast.makeText(this, "Abra uma fila do YouTube ou YouTube Music.", Toast.LENGTH_LONG).show()
+            return
+        }
+        capturePageQueue(view, page) { ids, music ->
+            if (view !== webView) return@capturePageQueue
             if (ids.isEmpty()) {
                 AlertDialog.Builder(this).setTitle("Fila de reprodução")
                     .setMessage("Nenhuma sequência acessível foi encontrada na página. Abra a fila ou playlist do site e mantenha a lista visível.")
@@ -2689,12 +2722,18 @@ class MainActivity : ComponentActivity() {
                 return@evaluateJavascript
             }
             AlertDialog.Builder(this).setTitle("Importar fila · ${ids.size} faixa(s)")
-                .setMessage("Os itens visíveis serão adicionados à fila nativa. A fonte será extraída individualmente perto da reprodução. Sem repetição automática.")
+                .setMessage("A fila visível será importada e atualizada a cada 15 segundos enquanto esta página estiver aberta no navegador. O Media3 continuará responsável pela reprodução.")
                 .setPositiveButton("Adicionar") { _, _ ->
                     val currentId = youtubeVideoId(page)
-                    val next = ids.dropWhile { currentId != null && it != currentId }
-                        .let { if (currentId != null && it.isNotEmpty()) it.drop(1) else ids }
-                    val added = Media3PlaybackService.appendQueue(next, isYouTubeMusic(page))
+                    val position = ids.indexOf(currentId)
+                    val next = if (position >= 0) ids.drop(position + 1) else ids
+                    val added = Media3PlaybackService.appendQueue(next, music)
+                    if (added > 0 || Media3PlaybackService.queueStatus().contains("pendente(s)")) {
+                        queueSyncView = view
+                        queueSyncPage = page
+                        handler.removeCallbacks(queueSyncTicker)
+                        handler.postDelayed(queueSyncTicker, 15000L)
+                    }
                     Toast.makeText(this, "Fila: $added faixa(s) adicionada(s). " +
                         Media3PlaybackService.queueStatus(), Toast.LENGTH_LONG).show()
                 }
@@ -2729,6 +2768,9 @@ class MainActivity : ComponentActivity() {
                         .setMessage(Media3PlaybackService.queueStatus() +
                             "\\nA próxima fonte é obtida quando a mídia atual termina.")
                         .setPositiveButton("Limpar fila") { _, _ ->
+                            queueSyncView = null
+                            queueSyncPage = null
+                            handler.removeCallbacks(queueSyncTicker)
                             Media3PlaybackService.clearPendingQueue()
                         }.setNegativeButton("Fechar", null).show()
                     9 -> forceStopAllMediaFromMenu()
@@ -5670,6 +5712,7 @@ class MainActivity : ComponentActivity() {
         super.onPause()
     }
     override fun onDestroy() {
+        handler.removeCallbacks(queueSyncTicker)
         if (liveBrowser?.get() === this) liveBrowser = null
         backgroundAudioPrefs.unregisterOnSharedPreferenceChangeListener(backgroundAudioPreferenceListener)
         handler.removeCallbacks(audibleMediaTicker)
