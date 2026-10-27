@@ -2719,7 +2719,7 @@ class MainActivity : ComponentActivity() {
                 AlertDialog.Builder(this).setTitle("Fila de reprodução")
                     .setMessage("Nenhuma sequência acessível foi encontrada na página. Abra a fila ou playlist do site e mantenha a lista visível.")
                     .setPositiveButton("OK", null).show()
-                return@evaluateJavascript
+                return@capturePageQueue
             }
             AlertDialog.Builder(this).setTitle("Importar fila · ${ids.size} faixa(s)")
                 .setMessage("A fila visível será importada e atualizada a cada 15 segundos enquanto esta página estiver aberta no navegador. O Media3 continuará responsável pela reprodução.")
