@@ -1798,13 +1798,23 @@ class MainActivity : ComponentActivity() {
         }
         urlBar.setText(attentionBlockedSources[newView] ?: newView.url ?: tabs[activeIndex].url)
         tabs[activeIndex].lastUsed = SystemClock.elapsedRealtime()
-        tabsButton.text = "${totalTabCount} abas"
+        updateProfileIndicator()
         servedBlockUrl = null
         lastBlockMs = 0
         updateFavorite()
         updateStatus()
         updateInstagramOverlay()
         persistTabs()
+    }
+
+    private fun profileDisplayName(profile: String): String =
+        if (profile == isolatedGoogleProfile) "Google 2 · isolado" else "Principal"
+
+    private fun updateProfileIndicator() {
+        val profile = tabs.getOrNull(activeIndex)?.profile ?: ""
+        tabsButton.text = "$totalTabCount · ${if (profile == isolatedGoogleProfile) "P2" else "P1"}"
+        tabsButton.contentDescription = "$totalTabCount abas · perfil ${profileDisplayName(profile)} · gerenciar abas"
+        urlBar.hint = "${profileDisplayName(profile)} · URL ou busca"
     }
 
     private fun newTab(url: String = HOME, profile: String = "",
@@ -1845,7 +1855,7 @@ class MainActivity : ComponentActivity() {
         tab.view.destroy()
         if (index < activeIndex) activeIndex--
         persistTabs()
-        tabsButton.text = "${totalTabCount} abas"
+        updateProfileIndicator()
     }
 
     private fun confirmParkTab(id: String, afterPark: () -> Unit = {}) {
@@ -1946,6 +1956,11 @@ class MainActivity : ComponentActivity() {
             setPadding(8, 4, 8, 16)
         }
         list.addView(stats)
+        list.addView(Button(this).apply {
+            text = "Contas e perfis · P1 / P2"
+            contentDescription = "Gerenciar perfis e contas Google"
+            setOnClickListener { showAccountProfilesMenu() }
+        })
         lateinit var dialog: AlertDialog
         for (group in constellations) {
             val residents = tabs.filter { it.constellation == group }
@@ -2006,7 +2021,7 @@ class MainActivity : ComponentActivity() {
                                         else confirmParkTab(id)
                                     } else parkedTabs.indexOfFirst { it.id == id }.takeIf { it >= 0 }?.let {
                                         parkedTabs.removeAt(it); deleteTabNavigation(id); persistTabs()
-                                        tabsButton.text = "${totalTabCount} abas"
+                                        updateProfileIndicator()
                                     }
                                     2 -> tabs.indexOfFirst { it.id == id }.takeIf { it >= 0 }?.let(::closeTab)
                                 }
@@ -2072,17 +2087,94 @@ class MainActivity : ComponentActivity() {
     private fun showMainMenu() {
         AlertDialog.Builder(this).setTitle("NavegadorMaluco")
             .setItems(arrayOf("Biblioteca · favoritos e histórico", "Reprodução e mídia",
-                "Ferramentas do navegador", "Diagnósticos e testes",
+                "Contas e perfis · alternar Google", "Ferramentas do navegador", "Diagnósticos e testes",
                 "Favoritar / desfavoritar", "■ Parar todas as mídias")) { _, which ->
                 when (which) {
                     0 -> showLibrary()
                     1 -> showMediaMenu()
-                    2 -> showToolsMenu()
-                    3 -> showDiagnosticsMenu()
-                    4 -> toggleFavorite()
-                    5 -> forceStopAllMediaFromMenu()
+                    2 -> showAccountProfilesMenu()
+                    3 -> showToolsMenu()
+                    4 -> showDiagnosticsMenu()
+                    5 -> toggleFavorite()
+                    6 -> forceStopAllMediaFromMenu()
                 }
             }.show()
+    }
+
+    /** Alterna abas, nunca transporta cookies, senhas ou estado de autenticação. */
+    private fun showAccountProfilesMenu() {
+        val current = tabs.getOrNull(activeIndex)?.profile ?: ""
+        AlertDialog.Builder(this).setTitle("Contas e perfis · ${profileDisplayName(current)}")
+            .setItems(arrayOf("P1 · Principal", "P2 · Google isolado")) { _, choice ->
+                showProfileActions(if (choice == 1) isolatedGoogleProfile else "")
+            }.setNeutralButton("Como funciona") { _, _ ->
+                AlertDialog.Builder(this).setTitle("Sessões Google independentes")
+                    .setMessage("P1 conserva os logins originais. P2 usa cookies e armazenamento separados. " +
+                        "Após autenticar em P2, abra YouTube ou Gmail em P2 por este menu. " +
+                        "A conta ativa dentro de cada sessão é determinada pelo Google, não pelo navegador.")
+                    .setPositiveButton("Entendi", null).show()
+            }.setNegativeButton("Fechar", null).show()
+    }
+
+    private fun showProfileActions(profile: String) {
+        if (profile == isolatedGoogleProfile && !supportedGoogleProfile()) {
+            AlertDialog.Builder(this).setTitle("Perfil isolado indisponível")
+                .setMessage("Este motor WebView não suporta sessões independentes. A sessão principal foi preservada.")
+                .setPositiveButton("Entendi", null).show()
+            return
+        }
+        val count = tabs.count { it.profile == profile } + parkedTabs.count { it.profile == profile }
+        AlertDialog.Builder(this).setTitle("${profileDisplayName(profile)} · $count abas")
+            .setItems(arrayOf("Ir para aba existente deste perfil",
+                "Abrir YouTube neste perfil", "Abrir Gmail neste perfil",
+                "Abrir Minha Conta neste perfil", "Selecionar conta Google neste perfil",
+                "Abrir domínio atual neste perfil", "Nova aba neste perfil")) { _, choice ->
+                when (choice) {
+                    0 -> showProfileTabs(profile)
+                    1 -> newTab("https://www.youtube.com/", profile = profile)
+                    2 -> newTab("https://mail.google.com/", profile = profile)
+                    3 -> newTab("https://myaccount.google.com/", profile = profile)
+                    4 -> newTab("https://accounts.google.com/", profile = profile)
+                    5 -> {
+                        // Só origem do site, sem parâmetros que poderiam conter tokens.
+                        val address = runCatching { Uri.parse(webView.url) }.getOrNull()
+                        val domain = address?.host
+                        val scheme = address?.scheme
+                        if (domain != null && (scheme == "https" || scheme == "http"))
+                            newTab("$scheme://$domain/", profile = profile)
+                        else Toast.makeText(this, "Nenhum domínio HTTP válido nesta aba", Toast.LENGTH_LONG).show()
+                    }
+                    6 -> newTab(profile = profile)
+                }
+            }.setNegativeButton("Voltar", null).show()
+    }
+
+    private fun showProfileTabs(profile: String) {
+        val liveIds = tabs.filter { it.profile == profile }.map { it.id }
+        val parkedIds = parkedTabs.filter { it.profile == profile }.map { it.id }
+        val ids = liveIds + parkedIds
+        if (ids.isEmpty()) {
+            AlertDialog.Builder(this).setTitle(profileDisplayName(profile))
+                .setMessage("Ainda não há abas neste perfil.")
+                .setPositiveButton("Abrir YouTube") { _, _ ->
+                    newTab("https://www.youtube.com/", profile = profile)
+                }.setNegativeButton("Fechar", null).show()
+            return
+        }
+        val titles = ids.map { id ->
+            tabs.firstOrNull { it.id == id }?.let {
+                "● ${(it.view.title ?: it.title).take(65)}"
+            } ?: parkedTabs.firstOrNull { it.id == id }?.let {
+                "◌ ${(it.title).take(65)} · hibernada"
+            } ?: "Aba"
+        }
+        AlertDialog.Builder(this).setTitle("Abas · ${profileDisplayName(profile)}")
+            .setItems(titles.toTypedArray()) { _, index ->
+                val id = ids[index]
+                val live = tabs.indexOfFirst { it.id == id }
+                if (live >= 0) { activeIndex = live; showActive() }
+                else parkedTabs.indexOfFirst { it.id == id }.takeIf { it >= 0 }?.let(::restoreParkedTab)
+            }.setNegativeButton("Voltar", null).show()
     }
 
     private fun showLibrary() {
