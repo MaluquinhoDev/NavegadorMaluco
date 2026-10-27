@@ -80,16 +80,23 @@ class MainActivity : ComponentActivity() {
         }
     }
     private class Blocker(val name: String, val regex: Regex)
+    private val isolatedGoogleProfile = "google_secondary_v1"
     private data class Tab(
         val view: WebView, var title: String = "Nova aba", var url: String = HOME,
         var constellation: String = "Exploração", var lastUsed: Long = SystemClock.elapsedRealtime(),
-        val id: String = UUID.randomUUID().toString()
+        val id: String = UUID.randomUUID().toString(), val profile: String = ""
     )
     private data class ParkedTab(val url: String, val title: String, val constellation: String,
-        val id: String = UUID.randomUUID().toString())
+        val id: String = UUID.randomUUID().toString(), val profile: String = "")
     private val parkedTabs = mutableListOf<ParkedTab>()
     private val constellations = listOf("Exploração", "Estudos", "Entretenimento", "Trabalho")
     private val totalTabCount get() = tabs.size + parkedTabs.size
+
+    private fun supportedGoogleProfile(): Boolean =
+        WebViewFeature.isFeatureSupported(WebViewFeature.MULTI_PROFILE)
+
+    private fun storedProfile(value: String?): String =
+        if (value == isolatedGoogleProfile && supportedGoogleProfile()) isolatedGoogleProfile else ""
 
     // Diagnóstico volátil: nenhum cookie, token, e-mail, URL ou corpo de resposta é coletado.
     private var googleLoginAuditEnabled = false
@@ -175,6 +182,8 @@ class MainActivity : ComponentActivity() {
         appendLine("Cookies gerais: ${CookieManager.getInstance().acceptCookie()}")
         appendLine("Cookies de terceiros (aba atual): ${CookieManager.getInstance().acceptThirdPartyCookies(webView)}")
         appendLine("Compatibilidade de cookies Google: ${googleCookieCompatEnabled()}")
+        appendLine("Perfis isolados WebView disponíveis: ${supportedGoogleProfile()}")
+        appendLine("Perfil da aba atual: ${if (tabs.getOrNull(activeIndex)?.profile == isolatedGoogleProfile) "Google isolado" else "padrão"}")
         appendLine("Abas: $totalTabCount · residentes: ${tabs.size}")
         appendLine("Redirecionamentos HTTP observados: $googleLoginRedirectCount")
         appendLine("Janelas auxiliares solicitadas: $googleLoginPopupCount")
@@ -934,11 +943,12 @@ class MainActivity : ComponentActivity() {
                     val title = item.optString("title", "Nova aba").take(100)
                     val group = item.optString("group", "Exploração").takeIf { it in constellations } ?: "Exploração"
                     val id = safeTabId(item.optString("id", ""))
+                    val profile = storedProfile(item.optString("profile", ""))
                     if (item.optBoolean("live", false) && tabs.size < BrowserTabPolicy.MAX_RESIDENT_TABS) {
-                        val tab = Tab(createWebView(), title, url, group, id = id)
+                        val tab = Tab(createWebView(profile), title, url, group, id = id, profile = profile)
                         tabs.add(tab)
                         restoreTabNavigation(tab)
-                    } else parkedTabs.add(ParkedTab(url, title, group, id))
+                    } else parkedTabs.add(ParkedTab(url, title, group, id, profile))
                 }
             }.onFailure {
                 tabs.forEach { it.view.destroy() }
@@ -949,7 +959,8 @@ class MainActivity : ComponentActivity() {
             if (parkedTabs.isNotEmpty()) {
                 // Sessão válida somente com abas guardadas: recupera uma, sem duplicar o legado.
                 val first = parkedTabs.removeAt(0)
-                val tab = Tab(createWebView(), first.title, first.url, first.constellation, id = first.id)
+                val tab = Tab(createWebView(first.profile), first.title, first.url,
+                    first.constellation, id = first.id, profile = first.profile)
                 tabs.add(tab)
                 restoreTabNavigation(tab)
             } else {
@@ -982,8 +993,11 @@ class MainActivity : ComponentActivity() {
     }
 
     @SuppressLint("SetJavaScriptEnabled")
-    private fun createWebView(): WebView {
+    private fun createWebView(profile: String = ""): WebView {
         val view = WebView(this)
+        // Vincular ANTES de acessar settings, JavaScript ou navegar.
+        if (profile == isolatedGoogleProfile && supportedGoogleProfile())
+            WebViewCompat.setProfile(view, isolatedGoogleProfile)
         view.settings.javaScriptEnabled = true
         view.settings.domStorageEnabled = true
         configureSiteDisplay(view, null)
@@ -1398,7 +1412,7 @@ class MainActivity : ComponentActivity() {
                 }
                 v.destroy()
                 if (old != null) {
-                    val replacement = old.copy(view = createWebView(), url = address)
+                    val replacement = old.copy(view = createWebView(old.profile), url = address)
                     tabs[index] = replacement
                     restoreTabNavigation(replacement)
                     if (index == activeIndex) showActive() else persistTabs()
@@ -1462,8 +1476,9 @@ class MainActivity : ComponentActivity() {
                 recordGoogleLoginAudit("Popup permitido", source?.url, source)
                 // Uma nova WebView recebe a navegação diretamente do mecanismo Android.
                 // Não reconstruímos URL, preservando POST e scripts de abertura.
-                val popup = createWebView()
-                tabs.add(Tab(popup, title = "Nova aba", url = "about:blank"))
+                val profile = tabs.firstOrNull { it.view === source }?.profile ?: ""
+                val popup = createWebView(profile)
+                tabs.add(Tab(popup, title = "Nova aba", url = "about:blank", profile = profile))
                 activeIndex = tabs.lastIndex
                 pendingPopups.add(popup)
                 showActive()
@@ -1792,19 +1807,22 @@ class MainActivity : ComponentActivity() {
         persistTabs()
     }
 
-    private fun newTab(url: String = HOME, onCreated: (() -> Unit)? = null) {
+    private fun newTab(url: String = HOME, profile: String = "",
+                       onCreated: (() -> Unit)? = null) {
         if (!BrowserTabPolicy.canCreate(totalTabCount)) {
             Toast.makeText(this, "Limite de $MAX_TABS abas", Toast.LENGTH_LONG).show()
             return
         }
         if (tabs.size >= BrowserTabPolicy.MAX_RESIDENT_TABS) {
-            selectTabToPark("Liberar memória para nova aba") { openNewResidentTab(url); onCreated?.invoke() }
-        } else { openNewResidentTab(url); onCreated?.invoke() }
+            selectTabToPark("Liberar memória para nova aba") {
+                openNewResidentTab(url, profile); onCreated?.invoke()
+            }
+        } else { openNewResidentTab(url, profile); onCreated?.invoke() }
     }
 
-    private fun openNewResidentTab(url: String) {
+    private fun openNewResidentTab(url: String, profile: String = "") {
         Attention.pause()
-        tabs.add(Tab(createWebView(), url = url))
+        tabs.add(Tab(createWebView(profile), url = url, profile = profile))
         activeIndex = tabs.lastIndex
         showActive()
     }
@@ -1816,8 +1834,9 @@ class MainActivity : ComponentActivity() {
         saveTabNavigation(tab)
         val address = attentionBlockedSources[tab.view] ?: tab.view.url ?: tab.url
         if (address.startsWith("http://") || address.startsWith("https://")) {
-            parkedTabs.add(ParkedTab(address, tab.view.title ?: tab.title, tab.constellation, tab.id))
-        } else parkedTabs.add(ParkedTab(HOME, tab.title, tab.constellation, tab.id))
+            parkedTabs.add(ParkedTab(address, tab.view.title ?: tab.title,
+                tab.constellation, tab.id, tab.profile))
+        } else parkedTabs.add(ParkedTab(HOME, tab.title, tab.constellation, tab.id, tab.profile))
         attentionBlockedSources.remove(tab.view)
         pendingPopups.remove(tab.view)
         synchronized(mediaCandidateLock) { mediaCandidates.remove(tab.view) }
@@ -1875,7 +1894,8 @@ class MainActivity : ComponentActivity() {
         if (index !in parkedTabs.indices) return
         val restore = {
             val stored = parkedTabs.removeAt(index)
-            val tab = Tab(createWebView(), stored.title, stored.url, stored.constellation, id = stored.id)
+            val tab = Tab(createWebView(stored.profile), stored.title, stored.url,
+                stored.constellation, id = stored.id, profile = stored.profile)
             tabs.add(tab)
             restoreTabNavigation(tab)
             activeIndex = tabs.lastIndex
@@ -1948,7 +1968,8 @@ class MainActivity : ComponentActivity() {
                     setPadding(8, 5, 8, 5)
                 }
                 val details = TextView(this).apply {
-                    text = name + "\n" + when {
+                    text = name + (if ((resident?.profile ?: parked?.profile) == isolatedGoogleProfile)
+                        " · Perfil Google isolado" else "") + "\n" + when {
                         resident?.id == tabs.getOrNull(activeIndex)?.id -> "● Em primeiro plano"
                         isLive -> "● Residente · mídia não verificada"
                         else -> "◌ Hibernada · toque para restaurar"
@@ -2537,7 +2558,8 @@ class MainActivity : ComponentActivity() {
         AlertDialog.Builder(this).setTitle("Google · monitor ${if (googleLoginAuditEnabled) "ATIVO" else "PARADO"}")
             .setItems(arrayOf("Ver relatório", "Copiar relatório sem dados sensíveis",
                 "Abrir página de contas Google", cookieLabel,
-                "Registrar resultado da tentativa", "Limpar eventos")) { _, option ->
+                "Registrar resultado da tentativa", "Limpar eventos",
+                "Abrir perfil Google isolado · EXPERIMENTAL")) { _, option ->
                 when (option) {
                     0 -> showGoogleLoginAuditReport()
                     1 -> {
@@ -2565,10 +2587,28 @@ class MainActivity : ComponentActivity() {
                     }
                     4 -> showGoogleLoginAuditResultPicker()
                     5 -> { googleLoginAuditEvents.clear(); Toast.makeText(this, "Eventos limpos", Toast.LENGTH_SHORT).show() }
+                    6 -> openIsolatedGoogleProfile()
                 }
             }
             .setPositiveButton(monitorLabel) { _, _ -> toggleGoogleLoginAudit(); showGoogleLoginAuditMenu() }
             .setNegativeButton("Fechar", null).show()
+    }
+
+    private fun openIsolatedGoogleProfile() {
+        if (!supportedGoogleProfile()) {
+            AlertDialog.Builder(this).setTitle("Perfis independentes indisponíveis")
+                .setMessage("Este motor WebView não oferece MULTI_PROFILE. " +
+                    "A sessão principal foi preservada e nenhuma conta foi modificada.")
+                .setPositiveButton("Entendi", null).show()
+            return
+        }
+        AlertDialog.Builder(this).setTitle("Perfil Google isolado · teste")
+            .setMessage("Abre uma nova aba com armazenamento e cookies separados dos da sessão atual. " +
+                "A conta principal continua intacta. O Google ainda pode restringir login em WebViews. " +
+                "Não copia credenciais nem transfere sessões de outros navegadores.")
+            .setPositiveButton("Abrir aba isolada") { _, _ ->
+                newTab("https://accounts.google.com/", profile = isolatedGoogleProfile)
+            }.setNegativeButton("Cancelar", null).show()
     }
 
     private fun showGoogleLoginAuditResultPicker() {
@@ -5179,12 +5219,13 @@ class MainActivity : ComponentActivity() {
             val url = attentionBlockedSources[tab.view] ?: tab.view.url ?: tab.url
             entries.put(org.json.JSONObject().put("url", url)
                 .put("title", tab.view.title ?: tab.title)
-                .put("group", tab.constellation).put("id", tab.id).put("live", true))
+                .put("group", tab.constellation).put("id", tab.id)
+                .put("profile", tab.profile).put("live", true))
         }
         parkedTabs.forEach { tab ->
             entries.put(org.json.JSONObject().put("url", tab.url)
                 .put("title", tab.title).put("group", tab.constellation)
-                .put("id", tab.id).put("live", false))
+                .put("id", tab.id).put("profile", tab.profile).put("live", false))
         }
         getSharedPreferences("tabs", MODE_PRIVATE).edit()
             .putString("urls", tabs.joinToString("\n") {
