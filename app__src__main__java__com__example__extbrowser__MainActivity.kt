@@ -96,6 +96,30 @@ class MainActivity : ComponentActivity() {
     private var googleLoginAuditStarted = 0L
     private val googleLoginAuditEvents = ArrayDeque<String>()
 
+    private fun googleCookieCompatEnabled(): Boolean =
+        getSharedPreferences("google_login_diagnostic", MODE_PRIVATE)
+            .getBoolean("consistent_auth_cookies", false)
+
+    /** Política por WebView, aplicada ANTES de navegar sempre que possível.
+     * Não modifica cookies existentes nem habilita terceiros em todos os sites. */
+    private fun applyLoginCookiePolicy(view: WebView, url: String?): Pair<Boolean, Boolean> {
+        val host = websiteHost(url)
+        val thirdParty = CookieManager.getInstance()
+        val before = thirdParty.acceptThirdPartyCookies(view)
+        val standardLogin = host == "x.com" || host?.endsWith(".x.com") == true ||
+            host == "twitter.com" || host?.endsWith(".twitter.com") == true ||
+            host == "accounts.google.com"
+        val additionalGoogleLogin = googleCookieCompatEnabled() &&
+            (host == "myaccount.google.com" || host == "google.com" ||
+                host == "www.google.com")
+        val seuImpostoCookies = isSeuImposto(url) &&
+            getSharedPreferences("seuimposto_diagnostic", MODE_PRIVATE)
+                .getBoolean("third_party_cookies", false)
+        val allow = standardLogin || additionalGoogleLogin || seuImpostoCookies
+        thirdParty.setAcceptThirdPartyCookies(view, allow)
+        return before to allow
+    }
+
     private fun googleLoginHostCategory(rawUrl: String?): String? {
         val host = runCatching { Uri.parse(rawUrl).host?.lowercase() }.getOrNull() ?: return null
         return when {
@@ -131,6 +155,7 @@ class MainActivity : ComponentActivity() {
         appendLine("DOM Storage: ${webView.settings.domStorageEnabled}")
         appendLine("Cookies gerais: ${CookieManager.getInstance().acceptCookie()}")
         appendLine("Cookies de terceiros (aba atual): ${CookieManager.getInstance().acceptThirdPartyCookies(webView)}")
+        appendLine("Compatibilidade de cookies Google: ${googleCookieCompatEnabled()}")
         appendLine("Abas: $totalTabCount · residentes: ${tabs.size}")
         appendLine("Eventos (${googleLoginAuditEvents.size}):")
         if (googleLoginAuditEvents.isEmpty()) appendLine("- Nenhum evento relevante registrado")
@@ -963,21 +988,8 @@ class MainActivity : ComponentActivity() {
                     pageHost?.endsWith(".instagram.com") == true) &&
                     siteDisplayMode(url) == "hybrid"
                 v.settings.mediaPlaybackRequiresUserGesture = !instagramHybrid
-                // Alguns fluxos de login do X usam cookies entre domínios.
-                // Restrição mantida para outras páginas e sem alterar o User-Agent.
-                val host = runCatching { Uri.parse(url).host?.lowercase() }.getOrNull()
-                val loginDomain = host == "x.com" || host?.endsWith(".x.com") == true ||
-                    host == "twitter.com" || host?.endsWith(".twitter.com") == true ||
-                    host == "accounts.google.com"
-                val seuImpostoCookies = isSeuImposto(url) &&
-                    getSharedPreferences("seuimposto_diagnostic", MODE_PRIVATE)
-                        .getBoolean("third_party_cookies", false)
-                val cookieBefore = if (googleLoginAuditEnabled)
-                    CookieManager.getInstance().acceptThirdPartyCookies(v) else false
-                CookieManager.getInstance().setAcceptThirdPartyCookies(v,
-                    loginDomain || seuImpostoCookies)
-                recordGoogleLoginAudit("Navegação iniciada · cookies terceiros: $cookieBefore → " +
-                    CookieManager.getInstance().acceptThirdPartyCookies(v), url, v)
+                val (cookieBefore, cookieAfter) = applyLoginCookiePolicy(v, url)
+                recordGoogleLoginAudit("Navegação iniciada · cookies terceiros: $cookieBefore → $cookieAfter", url, v)
                 val t = tabs.firstOrNull { it.view === v } ?: return
                 synchronized(mediaCandidateLock) { mediaCandidates.remove(v); mediaRequestOrigins.remove(v); mediaNetworkSignals.remove(v) }
                 val shownUrl = attentionBlockedSources[v] ?: url
@@ -1229,9 +1241,13 @@ class MainActivity : ComponentActivity() {
             }
             override fun shouldOverrideUrlLoading(v: WebView, request: WebResourceRequest): Boolean {
                 val target = request.url
-                if (request.isForMainFrame)
+                if (request.isForMainFrame) {
+                    val (before, after) = applyLoginCookiePolicy(v, target.toString())
+                    if (before != after)
+                        recordGoogleLoginAudit("Política antes da navegação: $before → $after", target.toString(), v)
                     recordGoogleLoginAudit("Redirecionamento/navegação principal · " +
                         (if (request.hasGesture()) "com gesto" else "sem gesto"), target.toString(), v)
+                }
                 if (target.scheme == "extbrowser") {
                     if (v === webView) handleBreakAction(target)
                     return true
@@ -1725,7 +1741,10 @@ class MainActivity : ComponentActivity() {
         (newView.parent as? android.view.ViewGroup)?.removeView(newView)
         webHost.addView(newView, LinearLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT))
         newView.onResume()
-        if (newView.url == null && newView !in pendingPopups) newView.loadUrl(tabs[activeIndex].url)
+        if (newView.url == null && newView !in pendingPopups) {
+            applyLoginCookiePolicy(newView, tabs[activeIndex].url)
+            newView.loadUrl(tabs[activeIndex].url)
+        }
         urlBar.setText(attentionBlockedSources[newView] ?: newView.url ?: tabs[activeIndex].url)
         tabs[activeIndex].lastUsed = SystemClock.elapsedRealtime()
         tabsButton.text = "${totalTabCount} abas"
@@ -2472,9 +2491,13 @@ class MainActivity : ComponentActivity() {
 
     private fun showGoogleLoginAuditMenu() {
         val monitorLabel = if (googleLoginAuditEnabled) "■ Parar monitoramento" else "▶ Iniciar monitoramento"
+        val cookieLabel = if (googleCookieCompatEnabled())
+            "Compatibilidade Google · ATIVA (desativar)"
+        else "Compatibilidade Google · DESATIVADA (testar)"
         AlertDialog.Builder(this).setTitle("Google · monitor ${if (googleLoginAuditEnabled) "ATIVO" else "PARADO"}")
             .setItems(arrayOf("Ver relatório", "Copiar relatório sem dados sensíveis",
-                "Abrir página de contas Google", "Limpar eventos")) { _, option ->
+                "Abrir página de contas Google", cookieLabel,
+                "Registrar resultado da tentativa", "Limpar eventos")) { _, option ->
                 when (option) {
                     0 -> showGoogleLoginAuditReport()
                     1 -> {
@@ -2484,11 +2507,43 @@ class MainActivity : ComponentActivity() {
                         Toast.makeText(this, "Relatório técnico copiado", Toast.LENGTH_SHORT).show()
                     }
                     2 -> navigate("https://myaccount.google.com/")
-                    3 -> { googleLoginAuditEvents.clear(); Toast.makeText(this, "Eventos limpos", Toast.LENGTH_SHORT).show() }
+                    3 -> {
+                        val updated = !googleCookieCompatEnabled()
+                        getSharedPreferences("google_login_diagnostic", MODE_PRIVATE).edit()
+                            .putBoolean("consistent_auth_cookies", updated).apply()
+                        if (googleLoginAuditEnabled) {
+                            val t = (SystemClock.elapsedRealtime() - googleLoginAuditStarted).coerceAtLeast(0)
+                            if (googleLoginAuditEvents.size >= 90) googleLoginAuditEvents.removeFirst()
+                            googleLoginAuditEvents.addLast("+${t}ms · Configuração · Compatibilidade Google ${if (updated) "ativada" else "desativada"}")
+                        }
+                        AlertDialog.Builder(this)
+                            .setTitle(if (updated) "Compatibilidade ativada" else "Compatibilidade desativada")
+                            .setMessage("Na próxima navegação, accounts.google.com e myaccount.google.com terão uma política de cookies consistente. " +
+                                "A configuração é experimental e não elimina restrições OAuth do Google. " +
+                                "Ela não apaga nem copia cookies e não recarrega páginas automaticamente.")
+                            .setPositiveButton("Entendi", null).show()
+                    }
+                    4 -> showGoogleLoginAuditResultPicker()
+                    5 -> { googleLoginAuditEvents.clear(); Toast.makeText(this, "Eventos limpos", Toast.LENGTH_SHORT).show() }
                 }
             }
             .setPositiveButton(monitorLabel) { _, _ -> toggleGoogleLoginAudit(); showGoogleLoginAuditMenu() }
             .setNegativeButton("Fechar", null).show()
+    }
+
+    private fun showGoogleLoginAuditResultPicker() {
+        val options = arrayOf("Segunda conta apareceu no seletor",
+            "Google recusou o login", "O navegador voltou à primeira conta",
+            "A conta foi adicionada, mas desapareceu depois", "Resultado indefinido")
+        AlertDialog.Builder(this).setTitle("Resultado do teste Google")
+            .setSingleChoiceItems(options, -1) { dialog, selected ->
+                if (googleLoginAuditEnabled) {
+                    val elapsed = (SystemClock.elapsedRealtime() - googleLoginAuditStarted).coerceAtLeast(0)
+                    if (googleLoginAuditEvents.size >= 90) googleLoginAuditEvents.removeFirst()
+                    googleLoginAuditEvents.addLast("+${elapsed}ms · Resultado informado · ${options[selected]}")
+                } else Toast.makeText(this, "Inicie o monitor para registrar o resultado", Toast.LENGTH_LONG).show()
+                dialog.dismiss()
+            }.setNegativeButton("Cancelar", null).show()
     }
 
     private fun showGoogleLoginAuditReport() {
@@ -5109,6 +5164,7 @@ class MainActivity : ComponentActivity() {
             else -> "https://duckduckgo.com/?q=" + Uri.encode(t)
         }
         configureSiteDisplay(webView, url)
+        applyLoginCookiePolicy(webView, url)
         webView.loadUrl(url)
         updateInstagramOverlay()
         urlBar.clearFocus()
