@@ -432,6 +432,88 @@ class MainActivity : ComponentActivity() {
         setTextColor(if (primary) Color.WHITE else uiForeground())
         background = uiShape(if (primary) 0xFF1769A6.toInt() else uiSurface(), 12, !primary)
     }
+    private data class MenuAction(
+        val section: String, val label: String, val description: String,
+        val destructive: Boolean = false, val invoke: () -> Unit
+    )
+
+    /** Navegação secundária em uma lista agrupada, com alvos de toque grandes. */
+    private fun showActionHub(title: String, subtitle: String, actions: List<MenuAction>) {
+        val dialog = Dialog(this)
+        val root = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(16), dp(16), dp(16), dp(12))
+            setBackgroundColor(uiBackground())
+        }
+        val top = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = android.view.Gravity.CENTER_VERTICAL
+        }
+        top.addView(TextView(this).apply {
+            text = title
+            textSize = 22f
+            setTextColor(uiForeground())
+            setTypeface(null, android.graphics.Typeface.BOLD)
+        }, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
+        top.addView(uiAction("Fechar").apply {
+            contentDescription = "Fechar $title"
+            setOnClickListener { dialog.dismiss() }
+        })
+        root.addView(top)
+        root.addView(TextView(this).apply {
+            text = subtitle
+            textSize = 13f
+            setTextColor(uiMuted())
+            setPadding(0, dp(4), 0, dp(12))
+        })
+        val scroll = ScrollView(this)
+        val list = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        scroll.addView(list)
+        root.addView(scroll, LinearLayout.LayoutParams(MATCH_PARENT, 0, 1f))
+        var previousSection: String? = null
+        for (entry in actions) {
+            if (entry.section != previousSection) {
+                previousSection = entry.section
+                list.addView(TextView(this).apply {
+                    text = entry.section
+                    textSize = 14f
+                    setTextColor(uiAccent())
+                    setTypeface(null, android.graphics.Typeface.BOLD)
+                    setPadding(dp(4), dp(12), dp(4), dp(8))
+                })
+            }
+            val row = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                setPadding(dp(14), dp(10), dp(14), dp(10))
+                minimumHeight = dp(60)
+                gravity = android.view.Gravity.CENTER_VERTICAL
+                background = uiShape(uiSurface(), 12, true)
+                isClickable = true
+                isFocusable = true
+                contentDescription = "${entry.label}. ${entry.description}"
+                setOnClickListener { dialog.dismiss(); entry.invoke() }
+            }
+            row.addView(TextView(this).apply {
+                text = entry.label
+                textSize = 15f
+                setTypeface(null, android.graphics.Typeface.BOLD)
+                setTextColor(if (entry.destructive) 0xFFC45049.toInt() else uiForeground())
+            })
+            row.addView(TextView(this).apply {
+                text = entry.description
+                textSize = 12f
+                setTextColor(uiMuted())
+            })
+            list.addView(row, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply {
+                bottomMargin = dp(6)
+            })
+        }
+        dialog.setContentView(root)
+        dialog.show()
+        val contentHeight = dp(120 + actions.size * 80 + actions.map { it.section }.distinct().size * 35)
+        dialog.window?.setLayout(minOf(resources.displayMetrics.widthPixels, dp(600)),
+            minOf(resources.displayMetrics.heightPixels * 85 / 100, dp(740), contentHeight))
+    }
 
     private fun showThemePicker() {
         val names = arrayOf("Claro", "Escuro")
@@ -2414,20 +2496,18 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun showMainMenu() {
-        AlertDialog.Builder(this).setTitle("NavegadorMaluco")
-            .setItems(arrayOf("Biblioteca · favoritos e histórico", "Reprodução e mídia",
-                "Contas e perfis · alternar Google", "Ferramentas do navegador", "Diagnósticos e testes",
-                "Favoritar / desfavoritar", "■ Parar todas as mídias")) { _, which ->
-                when (which) {
-                    0 -> showLibrary()
-                    1 -> showMediaMenu()
-                    2 -> showAccountProfilesMenu()
-                    3 -> showToolsMenu()
-                    4 -> showDiagnosticsMenu()
-                    5 -> toggleFavorite()
-                    6 -> forceStopAllMediaFromMenu()
-                }
-            }.show()
+        showActionHub("Navegador Maluco", "Navegação e recursos do navegador", listOf(
+            MenuAction("Navegar", "Constelações", "Encontrar, proteger e organizar abas") { showTabs() },
+            MenuAction("Navegar", "Biblioteca", "Favoritos e histórico pesquisáveis") { showLibrary() },
+            MenuAction("Navegar", if (store.isFavorite(webView.url ?: "")) "Remover favorito" else "Favoritar página",
+                "Atualizar o favorito da página atual") { toggleFavorite() },
+            MenuAction("Reprodução", "Reprodução e mídia", "Player nativo, fila e controles") { showMediaMenu() },
+            MenuAction("Conta", "Contas e perfis", "Alternar entre sessões Google") { showAccountProfilesMenu() },
+            MenuAction("Configuração", "Ferramentas", "Extensões, aparência e Controle de Atenção") { showToolsMenu() },
+            MenuAction("Avançado", "Diagnósticos e testes", "Ferramentas técnicas de investigação") { showDiagnosticsMenu() },
+            MenuAction("Segurança", "Parar todas as mídias", "Interromper a reprodução em todas as abas",
+                true) { forceStopAllMediaFromMenu() }
+        ))
     }
 
     /** Alterna abas, nunca transporta cookies, senhas ou estado de autenticação. */
@@ -2453,29 +2533,22 @@ class MainActivity : ComponentActivity() {
             return
         }
         val count = tabs.count { it.profile == profile } + parkedTabs.count { it.profile == profile }
-        AlertDialog.Builder(this).setTitle("${profileDisplayName(profile)} · $count abas")
-            .setItems(arrayOf("Ir para aba existente deste perfil",
-                "Abrir YouTube neste perfil", "Abrir Gmail neste perfil",
-                "Abrir Minha Conta neste perfil", "Selecionar conta Google neste perfil",
-                "Abrir domínio atual neste perfil", "Nova aba neste perfil")) { _, choice ->
-                when (choice) {
-                    0 -> showProfileTabs(profile)
-                    1 -> newTab("https://www.youtube.com/", profile = profile)
-                    2 -> newTab("https://mail.google.com/", profile = profile)
-                    3 -> newTab("https://myaccount.google.com/", profile = profile)
-                    4 -> newTab("https://accounts.google.com/", profile = profile)
-                    5 -> {
-                        // Só origem do site, sem parâmetros que poderiam conter tokens.
-                        val address = runCatching { Uri.parse(webView.url) }.getOrNull()
-                        val domain = address?.host
-                        val scheme = address?.scheme
-                        if (domain != null && (scheme == "https" || scheme == "http"))
-                            newTab("$scheme://$domain/", profile = profile)
-                        else Toast.makeText(this, "Nenhum domínio HTTP válido nesta aba", Toast.LENGTH_LONG).show()
-                    }
-                    6 -> newTab(profile = profile)
-                }
-            }.setNegativeButton("Voltar", null).show()
+        showActionHub(profileDisplayName(profile), "$count abas neste perfil · sessões independentes", listOf(
+            MenuAction("Abas", "Abrir aba existente", "Escolher página já aberta ou hibernada") { showProfileTabs(profile) },
+            MenuAction("Abas", "Nova aba", "Abrir página inicial neste perfil") { newTab(profile = profile) },
+            MenuAction("Abas", "Domínio da página atual", "Abrir apenas a origem, sem parâmetros") {
+                val address = runCatching { Uri.parse(webView.url) }.getOrNull()
+                val domain = address?.host
+                val scheme = address?.scheme
+                if (domain != null && (scheme == "https" || scheme == "http"))
+                    newTab("$scheme://$domain/", profile = profile)
+                else Toast.makeText(this, "Nenhum domínio HTTP válido nesta aba", Toast.LENGTH_LONG).show()
+            },
+            MenuAction("Google", "YouTube", "Abrir vídeo neste perfil") { newTab("https://www.youtube.com/", profile = profile) },
+            MenuAction("Google", "Gmail", "Abrir caixa de entrada neste perfil") { newTab("https://mail.google.com/", profile = profile) },
+            MenuAction("Google", "Minha Conta", "Gerenciar conta Google") { newTab("https://myaccount.google.com/", profile = profile) },
+            MenuAction("Google", "Selecionar conta", "Abrir seletor de contas Google") { newTab("https://accounts.google.com/", profile = profile) }
+        ))
     }
 
     private fun showProfileTabs(profile: String) {
@@ -2490,20 +2563,90 @@ class MainActivity : ComponentActivity() {
                 }.setNegativeButton("Fechar", null).show()
             return
         }
-        val titles = ids.map { id ->
-            tabs.firstOrNull { it.id == id }?.let {
-                "● ${(it.view.title ?: it.title).take(65)}"
-            } ?: parkedTabs.firstOrNull { it.id == id }?.let {
-                "◌ ${(it.title).take(65)} · hibernada"
-            } ?: "Aba"
+        val dialog = Dialog(this)
+        val root = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(16), dp(16), dp(16), dp(12))
+            setBackgroundColor(uiBackground())
         }
-        AlertDialog.Builder(this).setTitle("Abas · ${profileDisplayName(profile)}")
-            .setItems(titles.toTypedArray()) { _, index ->
-                val id = ids[index]
-                val live = tabs.indexOfFirst { it.id == id }
-                if (live >= 0) { activeIndex = live; showActive() }
-                else parkedTabs.indexOfFirst { it.id == id }.takeIf { it >= 0 }?.let(::restoreParkedTab)
-            }.setNegativeButton("Voltar", null).show()
+        root.addView(TextView(this).apply {
+            text = "Abas · ${profileDisplayName(profile)}"
+            textSize = 22f
+            setTextColor(uiForeground())
+            setTypeface(null, android.graphics.Typeface.BOLD)
+        })
+        val search = EditText(this).apply {
+            hint = "Buscar abas deste perfil"
+            setSingleLine(true)
+            textSize = 15f
+            setPadding(dp(12), 0, dp(12), 0)
+            background = uiShape(uiSurface(), 12, true)
+        }
+        root.addView(search, LinearLayout.LayoutParams(MATCH_PARENT, dp(48)).apply {
+            topMargin = dp(12); bottomMargin = dp(8)
+        })
+        val scroll = ScrollView(this)
+        val list = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        scroll.addView(list)
+        root.addView(scroll, LinearLayout.LayoutParams(MATCH_PARENT, 0, 1f))
+        fun render() {
+            list.removeAllViews()
+            val query = search.text.toString().trim()
+            var matches = 0
+            ids.forEach { id ->
+                val live = tabs.firstOrNull { it.id == id }
+                val parked = parkedTabs.firstOrNull { it.id == id }
+                val title = live?.view?.title ?: live?.title ?: parked?.title ?: return@forEach
+                val url = live?.view?.url ?: live?.url ?: parked?.url.orEmpty()
+                if (query.isNotBlank() && !title.contains(query, true) && !url.contains(query, true))
+                    return@forEach
+                matches++
+                list.addView(LinearLayout(this).apply {
+                    orientation = LinearLayout.VERTICAL
+                    setPadding(dp(14), dp(12), dp(14), dp(12))
+                    background = uiShape(uiSurface(), 12, true)
+                    isClickable = true; isFocusable = true
+                    contentDescription = "${if (live != null) "Abrir" else "Restaurar"} $title"
+                    setOnClickListener {
+                        dialog.dismiss()
+                        val liveIndex = tabs.indexOfFirst { it.id == id }
+                        if (liveIndex >= 0) { activeIndex = liveIndex; showActive() }
+                        else parkedTabs.indexOfFirst { it.id == id }
+                            .takeIf { it >= 0 }?.let(::restoreParkedTab)
+                    }
+                    addView(TextView(this@MainActivity).apply {
+                        text = title
+                        textSize = 15f
+                        setTextColor(uiForeground())
+                        maxLines = 2
+                    })
+                    addView(TextView(this@MainActivity).apply {
+                        text = (if (live != null) "Em memória" else "Hibernada") + " · " + url
+                        textSize = 12f
+                        setTextColor(uiMuted())
+                        maxLines = 2
+                        ellipsize = android.text.TextUtils.TruncateAt.END
+                    })
+                }, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { bottomMargin = dp(8) })
+            }
+            if (matches == 0) list.addView(TextView(this).apply {
+                text = "Nenhuma aba encontrada."
+                setTextColor(uiMuted())
+                setPadding(dp(8), dp(20), dp(8), dp(20))
+            })
+        }
+        search.addTextChangedListener(object : TextWatcher {
+            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) = Unit
+            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) = render()
+            override fun afterTextChanged(s: Editable?) = Unit
+        })
+        root.addView(uiAction("Voltar").apply { setOnClickListener { dialog.dismiss() } },
+            LinearLayout.LayoutParams(MATCH_PARENT, dp(48)))
+        render()
+        dialog.setContentView(root)
+        dialog.show()
+        dialog.window?.setLayout(minOf(resources.displayMetrics.widthPixels, dp(680)),
+            minOf(resources.displayMetrics.heightPixels * 85 / 100, dp(740)))
     }
 
     private fun showLibrary() {
@@ -3062,126 +3205,87 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun showMediaMenu() {
-        AlertDialog.Builder(this).setTitle("Reprodução e mídia")
-            .setItems(arrayOf(
-                "▶ Reproduzir mídia desta página",
-                "▶ YouTube / Music · tocar no player nativo",
-                "Abrir controles do player nativo",
-                "Janela flutuante · PiP",
-                "Histórico do player",
-                "Configurações de reprodução",
-                "Diagnósticos de mídia",
-                "Fila · importar músicas/vídeos seguintes",
-                "Fila · visualizar e limpar",
-                "■ Forçar interrupção de todas as mídias"
-            )) { _, which ->
-                when (which) {
-                    0 -> playPageMediaDirectly()
-                    1 -> showYouTubeExtractor()
-                    2 -> showNativeVideoPlayer()
-                    3 -> enterPip()
-                    4 -> showPlayerHistory()
-                    5 -> showMediaOptions()
-                    6 -> showMediaDiagnosticsMenu()
-                    7 -> importNativeMediaQueue()
-                    8 -> AlertDialog.Builder(this).setTitle("Fila de reprodução")
-                        .setMessage(Media3PlaybackService.queueStatus() +
-                            "\\nA próxima fonte é obtida quando a mídia atual termina.")
-                        .setPositiveButton("Limpar fila") { _, _ ->
-                            queueSyncView = null
-                            queueSyncPage = null
-                            handler.removeCallbacks(queueSyncTicker)
-                            Media3PlaybackService.clearPendingQueue()
-                        }.setNegativeButton("Fechar", null).show()
-                    9 -> forceStopAllMediaFromMenu()
-                }
-            }.show()
+        showActionHub("Reprodução e mídia", "O player nativo tem prioridade sobre as fontes da página", listOf(
+            MenuAction("Reproduzir", "Mídia desta página", "Procurar fonte de áudio ou vídeo") { playPageMediaDirectly() },
+            MenuAction("Reproduzir", "YouTube e YouTube Music", "Extrair e tocar no Media3") { showYouTubeExtractor() },
+            MenuAction("Reproduzir", "Controles do player", "Abrir o player nativo") { showNativeVideoPlayer() },
+            MenuAction("Reproduzir", "Janela flutuante", "Reprodução em Picture-in-Picture") { enterPip() },
+            MenuAction("Fila", "Importar sequência", "Importar músicas e vídeos visíveis") { importNativeMediaQueue() },
+            MenuAction("Fila", "Visualizar ou limpar fila", "${Media3PlaybackService.queueStatus()}") {
+                AlertDialog.Builder(this).setTitle("Fila de reprodução")
+                    .setMessage(Media3PlaybackService.queueStatus() +
+                        "\nA próxima fonte é obtida quando a mídia atual termina.")
+                    .setPositiveButton("Limpar fila") { _, _ ->
+                        queueSyncView = null
+                        queueSyncPage = null
+                        handler.removeCallbacks(queueSyncTicker)
+                        Media3PlaybackService.clearPendingQueue()
+                    }.setNegativeButton("Fechar", null).show()
+            },
+            MenuAction("Histórico", "Histórico do player", "Retomar a partir da página original") { showPlayerHistory() },
+            MenuAction("Configuração", "Opções de reprodução", "Segundo plano e recuperação") { showMediaOptions() },
+            MenuAction("Avançado", "Diagnósticos de mídia", "Inspecionar elementos e formatos") { showMediaDiagnosticsMenu() },
+            MenuAction("Segurança", "Parar todas as mídias", "Interromper sessões e limpar fila",
+                true) { forceStopAllMediaFromMenu() }
+        ))
     }
 
     private fun showMediaDiagnosticsMenu() {
-        AlertDialog.Builder(this).setTitle("Diagnósticos · mídia")
-            .setItems(arrayOf(
-                "YouTube / Music · identificação, extração, HTTP e Media3",
-                "Listar vídeos e fontes detectadas",
-                "Inspecionar manifestos HLS / DASH",
-                "Examinar player HTML5 da página"
-            )) { _, which ->
-                when (which) {
-                    0 -> showYouTubeTestPanel()
-                    1 -> showRequestMediaCandidates()
-                    2 -> showStreamingManifests()
-                    3 -> tryNativeMediaFromPage()
-                }
-            }.show()
+        showActionHub("Diagnósticos de mídia", "Investigação técnica sem alterar a reprodução atual", listOf(
+            MenuAction("YouTube", "Diagnóstico de extração", "IDs, PO Token, HTTP e Media3") { showYouTubeTestPanel() },
+            MenuAction("Fontes", "Vídeos detectados", "Listar fontes de mídia acessíveis") { showRequestMediaCandidates() },
+            MenuAction("Fontes", "Manifestos HLS / DASH", "Inspecionar fluxos disponíveis") { showStreamingManifests() },
+            MenuAction("HTML5", "Mídia da página", "Verificar elementos de áudio e vídeo") { tryNativeMediaFromPage() }
+        ))
     }
 
     private fun showMediaOptions() {
         val audioLabel = "Áudio da WebView em segundo plano: " +
             (if (backgroundAudioEnabled) "ligado" else "desligado")
-        AlertDialog.Builder(this).setTitle("Opções de mídia")
-            .setItems(arrayOf(audioLabel, "Abrir URL de mídia", "Tentar mídia da página",
-                "Retomar reprodução na página", "■ Forçar interrupção de todas as mídias")) { _, which ->
-                when (which) {
-                    0 -> toggleBackgroundAudio()
-                    1 -> promptNativeMediaUrl()
-                    2 -> tryNativeMediaFromPage()
-                    3 -> returnMedia3ToPage()
-                    4 -> forceStopAllMediaFromMenu()
-                }
-            }.show()
+        showActionHub("Opções de mídia", "Preferências e ações da reprodução", listOf(
+            MenuAction("Segundo plano", audioLabel, "Toque para alternar a permissão") { toggleBackgroundAudio() },
+            MenuAction("Fonte", "Abrir endereço de mídia", "Tocar uma URL direta") { promptNativeMediaUrl() },
+            MenuAction("Fonte", "Tentar mídia da página", "Detectar arquivo HTML5") { tryNativeMediaFromPage() },
+            MenuAction("Transferência", "Retomar na página", "Devolver reprodução à WebView") { returnMedia3ToPage() },
+            MenuAction("Segurança", "Parar todas as mídias", "Encerrar a reprodução em todos os players",
+                true) { forceStopAllMediaFromMenu() }
+        ))
     }
 
     private fun showToolsMenu() {
-        AlertDialog.Builder(this).setTitle("Ferramentas do navegador")
-            .setItems(arrayOf(
-                "YouTube / Music · tocar no player nativo",
-                "Seu Imposto · chat compatível (GeckoView)",
-                "Controle de Atenção · sites e limites",
-                "Extensões",
-                "Áudio e vídeo em segundo plano",
-                "Aparência · claro/escuro",
-                "Modo de exibição do site",
-                "Diagnósticos e experiências"
-            )) { _, which ->
-                when (which) {
-                    0 -> showYouTubeExtractor()
-                    1 -> openSeuImpostoInGecko()
-                    2 -> startActivity(Intent(this, AttentionActivity::class.java).apply {
-                        putExtra("attention_current_page", webView.url ?: tabs[activeIndex].url)
-                    })
-                    3 -> extLauncher.launch(Intent(this, ExtensionsActivity::class.java).apply {
-                        putExtra("attention_current_page", webView.url ?: tabs[activeIndex].url)
-                    })
-                    4 -> showMediaOptions()
-                    5 -> showThemePicker()
-                    6 -> showSiteDisplayModes()
-                    7 -> showDiagnosticsMenu()
-                }
-            }.show()
+        showActionHub("Ferramentas", "Controle da navegação e das permissões", listOf(
+            MenuAction("Reprodução", "YouTube e YouTube Music", "Abrir no player nativo") { showYouTubeExtractor() },
+            MenuAction("Reprodução", "Opções de mídia", "Configurar reprodução em segundo plano") { showMediaOptions() },
+            MenuAction("Privacidade", "Controle de Atenção", "Limites de uso por site") {
+                startActivity(Intent(this, AttentionActivity::class.java).apply {
+                    putExtra("attention_current_page", webView.url ?: tabs[activeIndex].url)
+                })
+            },
+            MenuAction("Navegação", "Extensões", "Gerenciar extensões instaladas") {
+                extLauncher.launch(Intent(this, ExtensionsActivity::class.java).apply {
+                    putExtra("attention_current_page", webView.url ?: tabs[activeIndex].url)
+                })
+            },
+            MenuAction("Aparência", "Tema claro ou escuro", "Alterar as cores da interface") { showThemePicker() },
+            MenuAction("Aparência", "Modo de exibição do site", "Escolher motor ou identificação") { showSiteDisplayModes() },
+            MenuAction("Compatibilidade", "Seu Imposto no GeckoView", "Abrir chat no motor alternativo") { openSeuImpostoInGecko() },
+            MenuAction("Avançado", "Diagnósticos", "Experimentos e relatórios") { showDiagnosticsMenu() }
+        ))
     }
 
     private fun showDiagnosticsMenu() {
-        AlertDialog.Builder(this).setTitle("Diagnósticos e testes")
-            .setItems(arrayOf(
-                "YouTube / Music · identificação, PO Token, HTTP e reprodução",
-                "Seu Imposto · foco, chat e rede",
-                "Mídia · elementos HTML5 e manifestos",
-                "Teclado · teste HTML isolado",
-                "Seu Imposto · experiências anteriores",
-                "Google · login de múltiplas contas",
-                if (googleLoginAuditEnabled) "■ Google · parar monitoramento"
-                    else "▶ Google · iniciar monitoramento"
-            )) { _, which ->
-                when (which) {
-                    0 -> showYouTubeTestPanel()
-                    1 -> showSeuImpostoToolsMenu()
-                    2 -> showMediaDiagnosticsMenu()
-                    3 -> openIsolatedKeyboardTest()
-                    4 -> showSeuImpostoLegacyTests()
-                    5 -> showGoogleLoginAuditMenu()
-                    6 -> { toggleGoogleLoginAudit(); showGoogleLoginAuditMenu() }
-                }
-            }.show()
+        showActionHub("Diagnósticos e testes", "Ferramentas avançadas de investigação", listOf(
+            MenuAction("Reprodução", "YouTube e Music", "Extração, PO Token e HTTP") { showYouTubeTestPanel() },
+            MenuAction("Reprodução", "Mídia HTML5", "Fontes e manifestos") { showMediaDiagnosticsMenu() },
+            MenuAction("Compatibilidade", "Seu Imposto", "Foco, chat e rede") { showSeuImpostoToolsMenu() },
+            MenuAction("Compatibilidade", "Teclado isolado", "Executar teste HTML local") { openIsolatedKeyboardTest() },
+            MenuAction("Compatibilidade", "Experimentos anteriores", "Diagnósticos legados de Seu Imposto") { showSeuImpostoLegacyTests() },
+            MenuAction("Conta", "Login Google", "Inspecionar sessões e tentativas") { showGoogleLoginAuditMenu() },
+            MenuAction("Conta", if (googleLoginAuditEnabled) "Parar monitor Google" else "Iniciar monitor Google",
+                "Alternar coleta local de eventos de diagnóstico") {
+                toggleGoogleLoginAudit(); showGoogleLoginAuditMenu()
+            }
+        ))
     }
 
     private fun toggleGoogleLoginAudit() {
@@ -3276,43 +3380,61 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun showGoogleLoginAuditReport() {
-        val scroll = ScrollView(this)
-        scroll.addView(TextView(this).apply {
-            text = googleLoginAuditReport()
-            textSize = 12f
-            setTextIsSelectable(true)
-            setPadding(24, 16, 24, 16)
+        val dialog = Dialog(this)
+        val root = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setBackgroundColor(uiBackground())
+            setPadding(dp(16), dp(16), dp(16), dp(12))
+        }
+        root.addView(TextView(this).apply {
+            text = "Google · relatório técnico"
+            textSize = 22f
+            setTypeface(null, android.graphics.Typeface.BOLD)
+            setTextColor(uiForeground())
+            setPadding(0, 0, 0, dp(12))
         })
-        AlertDialog.Builder(this).setTitle("Google · relatório técnico")
-            .setView(scroll)
-            .setPositiveButton("Copiar") { _, _ ->
+        val scroll = ScrollView(this)
+        val body = TextView(this).apply {
+            text = googleLoginAuditReport()
+            textSize = 13f
+            setTextColor(uiForeground())
+            setTextIsSelectable(true)
+            setPadding(dp(12), dp(12), dp(12), dp(12))
+            background = uiShape(uiSurface(), 12, true)
+        }
+        scroll.addView(body)
+        root.addView(scroll, LinearLayout.LayoutParams(MATCH_PARENT, 0, 1f))
+        val actions = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        actions.addView(uiAction("Copiar", true).apply {
+            setOnClickListener {
                 val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
                 clipboard.setPrimaryClip(android.content.ClipData.newPlainText(
                     "Diagnóstico de login Google", googleLoginAuditReport()))
             }
-            .setNeutralButton("Atualizar") { _, _ -> showGoogleLoginAuditReport() }
-            .setNegativeButton("Fechar", null).show()
+        }, LinearLayout.LayoutParams(0, dp(48), 1f))
+        actions.addView(uiAction("Atualizar").apply {
+            setOnClickListener { body.text = googleLoginAuditReport(); scroll.scrollTo(0, 0) }
+        }, LinearLayout.LayoutParams(0, dp(48), 1f).apply { marginStart = dp(8) })
+        actions.addView(uiAction("Fechar").apply { setOnClickListener { dialog.dismiss() } },
+            LinearLayout.LayoutParams(0, dp(48), 1f).apply { marginStart = dp(8) })
+        root.addView(actions, LinearLayout.LayoutParams(MATCH_PARENT, dp(48)).apply {
+            topMargin = dp(10)
+        })
+        dialog.setContentView(root)
+        dialog.show()
+        dialog.window?.setLayout(minOf(resources.displayMetrics.widthPixels, dp(720)),
+            minOf(resources.displayMetrics.heightPixels * 85 / 100, dp(760)))
     }
 
     private fun showSeuImpostoToolsMenu() {
-        AlertDialog.Builder(this).setTitle("Seu Imposto · diagnóstico")
-            .setItems(arrayOf(
-                "Chat compatível · abrir no GeckoView",
-                "Resumo técnico · foco e rede",
-                "Entrada Android · recurso alternativo",
-                "Rastrear origem da reconstrução (sem bloqueios)",
-                "Comparar identificação dos navegadores · teste",
-                "Histórico de experiências · teclado e DOM"
-            )) { _, selected ->
-                when (selected) {
-                    0 -> openSeuImpostoInGecko()
-                    1 -> showSeuImpostoDiagnostic()
-                    2 -> showSeuImpostoNativeChatInput()
-                    3 -> startSeuImpostoOriginTrace()
-                    4 -> toggleSeuImpostoPlainChromeUa()
-                    5 -> showSeuImpostoLegacyTests()
-                }
-            }.show()
+        showActionHub("Seu Imposto", "Compatibilidade do chat e diagnóstico técnico", listOf(
+            MenuAction("Acesso", "Chat no GeckoView", "Abrir em motor alternativo") { openSeuImpostoInGecko() },
+            MenuAction("Acesso", "Entrada Android", "Digitar pelo controle nativo") { showSeuImpostoNativeChatInput() },
+            MenuAction("Diagnóstico", "Resumo de foco e rede", "Examinar eventos sem dados sensíveis") { showSeuImpostoDiagnostic() },
+            MenuAction("Diagnóstico", "Rastrear reconstrução", "Identificar a origem de mudanças no DOM") { startSeuImpostoOriginTrace() },
+            MenuAction("Experimentos", "Identificação do navegador", "Alternar modo de compatibilidade") { toggleSeuImpostoPlainChromeUa() },
+            MenuAction("Experimentos", "Testes anteriores", "Ajustes legados de teclado e DOM") { showSeuImpostoLegacyTests() }
+        ))
     }
 
     private fun openSeuImpostoInGecko() {
@@ -3325,28 +3447,16 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun showSeuImpostoLegacyTests() {
-        AlertDialog.Builder(this).setTitle("Testes anteriores · experimentais")
-            .setItems(arrayOf(
-                "Compatibilidade de teclado · legado",
-                "Recuperação automática de foco · legado",
-                "Janela sem redimensionamento · adjustPan",
-                "VirtualKeyboard overlaysContent",
-                "Bloquear eventos resize · experimento",
-                "Rastreamento simples de remoções",
-                "Bloquear apenas FORM · experimento",
-                "Bloquear FORM + SECTION · experimento"
-            )) { _, selected ->
-                when (selected) {
-                    0 -> toggleSeuImpostoKeyboardCompat()
-                    1 -> toggleSeuImpostoFocusRecovery()
-                    2 -> toggleSeuImpostoKeyboardPan()
-                    3 -> toggleSeuImpostoViewportOverlay()
-                    4 -> showSeuImpostoResizeExperiment()
-                    5 -> toggleSeuImpostoRemovalTrace()
-                    6 -> toggleSeuImpostoFormGuard()
-                    7 -> toggleSeuImpostoSubtreeGuard()
-                }
-            }.show()
+        showActionHub("Experimentos anteriores", "Ajustes técnicos que podem alterar o comportamento da página", listOf(
+            MenuAction("Teclado", "Compatibilidade de teclado", "Ativar ou desativar ajuste legado") { toggleSeuImpostoKeyboardCompat() },
+            MenuAction("Teclado", "Recuperação de foco", "Experimento de foco automático") { toggleSeuImpostoFocusRecovery() },
+            MenuAction("Teclado", "Janela sem redimensionamento", "Alternar adjustPan") { toggleSeuImpostoKeyboardPan() },
+            MenuAction("Teclado", "VirtualKeyboard overlaysContent", "Experimento de viewport") { toggleSeuImpostoViewportOverlay() },
+            MenuAction("DOM", "Eventos resize", "Testar bloqueio de redimensionamento") { showSeuImpostoResizeExperiment() },
+            MenuAction("DOM", "Rastrear remoções", "Coletar eventos de elementos removidos") { toggleSeuImpostoRemovalTrace() },
+            MenuAction("DOM", "Proteger FORM", "Experimento de bloqueio de remoção") { toggleSeuImpostoFormGuard() },
+            MenuAction("DOM", "Proteger FORM e SECTION", "Experimento de proteção de subárvores") { toggleSeuImpostoSubtreeGuard() }
+        ))
     }
 
     private fun openIsolatedKeyboardTest() {
@@ -4471,7 +4581,11 @@ class MainActivity : ComponentActivity() {
         val column = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(4), dp(4), dp(4), dp(4))
-            setBackgroundColor(0xAA17202B.toInt())
+            background = GradientDrawable().apply {
+                setColor(0xEE17202B.toInt())
+                cornerRadius = dp(14).toFloat()
+                setStroke(dp(1), 0xFF43566B.toInt())
+            }
             elevation = dp(10).toFloat()
             visibility = View.GONE
         }
