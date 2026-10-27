@@ -317,6 +317,57 @@ class MainActivity : ComponentActivity() {
     }
     // WebViews em espera pelo transporte de uma nova janela.
     private val pendingPopups = mutableSetOf<WebView>()
+    private data class PopupReview(val sourceHost: String?, val mode: String)
+    private val popupReviews = mutableMapOf<WebView, PopupReview>()
+    private var popupsAutomaticallyClosed = 0
+
+    private fun popupMode(url: String?): String {
+        val host = websiteHost(url) ?: return "automatic"
+        return getSharedPreferences("site_popup_guard", MODE_PRIVATE)
+            .getString(host, "automatic")?.takeIf { it in setOf("off", "automatic", "strict") }
+            ?: "automatic"
+    }
+
+    private fun samePopupSite(first: String?, second: String?): Boolean {
+        if (first.isNullOrBlank() || second.isNullOrBlank()) return false
+        // Compara subdomínios sem permitir combinações como notgoogle.com.
+        return first == second || first.endsWith(".$second") || second.endsWith(".$first")
+    }
+
+    private fun isLegitimatePopupDestination(host: String): Boolean = listOf(
+        "accounts.google.com", "login.microsoftonline.com", "appleid.apple.com",
+        "github.com", "login.live.com", "paypal.com", "www.paypal.com",
+        "checkout.stripe.com", "mercadopago.com.br", "www.mercadopago.com.br"
+    ).any { host == it }
+
+    private fun inspectPopupNavigation(view: WebView, url: String): Boolean {
+        val review = popupReviews[view] ?: return false
+        val uri = Uri.parse(url)
+        if (uri.scheme != "http" && uri.scheme != "https") return false
+        val host = websiteHost(url) ?: return false
+        val adLike = listOf("popunder", "popads", "adsterra", "propellerads", "onclickads",
+            "doubleclick", "exoclick", "trafficjunky", "clickadu").any { host.contains(it) }
+        val foreign = !samePopupSite(review.sourceHost, host)
+        val protected = isLegitimatePopupDestination(host)
+        if (adLike || (review.mode == "strict" && foreign && !protected)) {
+            popupReviews.remove(view)
+            pendingPopups.remove(view)
+            popupsAutomaticallyClosed++
+            handler.post { tabs.indexOfFirst { it.view === view }.takeIf { it >= 0 }?.let(::closeTab) }
+            return true
+        }
+        if (!popupReviews.containsKey(view)) return false
+        popupReviews.remove(view)
+        pendingPopups.remove(view)
+        handler.post {
+            val index = tabs.indexOfFirst { it.view === view }
+            if (index >= 0 && !isFinishing && !isDestroyed) {
+                activeIndex = index
+                showActive()
+            }
+        }
+        return false
+    }
     private var activeIndex = 0
     private val webView get() = tabs[activeIndex].view
     private lateinit var webHost: LinearLayout
@@ -1274,6 +1325,7 @@ class MainActivity : ComponentActivity() {
         WebView.setWebContentsDebuggingEnabled((applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) != 0)
         view.webViewClient = object : WebViewClient() {
             override fun onPageStarted(v: WebView, url: String, favicon: Bitmap?) {
+                if (inspectPopupNavigation(v, url)) return
                 applyTurboNetworkPolicy(v, url)
                 if (url.startsWith("http://") || url.startsWith("https://"))
                     attentionBlockedSources.remove(v)
@@ -1667,6 +1719,7 @@ class MainActivity : ComponentActivity() {
                 val address = old?.let { attentionBlockedSources[v] ?: v.url ?: it.url } ?: HOME
                 (v.parent as? android.view.ViewGroup)?.removeView(v)
                 pendingPopups.remove(v)
+                popupReviews.remove(v)
                 attentionBlockedSources.remove(v)
                 synchronized(mediaCandidateLock) {
                     mediaCandidates.remove(v)
@@ -1740,15 +1793,30 @@ class MainActivity : ComponentActivity() {
                 // Uma nova WebView recebe a navegação diretamente do mecanismo Android.
                 // Não reconstruímos URL, preservando POST e scripts de abertura.
                 val profile = tabs.firstOrNull { it.view === source }?.profile ?: ""
+                val mode = popupMode(source?.url)
                 val popup = createWebView(profile)
                 tabs.add(Tab(popup, title = "Nova aba", url = "about:blank", profile = profile))
-                activeIndex = tabs.lastIndex
                 pendingPopups.add(popup)
-                showActive()
+                if (mode == "off") {
+                    activeIndex = tabs.lastIndex
+                    showActive()
+                } else {
+                    popupReviews[popup] = PopupReview(websiteHost(source?.url), mode)
+                    // Alguns sites abrem about:blank para preencher por script. A janela
+                    // não fica invisível indefinidamente: liberamos após o prazo.
+                    handler.postDelayed({
+                        if (popupReviews.remove(popup) != null) {
+                            pendingPopups.remove(popup)
+                            val index = tabs.indexOfFirst { it.view === popup }
+                            if (index >= 0 && !isFinishing && !isDestroyed) {
+                                activeIndex = index
+                                showActive()
+                            }
+                        }
+                    }, 1800L)
+                }
                 transport.webView = popup
                 resultMsg.sendToTarget()
-                // Após o transporte, a WebView passa a carregar a página normalmente.
-                pendingPopups.remove(popup)
                 return true
             }
             override fun onCloseWindow(window: WebView?) {
@@ -2205,6 +2273,7 @@ class MainActivity : ComponentActivity() {
         } else parkedTabs.add(ParkedTab(HOME, tab.title, tab.constellation, tab.id, tab.profile))
         attentionBlockedSources.remove(tab.view)
         pendingPopups.remove(tab.view)
+        popupReviews.remove(tab.view)
         synchronized(mediaCandidateLock) { mediaCandidates.remove(tab.view) }
         tab.view.stopLoading()
         tab.view.onPause()
@@ -2294,6 +2363,7 @@ class MainActivity : ComponentActivity() {
         attentionBlockedSources.remove(tab.view)
         if (webHost.childCount > 0 && webHost.getChildAt(0) === tab.view) webHost.removeView(tab.view)
         pendingPopups.remove(tab.view)
+        popupReviews.remove(tab.view)
         synchronized(mediaCandidateLock) { mediaCandidates.remove(tab.view) }
         tab.view.stopLoading()
         tab.view.destroy()
@@ -3365,6 +3435,8 @@ class MainActivity : ComponentActivity() {
             MenuAction("Reprodução", "YouTube e YouTube Music", "Abrir no player nativo") { showYouTubeExtractor() },
             MenuAction("Reprodução", "Opções de mídia", "Configurar reprodução em segundo plano") { showMediaOptions() },
             MenuAction("Desempenho", "Modo Turbo Maluco", "Otimizar e diagnosticar o site atual") { showTurboMenu() },
+            MenuAction("Privacidade", "Fechamento automático de pop-ups",
+                "Filtrar janelas publicitárias abertas após toques") { showPopupGuardMenu() },
             MenuAction("Rede e privacidade", "Cloudflare · DNS e WARP",
                 "DNS 1.1.1.1, filtros de segurança e teste da conexão") { showCloudflareMenu() },
             MenuAction("Privacidade", "Controle de Atenção", "Limites de uso por site") {
@@ -3382,6 +3454,40 @@ class MainActivity : ComponentActivity() {
             MenuAction("Compatibilidade", "Seu Imposto no GeckoView", "Abrir chat no motor alternativo") { openSeuImpostoInGecko() },
             MenuAction("Avançado", "Diagnósticos", "Experimentos e relatórios") { showDiagnosticsMenu() }
         ))
+    }
+
+    private fun showPopupGuardMenu() {
+        val page = webView.url ?: tabs.getOrNull(activeIndex)?.url
+        val host = websiteHost(page)
+        if (host == null) {
+            Toast.makeText(this, "Abra um site para configurar os pop-ups", Toast.LENGTH_LONG).show()
+            return
+        }
+        val selected = popupMode(page)
+        val description = when (selected) {
+            "off" -> "Desligado"
+            "strict" -> "Rigoroso"
+            else -> "Automático"
+        }
+        showActionHub("Pop-ups · $host", "$description · $popupsAutomaticallyClosed janelas fechadas nesta sessão", listOf(
+            MenuAction("Proteção por site", "Automático",
+                "Bloqueia janelas sem gesto e fecha destinos publicitários reconhecidos") {
+                setPopupGuardMode(host, "automatic")
+            },
+            MenuAction("Proteção por site", "Rigoroso",
+                "Fecha pop-ups entre sites diferentes; preserva login e pagamentos conhecidos") {
+                setPopupGuardMode(host, "strict")
+            },
+            MenuAction("Proteção por site", "Desligado",
+                "Permite as janelas abertas com toque neste site") {
+                setPopupGuardMode(host, "off")
+            }
+        ))
+    }
+
+    private fun setPopupGuardMode(host: String, mode: String) {
+        getSharedPreferences("site_popup_guard", MODE_PRIVATE).edit().putString(host, mode).apply()
+        Toast.makeText(this, "Proteção de pop-ups atualizada para $host", Toast.LENGTH_SHORT).show()
     }
 
     private fun showTurboMenu() {
