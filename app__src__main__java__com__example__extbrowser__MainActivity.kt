@@ -1019,12 +1019,22 @@ class MainActivity : ComponentActivity() {
             orientation = LinearLayout.VERTICAL
             setBackgroundColor(uiBackground())
             setPadding(dp(8), dp(6), dp(8), dp(6))
-            addView(addressRow, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
-            addView(actions, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply {
-                topMargin = dp(6)
-            })
+            if (resources.configuration.screenWidthDp >= 600) {
+                // Em janelas amplas, evita ocupar duas faixas de altura útil.
+                orientation = LinearLayout.HORIZONTAL
+                gravity = android.view.Gravity.CENTER_VERTICAL
+                addView(addressRow, LinearLayout.LayoutParams(0, WRAP_CONTENT, 3f))
+                addView(actions, LinearLayout.LayoutParams(0, WRAP_CONTENT, 4f).apply {
+                    marginStart = dp(12)
+                })
+            } else {
+                addView(addressRow, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
+                addView(actions, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply {
+                    topMargin = dp(6)
+                })
+            }
         }
-                statusView = TextView(this).apply { textSize = 12f; visibility = View.GONE; setPadding(16, 4, 16, 4) }
+        statusView = TextView(this).apply { textSize = 12f; visibility = View.GONE; setPadding(16, 4, 16, 4) }
         statusDefaultColor = statusView.currentTextColor
         webHost = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         val root = LinearLayout(this).apply {
@@ -1042,6 +1052,9 @@ class MainActivity : ComponentActivity() {
             val title = TextView(this@MainActivity).apply {
                 text = "▶ Mídia em reprodução"
                 setTextColor(android.graphics.Color.WHITE)
+                maxLines = 1
+                ellipsize = android.text.TextUtils.TruncateAt.END
+                contentDescription = "Abrir player de mídia"
                 setOnClickListener { showNativeVideoPlayer() }
             }
             miniPlayerBar.addView(title, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
@@ -2650,13 +2663,14 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun showLibrary() {
-        AlertDialog.Builder(this).setTitle("Biblioteca")
-            .setItems(arrayOf("Favoritos", "Histórico")) { _, which ->
-                when (which) {
-                    0 -> showSavedPages(true)
-                    1 -> showSavedPages(false)
-                }
-            }.show()
+        showActionHub("Biblioteca", "Páginas salvas e visitadas", listOf(
+            MenuAction("Suas páginas", "Favoritos", "Consultar e gerenciar páginas favoritas") {
+                showSavedPages(true)
+            },
+            MenuAction("Suas páginas", "Histórico", "Buscar páginas visitadas anteriormente") {
+                showSavedPages(false)
+            }
+        ))
     }
 
     private data class YoutubeTarget(val videoId: String, val page: String,
@@ -5122,9 +5136,25 @@ class MainActivity : ComponentActivity() {
         val close = uiAction("Fechar")
         val navControls = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         val displayControls = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        listOf(close, rotate, fullscreenButton, pipButton).forEach { navControls.addView(it,
-            LinearLayout.LayoutParams(0, dp(48), 1f).apply { marginStart = dp(2); marginEnd = dp(2) }) }
-        outer.addView(navControls, LinearLayout.LayoutParams(MATCH_PARENT, dp(48)))
+        val compactPlayer = resources.configuration.screenWidthDp < 400
+        close.contentDescription = "Fechar player e voltar ao navegador"
+        rotate.contentDescription = "Girar orientação do vídeo"
+        fullscreenButton.contentDescription = "Alternar modo de tela cheia"
+        pipButton.contentDescription = "Abrir vídeo em janela flutuante PiP"
+        if (compactPlayer) {
+            // Duas ações por linha preservam os rótulos em aparelhos estreitos.
+            listOf(close, rotate).forEach { navControls.addView(it,
+                LinearLayout.LayoutParams(0, dp(48), 1f).apply { marginStart = dp(2); marginEnd = dp(2) }) }
+            val navSecondRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+            listOf(fullscreenButton, pipButton).forEach { navSecondRow.addView(it,
+                LinearLayout.LayoutParams(0, dp(48), 1f).apply { marginStart = dp(2); marginEnd = dp(2) }) }
+            outer.addView(navControls, LinearLayout.LayoutParams(MATCH_PARENT, dp(48)))
+            outer.addView(navSecondRow, LinearLayout.LayoutParams(MATCH_PARENT, dp(48)))
+        } else {
+            listOf(close, rotate, fullscreenButton, pipButton).forEach { navControls.addView(it,
+                LinearLayout.LayoutParams(0, dp(48), 1f).apply { marginStart = dp(2); marginEnd = dp(2) }) }
+            outer.addView(navControls, LinearLayout.LayoutParams(MATCH_PARENT, dp(48)))
+        }
         outer.addView(displayControls, LinearLayout.LayoutParams(MATCH_PARENT, dp(48)))
         // Controles de recuperação só aparecem durante espera prolongada ou falha.
         val recoveryRow = LinearLayout(this).apply {

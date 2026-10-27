@@ -16,6 +16,7 @@ import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
+import android.view.View
 import androidx.activity.ComponentActivity
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
@@ -86,29 +87,43 @@ class AttentionActivity : ComponentActivity() {
         })
         list = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         content.addView(list)
-        content.addView(TextView(this).apply {
-            text = "Adicionar site e definir limites"
-            textSize = 18f
-            setPadding(0, dp(20), 0, dp(8))
+        val siteForm = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            visibility = View.GONE
+        }
+        val toggleSiteForm = Button(this).apply {
+            text = "Adicionar site e definir limites ▾"
+            contentDescription = "Exibir formulário de novo site e seus limites"
+            setOnClickListener {
+                val expanded = siteForm.visibility != View.VISIBLE
+                siteForm.visibility = if (expanded) View.VISIBLE else View.GONE
+                text = if (expanded) "Ocultar formulário ▴" else "Adicionar site e definir limites ▾"
+                contentDescription = if (expanded) "Ocultar formulário de novo site"
+                    else "Exibir formulário de novo site e seus limites"
+            }
+        }
+        content.addView(toggleSiteForm, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply {
+            topMargin = dp(20)
         })
+        content.addView(siteForm)
 
         val suggestedDomain = AttentionLogic.rootDomainOf(
             intent.getStringExtra("attention_current_page"))
-        domainEt = field(content, "Site", "youtube.com",
+        domainEt = field(siteForm, "Site", "youtube.com",
             InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_URI,
             suggestedDomain.orEmpty())
         if (suggestedDomain != null) {
-            content.addView(TextView(this).apply {
+            siteForm.addView(TextView(this).apply {
                 text = "Site atual detectado: $suggestedDomain · inclui subdomínios"
                 textSize = 13f
             })
         }
-        dailyEt = field(content, "Limite diário (minutos, 0 = sem limite)", "60", InputType.TYPE_CLASS_NUMBER, "60")
-        sessionEt = field(content, "Duração da sessão (minutos, 0 = sem limite)", "30", InputType.TYPE_CLASS_NUMBER, "30")
-        startEt = timeField(content, "Horário permitido: início (vazio = qualquer horário)")
-        endEt = timeField(content, "Horário permitido: fim")
+        dailyEt = field(siteForm, "Limite diário (minutos, 0 = sem limite)", "60", InputType.TYPE_CLASS_NUMBER, "60")
+        sessionEt = field(siteForm, "Duração da sessão (minutos, 0 = sem limite)", "30", InputType.TYPE_CLASS_NUMBER, "30")
+        startEt = timeField(siteForm, "Horário permitido: início (vazio = qualquer horário)")
+        endEt = timeField(siteForm, "Horário permitido: fim")
 
-        content.addView(Button(this).apply {
+        siteForm.addView(Button(this).apply {
             text = "Adicionar site"
             setOnClickListener { addSite() }
         })
