@@ -1946,12 +1946,31 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun showTabs() {
+        val density = resources.displayMetrics.density
+        fun dp(n: Int) = (n * density + 0.5f).toInt()
+        val container = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(12), dp(10), dp(12), dp(8))
+        }
+        container.addView(TextView(this).apply {
+            text = "Constelações"
+            textSize = 24f
+            setTypeface(null, android.graphics.Typeface.BOLD)
+        })
+        val search = android.widget.EditText(this).apply {
+            hint = "Buscar abas ou endereços"
+            contentDescription = "Pesquisar em todas as constelações"
+            isSingleLine = true
+        }
+        container.addView(search)
+        val groupsForSearch = mutableListOf<Pair<android.view.View, MutableList<Pair<android.view.View, String>>>>()
         val scroll = ScrollView(this)
         val list = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(16, 8, 16, 12)
         }
         scroll.addView(list)
+        container.addView(scroll, LinearLayout.LayoutParams(MATCH_PARENT, 0, 1f))
         val stats = TextView(this).apply {
             text = "$totalTabCount/$MAX_TABS páginas · ${tabs.size}/${BrowserTabPolicy.MAX_RESIDENT_TABS} residentes\n" +
                 "As hibernadas economizam memória e são recarregadas ao abrir."
@@ -1959,8 +1978,8 @@ class MainActivity : ComponentActivity() {
             setPadding(8, 4, 8, 16)
         }
         list.addView(stats)
-        list.addView(Button(this).apply {
-            text = "Contas e perfis · P1 / P2"
+        container.addView(Button(this).apply {
+            text = "Contas e perfis"
             contentDescription = "Gerenciar perfis e contas Google"
             setOnClickListener { showAccountProfilesMenu() }
         })
@@ -1969,12 +1988,22 @@ class MainActivity : ComponentActivity() {
             val residents = tabs.filter { it.constellation == group }
             val sleeping = parkedTabs.filter { it.constellation == group }
             if (residents.isEmpty() && sleeping.isEmpty()) continue
-            list.addView(TextView(this).apply {
-                text = "✦ $group · ${residents.size + sleeping.size}"
+            val header = TextView(this).apply {
+                val symbol = when (group) {
+                    "Exploração" -> "◈"
+                    "Estudos" -> "▤"
+                    "Entretenimento" -> "♫"
+                    "Trabalho" -> "▣"
+                    else -> "✦"
+                }
+                text = "$symbol $group · ${residents.size + sleeping.size}"
                 textSize = 18f
                 setTypeface(null, android.graphics.Typeface.BOLD)
-                setPadding(8, 16, 8, 8)
-            })
+                setPadding(8, 18, 8, 8)
+            }
+            list.addView(header)
+            val matchingRows = mutableListOf<Pair<android.view.View, String>>()
+            groupsForSearch.add(header to matchingRows)
             for (id in residents.map { it.id } + sleeping.map { it.id }) {
                 val resident = tabs.firstOrNull { it.id == id }
                 val parked = parkedTabs.firstOrNull { it.id == id }
@@ -1983,7 +2012,13 @@ class MainActivity : ComponentActivity() {
                 val line = LinearLayout(this).apply {
                     orientation = LinearLayout.HORIZONTAL
                     gravity = android.view.Gravity.CENTER_VERTICAL
-                    setPadding(8, 5, 8, 5)
+                    minimumHeight = dp(64)
+                    setPadding(dp(10), dp(8), dp(6), dp(8))
+                    background = android.graphics.drawable.GradientDrawable().apply {
+                        cornerRadius = dp(10).toFloat()
+                        setColor(if (resident?.id == tabs.getOrNull(activeIndex)?.id)
+                            0x223F8DCB else 0x0D808080)
+                    }
                 }
                 val details = TextView(this).apply {
                     text = name + (if ((resident?.profile ?: parked?.profile) == isolatedGoogleProfile)
@@ -1992,8 +2027,9 @@ class MainActivity : ComponentActivity() {
                         isLive -> "● Residente · mídia não verificada"
                         else -> "◌ Hibernada · toque para restaurar"
                     }
-                    textSize = 14f
+                    textSize = 15f
                     maxLines = 3
+                    ellipsize = android.text.TextUtils.TruncateAt.END
                 }
                 line.addView(details, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
                 line.addView(Button(this).apply {
@@ -2008,6 +2044,8 @@ class MainActivity : ComponentActivity() {
                 })
                 line.addView(Button(this).apply {
                     text = "⋮"
+                    minWidth = dp(48)
+                    minHeight = dp(48)
                     contentDescription = "Ações de $name"
                     setOnClickListener {
                         dialog.dismiss()
@@ -2031,17 +2069,37 @@ class MainActivity : ComponentActivity() {
                             }.setNegativeButton("Voltar", null).show()
                     }
                 })
-                list.addView(line)
+                list.addView(line, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply {
+                    bottomMargin = dp(6)
+                })
+                matchingRows.add(line to (name + " " +
+                    (resident?.view?.url ?: resident?.url ?: parked?.url ?: "") + " " + group))
             }
         }
+        search.addTextChangedListener(object : android.text.TextWatcher {
+            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
+            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {
+                val term = s?.toString()?.trim().orEmpty()
+                groupsForSearch.forEach { (header, rows) ->
+                    var visibleCount = 0
+                    rows.forEach { (row, keywords) ->
+                        val visible = term.isBlank() || keywords.contains(term, ignoreCase = true)
+                        row.visibility = if (visible) android.view.View.VISIBLE else android.view.View.GONE
+                        if (visible) visibleCount++
+                    }
+                    header.visibility = if (visibleCount > 0) android.view.View.VISIBLE else android.view.View.GONE
+                }
+            }
+            override fun afterTextChanged(s: android.text.Editable?) {}
+        })
         dialog = AlertDialog.Builder(this)
-            .setTitle("Constelações")
-            .setView(scroll)
+            .setView(container)
             .setPositiveButton("Nova aba") { _, _ -> newTab() }
             .setNeutralButton("Hibernar") { _, _ -> selectTabToPark("Escolher aba para hibernar") }
             .setNegativeButton("Fechar", null)
             .create()
         dialog.show()
+        dialog.window?.setLayout(MATCH_PARENT, MATCH_PARENT)
     }
 
     private fun toggleFavorite() {
