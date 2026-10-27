@@ -2024,7 +2024,7 @@ class MainActivity : ComponentActivity() {
                     text = name + (if ((resident?.profile ?: parked?.profile) == isolatedGoogleProfile)
                         " · Perfil Google isolado" else "") + "\n" + when {
                         resident?.id == tabs.getOrNull(activeIndex)?.id -> "● Em primeiro plano"
-                        isLive -> "● Residente · mídia não verificada"
+                        isLive -> "● Na memória"
                         else -> "◌ Hibernada · toque para restaurar"
                     }
                     textSize = 15f
@@ -2032,16 +2032,15 @@ class MainActivity : ComponentActivity() {
                     ellipsize = android.text.TextUtils.TruncateAt.END
                 }
                 line.addView(details, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
-                line.addView(Button(this).apply {
-                    text = if (isLive) "Abrir" else "Restaurar"
-                    contentDescription = "Abrir $name"
-                    setOnClickListener {
-                        dialog.dismiss()
-                        val liveIndex = tabs.indexOfFirst { it.id == id }
-                        if (liveIndex >= 0) { activeIndex = liveIndex; showActive() }
-                        else parkedTabs.indexOfFirst { it.id == id }.takeIf { it >= 0 }?.let(::restoreParkedTab)
-                    }
-                })
+                line.isClickable = true
+                line.isFocusable = true
+                line.contentDescription = (if (isLive) "Abrir " else "Restaurar ") + name
+                line.setOnClickListener {
+                    dialog.dismiss()
+                    val liveIndex = tabs.indexOfFirst { it.id == id }
+                    if (liveIndex >= 0) { activeIndex = liveIndex; showActive() }
+                    else parkedTabs.indexOfFirst { it.id == id }.takeIf { it >= 0 }?.let(::restoreParkedTab)
+                }
                 line.addView(Button(this).apply {
                     text = "⋮"
                     minWidth = dp(48)
