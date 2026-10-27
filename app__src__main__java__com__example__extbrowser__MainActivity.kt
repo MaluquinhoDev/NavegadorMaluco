@@ -110,6 +110,7 @@ class MainActivity : ComponentActivity() {
 
     private fun createConstellation(afterCreate: () -> Unit) {
         val field = EditText(this).apply {
+            styleInput(this)
             hint = "Nome da constelação"
             setSingleLine(true)
             setPadding(dp(16), dp(8), dp(16), dp(8))
@@ -413,6 +414,7 @@ class MainActivity : ComponentActivity() {
     private fun dp(value: Int): Int = (value * resources.displayMetrics.density + 0.5f).toInt()
     private fun uiBackground() = if (isDarkTheme()) 0xFF101720.toInt() else 0xFFF4F6FA.toInt()
     private fun uiSurface() = if (isDarkTheme()) 0xFF202B39.toInt() else Color.WHITE
+    private fun uiInputSurface() = if (isDarkTheme()) 0xFF2C4055.toInt() else Color.WHITE
     private fun uiForeground() = if (isDarkTheme()) Color.WHITE else 0xFF182536.toInt()
     private fun uiMuted() = if (isDarkTheme()) 0xFFB7C3D0.toInt() else 0xFF536477.toInt()
     private fun uiAccent() = if (isDarkTheme()) 0xFF8CCBFF.toInt() else 0xFF1769A6.toInt()
@@ -423,6 +425,14 @@ class MainActivity : ComponentActivity() {
             cornerRadius = dp(radius).toFloat()
             if (outline) setStroke(dp(1), uiOutline())
         }
+    /** Evita campos escuros com texto invisível ao alternar entre tema do app e do Android. */
+    private fun styleInput(field: EditText) {
+        field.setTextColor(uiForeground())
+        field.setHintTextColor(uiMuted())
+        field.minHeight = dp(48)
+        field.background = uiShape(uiInputSurface(), 12, true)
+        field.setPadding(dp(12), dp(8), dp(12), dp(8))
+    }
     private fun uiAction(label: String, primary: Boolean = false): Button = Button(this).apply {
         text = label
         setAllCaps(false)
@@ -964,13 +974,14 @@ class MainActivity : ComponentActivity() {
         blockerList = extensionList.flatMap { e -> e.blockRegexes.map { Blocker(e.name, Regex(it)) } }
 
         urlBar = EditText(this).apply {
+            styleInput(this)
             setSingleLine()
             hint = "URL ou busca"
             textSize = 15f
             minHeight = dp(48)
             setSingleLine(true)
             setPadding(dp(14), 0, dp(12), 0)
-            background = uiShape(uiSurface(), 14, true)
+            background = uiShape(uiInputSurface(), 14, true)
             imeOptions = EditorInfo.IME_ACTION_GO
             inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_URI
             setOnEditorActionListener { _, id, _ ->
@@ -2244,12 +2255,13 @@ class MainActivity : ComponentActivity() {
             setPadding(0, dp(4), 0, dp(12))
         })
         val search = EditText(this).apply {
+            styleInput(this)
             hint = "Buscar título, endereço ou constelação"
             setSingleLine(true)
             textSize = 15f
             minHeight = dp(48)
             setPadding(dp(12), 0, dp(12), 0)
-            background = uiShape(uiSurface(), 12, true)
+            background = uiShape(uiInputSurface(), 12, true)
         }
         root.addView(search, LinearLayout.LayoutParams(MATCH_PARENT, dp(48)))
         val filters = LinearLayout(this).apply {
@@ -2589,11 +2601,12 @@ class MainActivity : ComponentActivity() {
             setTypeface(null, android.graphics.Typeface.BOLD)
         })
         val search = EditText(this).apply {
+            styleInput(this)
             hint = "Buscar abas deste perfil"
             setSingleLine(true)
             textSize = 15f
             setPadding(dp(12), 0, dp(12), 0)
-            background = uiShape(uiSurface(), 12, true)
+            background = uiShape(uiInputSurface(), 12, true)
         }
         root.addView(search, LinearLayout.LayoutParams(MATCH_PARENT, dp(48)).apply {
             topMargin = dp(12); bottomMargin = dp(8)
@@ -3666,6 +3679,7 @@ class MainActivity : ComponentActivity() {
             return
         }
         val field = EditText(this).apply {
+            styleInput(this)
             hint = "Mensagem para o chat"
             minLines = 3
             maxLines = 6
@@ -5848,6 +5862,7 @@ class MainActivity : ComponentActivity() {
 
     private fun promptNativeMediaUrl() {
         val field = EditText(this).apply {
+            styleInput(this)
             hint = "https://exemplo.com/audio.mp3"
             setSingleLine()
             inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_URI
@@ -6034,11 +6049,12 @@ class MainActivity : ComponentActivity() {
             setPadding(0, dp(4), 0, dp(12))
         })
         val search = EditText(this).apply {
+            styleInput(this)
             hint = "Buscar por título ou endereço"
             setSingleLine(true)
             textSize = 15f
             setPadding(dp(12), 0, dp(12), 0)
-            background = uiShape(uiSurface(), 12, true)
+            background = uiShape(uiInputSurface(), 12, true)
         }
         root.addView(search, LinearLayout.LayoutParams(MATCH_PARENT, dp(48)))
         val scroll = ScrollView(this)

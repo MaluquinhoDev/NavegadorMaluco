@@ -2,7 +2,6 @@ package com.example.extbrowser
 
 import android.app.AlertDialog
 import android.app.TimePickerDialog
-import android.content.res.Configuration
 import android.graphics.Color
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
@@ -36,6 +35,8 @@ class AttentionActivity : ComponentActivity() {
     private lateinit var taskMinutes: EditText
 
     override fun onCreate(savedInstanceState: Bundle?) {
+        setTheme(if (isDarkModeSelected()) android.R.style.Theme_Material_NoActionBar
+            else android.R.style.Theme_Material_Light_NoActionBar)
         super.onCreate(savedInstanceState)
         Attention.init(this)
 
@@ -155,6 +156,10 @@ class AttentionActivity : ComponentActivity() {
             setSingleLine()
             setText(initial)
             minHeight = dp(48)
+            setTextColor(inputForeground())
+            setHintTextColor(inputHint())
+            setPadding(dp(12), dp(8), dp(12), dp(8))
+            background = inputBackground()
         }
         parent.addView(et, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
         return et
@@ -172,6 +177,10 @@ class AttentionActivity : ComponentActivity() {
             isClickable = true
             minHeight = dp(48)
             contentDescription = label
+            setTextColor(inputForeground())
+            setHintTextColor(inputHint())
+            setPadding(dp(12), dp(8), dp(12), dp(8))
+            background = inputBackground()
             setSingleLine()
             setOnClickListener { pickTime(this) }
         }
@@ -305,10 +314,21 @@ class AttentionActivity : ComponentActivity() {
     }
 
     private fun panelBackground() = GradientDrawable().apply {
-        val dark = (resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK) == Configuration.UI_MODE_NIGHT_YES
+        val dark = isDarkModeSelected()
         setColor(if (dark) Color.rgb(39, 43, 52) else Color.rgb(245, 247, 251))
         setStroke(dp(1), if (dark) Color.rgb(69, 74, 84) else Color.rgb(221, 227, 235))
         cornerRadius = dp(16).toFloat()
+    }
+
+    private fun isDarkModeSelected(): Boolean = getSharedPreferences("appearance", MODE_PRIVATE)
+        .getString("theme", "light") == "dark"
+
+    private fun inputForeground(): Int = if (isDarkModeSelected()) Color.WHITE else Color.rgb(24, 37, 54)
+    private fun inputHint(): Int = if (isDarkModeSelected()) Color.rgb(190, 204, 219) else Color.rgb(83, 100, 119)
+    private fun inputBackground() = GradientDrawable().apply {
+        setColor(if (isDarkModeSelected()) Color.rgb(32, 43, 57) else Color.WHITE)
+        setStroke(dp(1), if (isDarkModeSelected()) Color.rgb(90, 110, 130) else Color.rgb(192, 204, 218))
+        cornerRadius = dp(12).toFloat()
     }
 
     private fun confirmRemove(s: AttentionSite) {

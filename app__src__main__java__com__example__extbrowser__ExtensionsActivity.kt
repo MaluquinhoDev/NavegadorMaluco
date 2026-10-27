@@ -14,7 +14,6 @@ import android.widget.ScrollView
 import android.widget.Switch
 import android.widget.TextView
 import android.widget.Toast
-import android.content.res.Configuration
 import androidx.activity.ComponentActivity
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.view.ViewCompat
@@ -34,6 +33,8 @@ class ExtensionsActivity : ComponentActivity() {
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
+        setTheme(if (isDarkModeSelected()) android.R.style.Theme_Material_NoActionBar
+            else android.R.style.Theme_Material_Light_NoActionBar)
         super.onCreate(savedInstanceState)
         manager = ExtensionManager(this)
 
@@ -117,7 +118,7 @@ class ExtensionsActivity : ComponentActivity() {
             if (e.error != null) {
                 val msg = TextView(this).apply {
                     text = e.name + " · erro: " + e.error
-                    setTextColor(if (isNightMode()) Color.rgb(255, 145, 145) else Color.rgb(172, 24, 24))
+                    setTextColor(if (isDarkModeSelected()) Color.rgb(255, 145, 145) else Color.rgb(172, 24, 24))
                     textSize = 14f
                 }
                 row.addView(msg, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
@@ -146,13 +147,13 @@ class ExtensionsActivity : ComponentActivity() {
         }
     }
 
-    private fun isNightMode(): Boolean =
-        (resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK) == Configuration.UI_MODE_NIGHT_YES
+    private fun isDarkModeSelected(): Boolean = getSharedPreferences("appearance", MODE_PRIVATE)
+        .getString("theme", "light") == "dark"
 
     private fun cardBackground() = GradientDrawable().apply {
-        setColor(if (isNightMode()) Color.rgb(39, 43, 52) else Color.rgb(245, 247, 251))
+        setColor(if (isDarkModeSelected()) Color.rgb(39, 43, 52) else Color.rgb(245, 247, 251))
         cornerRadius = dp(16).toFloat()
-        setStroke(dp(1), if (isNightMode()) Color.rgb(69, 74, 84) else Color.rgb(221, 227, 235))
+        setStroke(dp(1), if (isDarkModeSelected()) Color.rgb(69, 74, 84) else Color.rgb(221, 227, 235))
     }
 
     private fun confirmRemove(e: ExtEntry) {
