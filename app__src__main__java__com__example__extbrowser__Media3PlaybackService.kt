@@ -38,6 +38,14 @@ class Media3PlaybackService : MediaSessionService() {
         fun latestPlaybackHttpStatus(): Int? = latestPlaybackHttpError
         fun bufferingNotice(): String? = stallNotice
 
+        /** Itens identificados, nunca URLs temporárias ou credenciais. */
+        fun appendQueue(ids: List<String>, music: Boolean): Int {
+            val service = liveService ?: return 0
+            return service.enqueue(ids, music)
+        }
+        fun queueStatus(): String = liveService?.queueSummary() ?: "Player não iniciado"
+        fun clearPendingQueue() { liveService?.clearPendingQueue() }
+
         fun stopExistingPlayback() {
             liveService?.stopAndClear()
         }
@@ -49,12 +57,114 @@ class Media3PlaybackService : MediaSessionService() {
             }
         }
     }
+    private data class QueuedTrack(val id: String, val music: Boolean)
+    private val pendingTracks = ArrayDeque<QueuedTrack>()
+    private var fetchingNext = false
+    private var queueRevision = 0
+    private fun persistQueue() {
+        val array = org.json.JSONArray()
+        pendingTracks.forEach {
+            array.put(org.json.JSONObject().put("id", it.id).put("music", it.music))
+        }
+        getSharedPreferences("nm_native_queue", MODE_PRIVATE).edit()
+            .putString("items", array.toString()).apply()
+    }
+    private fun restoreQueue() {
+        val raw = getSharedPreferences("nm_native_queue", MODE_PRIVATE).getString("items", "[]")
+        val array = runCatching { org.json.JSONArray(raw) }.getOrNull() ?: return
+        for (i in 0 until minOf(array.length(), 100)) {
+            val entry = array.optJSONObject(i) ?: continue
+            val id = entry.optString("id")
+            if (id.matches(Regex("[A-Za-z0-9_-]{11}")))
+                pendingTracks.addLast(QueuedTrack(id, entry.optBoolean("music")))
+        }
+    }
+    @Synchronized private fun enqueue(ids: List<String>, music: Boolean): Int {
+        val existing = pendingTracks.map { it.id }.toMutableSet()
+        var count = 0
+        ids.take(100).forEach { id ->
+            if (pendingTracks.size < 100 && id.matches(Regex("[A-Za-z0-9_-]{11}")) &&
+                existing.add(id)) {
+                pendingTracks.addLast(QueuedTrack(id, music))
+                count++
+            }
+        }
+        persistQueue()
+        return count
+    }
+    @Synchronized private fun clearPendingQueue() {
+        queueRevision++
+        pendingTracks.clear()
+        persistQueue()
+    }
+    @Synchronized private fun queueSummary(): String =
+        "${pendingTracks.size} item(ns) pendente(s)"
+    /** Somente o serviço avança a fila; nunca cria reprodução em loop. */
+    private fun advanceQueue() {
+        if (fetchingNext) return
+        val exo = player ?: return
+        val next = synchronized(this) {
+            if (pendingTracks.isEmpty()) null else pendingTracks.removeFirst().also { persistQueue() }
+        } ?: return
+        val revision = queueRevision
+        fetchingNext = true
+        val page = if (next.music) "https://music.youtube.com/watch?v=${next.id}"
+            else "https://www.youtube.com/watch?v=${next.id}"
+        val forbidden = Attention.checkNavigation(page)
+        if (forbidden != null) {
+            fetchingNext = false
+            clearPendingQueue()
+            exo.stop()
+            exo.clearMediaItems()
+            return
+        }
+        Thread {
+            val report = runCatching {
+                YoutubeExtractor.extractWithReport(page)
+            }.getOrElse {
+                runCatching {
+                    YoutubeExtractor.extractWithReport("https://www.youtube.com/watch?v=${next.id}")
+                }.getOrNull()
+            }
+            val source = report?.sources?.firstOrNull {
+                it.playable && (next.music && it.label.startsWith("Áudio"))
+            } ?: report?.sources?.firstOrNull { it.playable && it.label.startsWith("Vídeo + áudio") }
+                ?: report?.sources?.firstOrNull { it.playable }
+            attentionHandler.post {
+                fetchingNext = false
+                if (revision != queueRevision || exo.playbackState != Player.STATE_ENDED) return@post
+                if (source == null || Attention.checkNavigation(page) != null) {
+                    // Falha fechada: não pula silenciosamente músicas indisponíveis.
+                    clearPendingQueue()
+                    exo.stop()
+                    exo.clearMediaItems()
+                    Log.w(TAG, "Fila interrompida: fonte indisponível ou limite de atenção")
+                    return@post
+                }
+                val origin = "https://${if (next.music) "music.youtube.com" else "www.youtube.com"}/"
+                val info = Bundle().apply {
+                    putString("nm_attention_page", page)
+                    putString("nm_page_origin", origin)
+                    putString("nm_youtube_video_id", next.id)
+                }
+                val item = MediaItem.Builder().setUri(source.url)
+                    .setMediaMetadata(androidx.media3.common.MediaMetadata.Builder()
+                        .setTitle("Faixa ${next.id}")
+                        .setArtist("NavegadorMaluco")
+                        .setIsPlayable(true).setExtras(info).build()).build()
+                exo.setMediaItem(item)
+                exo.prepare()
+                exo.play()
+            }
+        }.start()
+    }
     private val stopAllCommand = SessionCommand(ACTION_STOP_ALL, Bundle.EMPTY)
     private var player: ExoPlayer? = null
     private var session: MediaSession? = null
     private lateinit var playerHistory: PlayerHistory
     private var lastHistorySaveMs = 0L
     private fun stopAndClear() {
+        clearPendingQueue()
         player?.let { exo ->
             savePlaybackPosition(exo)
             exo.pause()
@@ -130,6 +240,7 @@ class Media3PlaybackService : MediaSessionService() {
                     savePlaybackPosition(exo, interrupted = true)
                     exo.stop()
                     exo.clearMediaItems()
+                    clearPendingQueue()
                     Log.i(TAG, "Controle de Atenção encerrou sessão Media3: " +
                         verdict.site.domain + " (" + verdict.reason + ")")
                 }
@@ -161,6 +272,8 @@ class Media3PlaybackService : MediaSessionService() {
         liveService = this
         Attention.init(this)
         playerHistory = PlayerHistory(this)
+        restoreQueue()
+        YoutubeExtractor.configure(this)
         val http = DefaultHttpDataSource.Factory()
             .setUserAgent(WebSettings.getDefaultUserAgent(this))
         val dataSource = DefaultDataSource.Factory(this, http)
@@ -214,6 +327,7 @@ class Media3PlaybackService : MediaSessionService() {
                     else -> "OUTRO"
                 }
                 Log.i(TAG, "Estado Media3=$status")
+                if (playbackState == Player.STATE_ENDED) advanceQueue()
             }
 
             override fun onPlayerError(error: PlaybackException) {
