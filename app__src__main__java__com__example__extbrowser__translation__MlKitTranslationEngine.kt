@@ -29,11 +29,7 @@ class MlKitTranslationEngine : TranslationEngine {
     ): List<String> {
         if (texts.isEmpty()) return emptyList()
 
-        val detectedSource = if (sourceLanguage == "auto") {
-            detectLanguage(texts)
-        } else {
-            runCatching { normalizeLanguage(sourceLanguage) }.getOrElse { detectLanguage(texts) }
-        }
+        val detectedSource = resolveSourceLanguage(texts, sourceLanguage)
         val normalizedTarget = normalizeLanguage(targetLanguage)
 
         if (detectedSource == normalizedTarget) return texts
@@ -46,6 +42,12 @@ class MlKitTranslationEngine : TranslationEngine {
             if (text.isBlank()) text
             else Tasks.await(current.translate(text))
         }
+    }
+
+    override fun resolveSourceLanguage(texts: List<String>, requestedLanguage: String): String {
+        if (requestedLanguage == "auto") return detectLanguage(texts)
+        return runCatching { normalizeLanguage(requestedLanguage) }
+            .getOrElse { detectLanguage(texts) }
     }
 
     private fun detectLanguage(texts: List<String>): String {
