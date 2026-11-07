@@ -28,3 +28,10 @@ runtime.sendMessage(msg), storage.local.get/set/remove/clear (Promises)
 
 ## Depuração
 chrome://inspect (celular no cabo) | adb logcat -s ExtBrowser ExtManager ExtBridge
+
+
+## Tradução de páginas
+
+O menu do navegador contém **Traduzir página** e **Restaurar texto original**. A tradução usa Google ML Kit no próprio aparelho, identifica o idioma e baixa modelos sob demanda (cerca de 30 MB). Depois do download, a inferência funciona offline. O texto da página não é enviado a uma API de tradução.
+
+Detalhes, limitações e privacidade: [TRANSLATION_ARCHITECTURE.md](TRANSLATION_ARCHITECTURE.md).
