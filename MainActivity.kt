@@ -45,9 +45,6 @@ import androidx.webkit.WebMessageCompat
 import androidx.webkit.WebViewCompat
 import androidx.webkit.WebViewFeature
 import java.io.ByteArrayInputStream
-import java.util.WeakHashMap
-import com.example.extbrowser.translation.MlKitTranslationEngine
-import com.example.extbrowser.translation.TranslationManager
 
 class MainActivity : ComponentActivity() {
     private class Blocker(val name: String, val regex: Regex)
@@ -63,9 +60,6 @@ class MainActivity : ComponentActivity() {
     private lateinit var statusView: TextView
     private lateinit var tabsButton: Button
     private lateinit var favoriteButton: Button
-    private lateinit var translationButton: Button
-    private val translationManagers = WeakHashMap<WebView, TranslationManager>()
-    private val translatedViews = WeakHashMap<WebView, Boolean>()
     private lateinit var store: BrowserData
     private var statusDefaultColor = 0
     private var loaded = false
@@ -139,10 +133,6 @@ class MainActivity : ComponentActivity() {
         tabsButton = Button(this).apply { text = "Abas"; setOnClickListener { showTabs() } }
         favoriteButton = Button(this).apply { text = "☆"; setOnClickListener { toggleFavorite() } }
         val savedButton = Button(this).apply { text = "☰"; setOnClickListener { showLibrary() } }
-        translationButton = Button(this).apply {
-            text = "Traduzir"
-            setOnClickListener { translateCurrentPage() }
-        }
         // Duas linhas: a barra de URL ocupa toda a largura disponível.
         // Os botões ficam separados para não comprimir a digitação no celular.
         val actions = LinearLayout(this).apply {
@@ -151,7 +141,6 @@ class MainActivity : ComponentActivity() {
             addView(tabsButton, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
             addView(savedButton, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
             addView(extButton, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
-            addView(translationButton, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
         }
         val bar = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -205,9 +194,6 @@ class MainActivity : ComponentActivity() {
             override fun onPageStarted(v: WebView, url: String, favicon: Bitmap?) {
                 val t = tabs.firstOrNull { it.view === v } ?: return
                 t.url = url
-                translationManagers[v]?.cancelPending()
-                translatedViews.remove(v)
-                if (v === webView) updateTranslationButton()
                 if (v === webView && !urlBar.hasFocus()) urlBar.setText(url)
                 if (v === webView) updateFavorite()
             }
@@ -215,7 +201,7 @@ class MainActivity : ComponentActivity() {
                 val t = tabs.firstOrNull { it.view === v } ?: return
                 t.title = v.title ?: url
                 t.url = url
-                if (v === webView) { updateFavorite(); updateTranslationButton(); persistTabs() }
+                if (v === webView) { updateFavorite(); persistTabs() }
             }
             override fun doUpdateVisitedHistory(v: WebView, url: String, isReload: Boolean) {
                 if (!isReload && (url.startsWith("https://") || url.startsWith("http://")))
@@ -416,7 +402,6 @@ class MainActivity : ComponentActivity() {
         if (newView.url == null && newView !in pendingPopups) newView.loadUrl(tabs[activeIndex].url)
         urlBar.setText(newView.url ?: tabs[activeIndex].url)
         tabsButton.text = "${tabs.size} abas"
-        updateTranslationButton()
         servedBlockUrl = null
         lastBlockMs = 0
         updateFavorite()
@@ -439,8 +424,6 @@ class MainActivity : ComponentActivity() {
         val tab = tabs.removeAt(index)
         if (webHost.childCount > 0 && webHost.getChildAt(0) === tab.view) webHost.removeView(tab.view)
         pendingPopups.remove(tab.view)
-        translationManagers.remove(tab.view)?.close()
-        translatedViews.remove(tab.view)
         tab.view.stopLoading()
         tab.view.destroy()
         if (tabs.isEmpty()) { tabs.add(Tab(createWebView())) ; activeIndex = 0 }
@@ -459,78 +442,6 @@ class MainActivity : ComponentActivity() {
             .setPositiveButton("Nova aba") { _, _ -> newTab() }
             .setNeutralButton("Fechar aba atual") { _, _ -> closeTab(activeIndex) }
             .setNegativeButton("Cancelar", null).show()
-    }
-
-    private fun updateTranslationButton() {
-        if (!::translationButton.isInitialized || tabs.isEmpty()) return
-        translationButton.text = if (translatedViews[webView] == true) "Original" else "Traduzir"
-    }
-
-    /**
-     * Traduz a página atual para português. A primeira execução baixa o modelo
-     * necessário; as traduções seguintes usam o modelo armazenado no aparelho.
-     */
-    private fun translateCurrentPage() {
-        val currentView = webView
-        val url = currentView.url.orEmpty()
-        if (!url.startsWith("http://") && !url.startsWith("https://")) {
-            Toast.makeText(this, "Não há uma página web para traduzir", Toast.LENGTH_SHORT).show()
-            return
-        }
-
-        val manager = translationManagers.getOrPut(currentView) {
-            TranslationManager(MlKitTranslationEngine())
-        }
-
-        if (translatedViews[currentView] == true) {
-            translationButton.isEnabled = false
-            manager.restorePage(currentView) {
-                translatedViews.remove(currentView)
-                translationButton.isEnabled = true
-                updateTranslationButton()
-                Toast.makeText(this, "Texto original restaurado", Toast.LENGTH_SHORT).show()
-            }
-            return
-        }
-
-        translationButton.isEnabled = false
-        translationButton.text = "Traduzindo…"
-        Toast.makeText(
-            this,
-            "A primeira tradução pode baixar um modelo de idioma (cerca de 30 MB).",
-            Toast.LENGTH_LONG
-        ).show()
-
-        manager.translatePage(currentView, callback = object : TranslationManager.Callback {
-            override fun onSuccess(result: TranslationManager.Result) {
-                translationButton.isEnabled = true
-                if (currentView.url == result.pageUrl && result.translatedNodes > 0) {
-                    translatedViews[currentView] = true
-                    Toast.makeText(
-                        this@MainActivity,
-                        "${result.translatedNodes} trechos traduzidos",
-                        Toast.LENGTH_SHORT
-                    ).show()
-                } else {
-                    Toast.makeText(
-                        this@MainActivity,
-                        "Nenhum texto visível foi encontrado para traduzir",
-                        Toast.LENGTH_SHORT
-                    ).show()
-                }
-                updateTranslationButton()
-            }
-
-            override fun onError(error: Throwable) {
-                translationButton.isEnabled = true
-                updateTranslationButton()
-                Toast.makeText(
-                    this@MainActivity,
-                    "Falha na tradução: ${error.message ?: "erro desconhecido"}",
-                    Toast.LENGTH_LONG
-                ).show()
-            }
-        })
     }
 
     private fun toggleFavorite() {
@@ -691,9 +602,6 @@ class MainActivity : ComponentActivity() {
         fileCallback = null
         exitFullscreen()
         handler.removeCallbacks(ticker)
-        translationManagers.values.toList().forEach { it.close() }
-        translationManagers.clear()
-        translatedViews.clear()
         tabs.forEach { (it.view.parent as? android.view.ViewGroup)?.removeView(it.view); it.view.destroy() }
         store.close()
         super.onDestroy()
