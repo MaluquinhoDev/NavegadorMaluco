@@ -13,6 +13,9 @@ interface TranslationEngine : AutoCloseable {
      *
      * Esta função é chamada fora da thread principal.
      */
+    fun resolveSourceLanguage(texts: List<String>, requestedLanguage: String): String =
+        requestedLanguage
+
     fun translate(
         texts: List<String>,
         sourceLanguage: String,
