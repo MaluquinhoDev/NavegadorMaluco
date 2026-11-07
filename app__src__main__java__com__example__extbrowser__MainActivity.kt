@@ -1427,10 +1427,10 @@ class MainActivity : ComponentActivity() {
     @SuppressLint("SetJavaScriptEnabled")
     private fun createWebView(profile: String = ""): WebView {
         val view = WebView(this)
-        installVideoSpeedController(view)
         // Vincular ANTES de acessar settings, JavaScript ou navegar.
         if (profile == isolatedGoogleProfile && supportedGoogleProfile())
             WebViewCompat.setProfile(view, isolatedGoogleProfile)
+        installVideoSpeedController(view)
         view.settings.javaScriptEnabled = true
         view.settings.domStorageEnabled = true
         configureSiteDisplay(view, null)
