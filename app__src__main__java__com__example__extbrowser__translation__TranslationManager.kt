@@ -55,7 +55,7 @@ class TranslationManager(
             }
 
             webView.evaluateJavascript(
-                TranslationPageScript.INSTALL + "\nJSON.stringify(window.__nmTranslation.extract());"
+                TranslationPageScript.INSTALL + "\nwindow.__nmTranslation.extract();"
             ) { raw ->
                 if (requestId != requestSequence.get() || closed) return@evaluateJavascript
 
