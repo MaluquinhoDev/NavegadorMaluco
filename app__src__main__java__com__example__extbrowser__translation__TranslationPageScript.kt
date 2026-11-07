@@ -9,7 +9,7 @@ internal object TranslationPageScript {
         (function () {
           if (window.__nmTranslation) return;
 
-          const nodeIds = new WeakMap();
+          let nodeIds = new WeakMap();
           const nodes = new Map();
           const originals = new Map();
           let nextId = 1;
@@ -46,7 +46,7 @@ internal object TranslationPageScript {
 
             while ((node = walker.nextNode())) {
               if (!eligible(node)) continue;
-              const original = nodeIds.has(node) ? originals.get(nodeIds.get(node)) : node.nodeValue;
+              const original = nodeIds.has(node) ? (originals.get(nodeIds.get(node)) || node.nodeValue) : node.nodeValue;
               if (totalCharacters + original.length > 80_000 || result.length >= 800) break;
 
               let id = nodeIds.get(node);
@@ -89,6 +89,8 @@ internal object TranslationPageScript {
             }
             nodes.clear();
             originals.clear();
+            nodeIds = new WeakMap();
+            nextId = 1;
             return restored;
           }
 
