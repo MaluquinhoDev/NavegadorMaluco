@@ -2672,7 +2672,7 @@ class MainActivity : ComponentActivity() {
         translationRequestView = current
         Toast.makeText(
             this,
-            "Preparando tradução local. O primeiro uso baixa o modelo de idioma.",
+            "Preparando tradução local. O primeiro modelo (cerca de 30 MB) é baixado somente por Wi-Fi.",
             Toast.LENGTH_LONG
         ).show()
 
