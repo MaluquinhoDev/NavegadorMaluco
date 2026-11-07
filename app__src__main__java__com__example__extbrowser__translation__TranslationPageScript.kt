@@ -1,11 +1,8 @@
 package com.example.extbrowser.translation
 
 /**
- * Código executado somente no documento da página que já está aberta no
- * WebView principal. Não cria interfaces JavaScript nativas no site.
- *
- * O estado mantém referências aos nós de texto originais. Assim, restaurar a
- * página não depende de tentar traduzir a tradução anterior.
+ * Extrai somente texto visível do documento. Nenhuma interface Kotlin é
+ * exposta ao JavaScript dos sites.
  */
 internal object TranslationPageScript {
     val INSTALL = """
@@ -21,12 +18,12 @@ internal object TranslationPageScript {
             'script', 'style', 'noscript', 'template',
             'code', 'pre', 'kbd', 'samp',
             'input', 'textarea', 'select', 'option', 'button',
-            '[contenteditable="true"]', '[translate="no"]',
+            '[contenteditable]', '[translate="no"]',
             '[aria-hidden="true"]', '[data-nm-translation-ignore]',
             'svg', 'math'
           ].join(',');
 
-          function isEligible(node) {
+          function eligible(node) {
             const parent = node.parentElement;
             if (!parent || !parent.isConnected) return false;
             if (parent.closest(ignoredSelector)) return false;
@@ -41,16 +38,16 @@ internal object TranslationPageScript {
 
           function extract() {
             const result = [];
-            if (!document.body) return result;
+            if (!document.body) return { language: '', nodes: result };
 
-            const walker = document.createTreeWalker(
-              document.body,
-              NodeFilter.SHOW_TEXT
-            );
-
+            const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
             let node;
+            let totalCharacters = 0;
+
             while ((node = walker.nextNode())) {
-              if (!isEligible(node)) continue;
+              if (!eligible(node)) continue;
+              const original = nodeIds.has(node) ? originals.get(nodeIds.get(node)) : node.nodeValue;
+              if (totalCharacters + original.length > 80_000 || result.length >= 800) break;
 
               let id = nodeIds.get(node);
               if (!id) {
@@ -60,12 +57,14 @@ internal object TranslationPageScript {
                 originals.set(id, node.nodeValue);
               }
 
-              result.push({
-                id: id,
-                text: originals.get(id)
-              });
+              result.push({ id: id, text: originals.get(id) });
+              totalCharacters += original.length;
             }
-            return result;
+
+            return {
+              language: document.documentElement ? document.documentElement.lang || '' : '',
+              nodes: result
+            };
           }
 
           function apply(translations) {
@@ -93,11 +92,7 @@ internal object TranslationPageScript {
             return restored;
           }
 
-          window.__nmTranslation = {
-            extract: extract,
-            apply: apply,
-            restore: restore
-          };
+          window.__nmTranslation = { extract: extract, apply: apply, restore: restore };
         })();
     """.trimIndent()
 }
