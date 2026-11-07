@@ -65,21 +65,22 @@ class TranslationManager(
 
                 try {
                     val payload = JSONObject(raw ?: "{}")
-                    val pageLanguage = payload.optString("language").substringBefore('-')
+                    // O atributo HTML lang é apenas metadado e pode estar incorreto.
+                    // A origem automática é identificada a partir dos textos extraídos.
                     val nodes = parseNodes(payload.optJSONArray("nodes"))
                     if (nodes.isEmpty()) {
                         callback.onSuccess(Result(0, pageUrl))
                         return@evaluateJavascript
                     }
 
-                    val requestedSource = if (sourceLanguage == "auto") {
-                        pageLanguage.takeIf { it.isNotBlank() } ?: "auto"
-                    } else sourceLanguage
-
                     executor.execute {
                         try {
-                            val source = engine.resolveSourceLanguage(nodes.map { it.text }, requestedSource)
-                            if (source == targetLanguage) {
+                            val source = engine.resolveSourceLanguage(
+                                nodes.map { it.text },
+                                sourceLanguage
+                            )
+                            val target = targetLanguage
+                            if (source == target) {
                                 mainHandler.post {
                                     if (!closed && requestId == requestSequence.get() && webView.url == pageUrl) {
                                         callback.onSuccess(Result(0, pageUrl, alreadyTargetLanguage = true))
@@ -87,7 +88,7 @@ class TranslationManager(
                                 }
                                 return@execute
                             }
-                            val translated = translateNodes(nodes, source, targetLanguage)
+                            val translated = translateNodes(nodes, source, target)
                             mainHandler.post {
                                 if (closed || requestId != requestSequence.get() || webView.url != pageUrl) {
                                     return@post
