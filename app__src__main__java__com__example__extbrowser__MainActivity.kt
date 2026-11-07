@@ -1303,7 +1303,6 @@ class MainActivity : ComponentActivity() {
         })
     }
 
-    @SuppressLint("SetJavaScriptEnabled")
     private val videoSpeedOptions = floatArrayOf(0.5f, 0.75f, 1.0f, 1.25f, 1.5f, 1.75f, 2.0f, 2.5f)
     private fun preferredVideoSpeed(): Float =
         getSharedPreferences("video_playback", MODE_PRIVATE)
@@ -1425,6 +1424,7 @@ class MainActivity : ComponentActivity() {
             .show()
     }
 
+    @SuppressLint("SetJavaScriptEnabled")
     private fun createWebView(profile: String = ""): WebView {
         val view = WebView(this)
         installVideoSpeedController(view)
