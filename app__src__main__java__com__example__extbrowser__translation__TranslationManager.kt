@@ -19,7 +19,11 @@ class TranslationManager(
     private val maxBatchCharacters: Int = 2_500
 ) : AutoCloseable {
 
-    data class Result(val translatedNodes: Int, val pageUrl: String)
+    data class Result(
+        val translatedNodes: Int,
+        val pageUrl: String,
+        val alreadyTargetLanguage: Boolean = false
+    )
 
     interface Callback {
         fun onSuccess(result: Result)
@@ -78,7 +82,7 @@ class TranslationManager(
                             if (source == targetLanguage) {
                                 mainHandler.post {
                                     if (!closed && requestId == requestSequence.get() && webView.url == pageUrl) {
-                                        callback.onSuccess(Result(0, pageUrl))
+                                        callback.onSuccess(Result(0, pageUrl, alreadyTargetLanguage = true))
                                     }
                                 }
                                 return@execute
