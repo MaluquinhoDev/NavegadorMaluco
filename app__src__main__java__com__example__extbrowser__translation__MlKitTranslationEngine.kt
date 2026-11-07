@@ -32,7 +32,7 @@ class MlKitTranslationEngine : TranslationEngine {
         val detectedSource = if (sourceLanguage == "auto") {
             detectLanguage(texts)
         } else {
-            normalizeLanguage(sourceLanguage)
+            runCatching { normalizeLanguage(sourceLanguage) }.getOrElse { detectLanguage(texts) }
         }
         val normalizedTarget = normalizeLanguage(targetLanguage)
 
