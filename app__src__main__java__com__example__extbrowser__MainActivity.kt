@@ -65,6 +65,8 @@ import java.io.ByteArrayInputStream
 import java.io.File
 import java.util.UUID
 import java.util.WeakHashMap
+import com.example.extbrowser.translation.MlKitTranslationEngine
+import com.example.extbrowser.translation.TranslationManager
 import android.content.ComponentName
 import androidx.media3.common.MediaItem
 import androidx.media3.session.MediaController
@@ -95,6 +97,8 @@ class MainActivity : ComponentActivity() {
         val id: String = UUID.randomUUID().toString(), val profile: String = "")
     private val parkedTabs = mutableListOf<ParkedTab>()
     private val pinnedTabIds = mutableSetOf<String>()
+    private val translationManagers = WeakHashMap<WebView, TranslationManager>()
+    private val translatedViews = WeakHashMap<WebView, Boolean>()
     private var automaticParkingInProgress = false
     private val constellations = mutableListOf("Exploração", "Estudos", "Entretenimento", "Trabalho")
 
@@ -1343,6 +1347,8 @@ class MainActivity : ComponentActivity() {
                 recordGoogleLoginAudit("Navegação iniciada · cookies terceiros: $cookieBefore → $cookieAfter", url, v)
                 recordGoogleLoginTransition(v, url, "início do documento")
                 val t = tabs.firstOrNull { it.view === v } ?: return
+                translationManagers[v]?.cancelPending()
+                translatedViews.remove(v)
                 synchronized(mediaCandidateLock) { mediaCandidates.remove(v); mediaRequestOrigins.remove(v); mediaNetworkSignals.remove(v) }
                 val shownUrl = attentionBlockedSources[v] ?: url
                 t.url = shownUrl
@@ -2274,6 +2280,8 @@ class MainActivity : ComponentActivity() {
         attentionBlockedSources.remove(tab.view)
         pendingPopups.remove(tab.view)
         popupReviews.remove(tab.view)
+        translationManagers.remove(tab.view)?.close()
+        translatedViews.remove(tab.view)
         synchronized(mediaCandidateLock) { mediaCandidates.remove(tab.view) }
         tab.view.stopLoading()
         tab.view.onPause()
@@ -2624,6 +2632,71 @@ class MainActivity : ComponentActivity() {
         else store.addFavorite(url, webView.title ?: url)
         updateFavorite()
     }
+    /**
+     * Traduz os textos da página atual para português. O primeiro uso baixa
+     * o modelo necessário; depois disso, a tradução ocorre localmente.
+     */
+    private fun translateCurrentPage() {
+        val current = webView
+        val currentUrl = current.url.orEmpty()
+        if (!currentUrl.startsWith("https://") && !currentUrl.startsWith("http://")) {
+            Toast.makeText(this, "A página atual não pode ser traduzida", Toast.LENGTH_SHORT).show()
+            return
+        }
+
+        val manager = translationManagers.getOrPut(current) {
+            TranslationManager(MlKitTranslationEngine())
+        }
+
+        if (translatedViews[current] == true) {
+            manager.restorePage(current) { restored ->
+                translatedViews.remove(current)
+                Toast.makeText(
+                    this,
+                    if (restored > 0) "Texto original restaurado" else "Não havia texto traduzido nesta página",
+                    Toast.LENGTH_SHORT
+                ).show()
+            }
+            return
+        }
+
+        Toast.makeText(
+            this,
+            "Preparando tradução local. O primeiro uso baixa o modelo de idioma.",
+            Toast.LENGTH_LONG
+        ).show()
+
+        manager.translatePage(current, sourceLanguage = "auto", targetLanguage = "pt",
+            callback = object : TranslationManager.Callback {
+                override fun onSuccess(result: TranslationManager.Result) {
+                    if (current.url != result.pageUrl || tabs.none { it.view === current }) return
+                    if (result.translatedNodes > 0) {
+                        translatedViews[current] = true
+                        Toast.makeText(
+                            this@MainActivity,
+                            "${result.translatedNodes} trechos traduzidos para português",
+                            Toast.LENGTH_SHORT
+                        ).show()
+                    } else {
+                        Toast.makeText(
+                            this@MainActivity,
+                            "Nenhum texto visível foi encontrado para traduzir",
+                            Toast.LENGTH_SHORT
+                        ).show()
+                    }
+                }
+
+                override fun onError(error: Throwable) {
+                    if (current.url != currentUrl) return
+                    Toast.makeText(
+                        this@MainActivity,
+                        "Não foi possível traduzir: ${error.cause?.message ?: error.message ?: "erro desconhecido"}",
+                        Toast.LENGTH_LONG
+                    ).show()
+                }
+            })
+    }
+
     private fun updateFavorite() {
         favoriteButton.text = if (tabs.isNotEmpty() && store.isFavorite(webView.url ?: "")) "★" else "☆"
     }
@@ -2671,6 +2744,8 @@ class MainActivity : ComponentActivity() {
         showActionHub("Navegador Maluco", "Navegação e recursos do navegador", listOf(
             MenuAction("Navegar", "Constelações", "Encontrar, proteger e organizar abas") { showTabs() },
             MenuAction("Navegar", "Biblioteca", "Favoritos e histórico pesquisáveis") { showLibrary() },
+            MenuAction("Página", if (translatedViews[webView] == true) "Restaurar texto original" else "Traduzir página",
+                "Traduzir o conteúdo para português no próprio aparelho") { translateCurrentPage() },
             MenuAction("Navegar", if (store.isFavorite(webView.url ?: "")) "Remover favorito" else "Favoritar página",
                 "Atualizar o favorito da página atual") { toggleFavorite() },
             MenuAction("Reprodução", "Reprodução e mídia", "Player nativo, fila e controles") { showMediaMenu() },
@@ -6776,6 +6851,9 @@ class MainActivity : ComponentActivity() {
         miniControllerFuture = null
         miniController = null
         handler.removeCallbacks(ticker)
+        translationManagers.values.toList().forEach { it.close() }
+        translationManagers.clear()
+        translatedViews.clear()
         tabs.forEach { (it.view.parent as? android.view.ViewGroup)?.removeView(it.view); it.view.destroy() }
         store.close()
         super.onDestroy()
