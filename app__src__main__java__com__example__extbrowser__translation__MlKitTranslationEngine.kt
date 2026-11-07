@@ -35,8 +35,8 @@ class MlKitTranslationEngine : TranslationEngine {
         if (detectedSource == normalizedTarget) return texts
 
         val current = getTranslator(detectedSource, normalizedTarget)
-        // O primeiro uso pode baixar o modelo (aproximadamente 30 MB).
-        Tasks.await(current.downloadModelIfNeeded(DownloadConditions.Builder().build()))
+        // O primeiro uso baixa o modelo (aproximadamente 30 MB), somente em Wi-Fi.
+        Tasks.await(current.downloadModelIfNeeded(DownloadConditions.Builder().requireWifi().build()))
 
         return texts.map { text ->
             if (text.isBlank()) text
