@@ -15,12 +15,24 @@ O ML Kit oferece tradução em mais de 50 idiomas, com modelos dinâmicos baixad
 5. Depois do download, a tradução funciona sem conexão.
 6. Abra o Menu novamente e selecione **Restaurar texto original** para desfazer a tradução.
 
-O idioma é identificado pelo atributo `lang` do documento quando disponível; na ausência ou quando o código não é aceito, o identificador local do ML Kit analisa o texto da página. O destino desta implementação é português (`pt`).
+O destino desta implementação é português (`pt`). A identificação automática considera o conteúdo textual original extraído do DOM; o atributo HTML `lang` não é tratado como fonte confiável, pois pode estar ausente ou incorreto.
+
+## Identificação do idioma de origem
+
+- O idioma é detectado antes de qualquer texto ser traduzido.
+- O identificador analisa até 40 amostras textuais separadas, com no máximo 200 caracteres por amostra, respeitando o limite documentado pelo ML Kit.
+- Cada amostra é classificada separadamente. O idioma predominante é escolhido por votação ponderada pela confiança do ML Kit e pelo tamanho do trecho.
+- Amostras curtas ou com confiança inferior a 0,35 são descartadas.
+- A identificação só é aceita quando o idioma vencedor representa pelo menos 55% do peso total e supera o segundo colocado por pelo menos 12 pontos percentuais.
+- Páginas sem evidência suficiente ou sem idioma predominante claro retornam um erro informativo, em vez de assumir que o atributo HTML está correto.
+- O atributo `lang` continua presente no DOM, mas não determina o idioma de origem na detecção automática.
+
+Essa abordagem detecta o idioma predominante da página. Ela não faz tradução individual de cada idioma em páginas genuinamente multilíngues: quando não existe predominância clara, a tradução automática é interrompida para evitar uma escolha arbitrária.
 
 ## Arquitetura
 
 - `TranslationEngine.kt`: contrato do motor e resolução do idioma de origem.
-- `MlKitTranslationEngine.kt`: integração real com ML Kit, download de modelos e inferência.
+- `MlKitTranslationEngine.kt`: identificação por amostras, votação do idioma predominante, download de modelos e inferência.
 - `TranslationManager.kt`: extração, lotes, cache, execução em background, cancelamento e aplicação no WebView.
 - `TranslationCache.kt`: cache LRU em memória, separado por idioma de origem/destino e texto original.
 - `TranslationPageScript.kt`: extração de nós de texto visíveis, aplicação das traduções e restauração.
@@ -41,7 +53,7 @@ A implementação mantém um único gerenciador de tradução e um tradutor ativ
 
 - A tradução é acionada manualmente pelo usuário; não ocorre automaticamente em toda navegação.
 - O destino atual é português.
-- A identificação de idioma é feita para a página como um conjunto; páginas com vários idiomas podem ter resultados mistos.
+- A identificação procura o idioma predominante; não separa e traduz cada idioma de uma página multilíngue.
 - Canvas, imagens, conteúdo de vídeo, PDFs, shadow DOM e documentos de outros frames não são traduzidos por esta camada.
 - Conteúdo carregado dinamicamente depois da extração pode permanecer no idioma original.
 - A qualidade do ML Kit é indicada para tradução simples/casual. Para pares entre idiomas que não sejam inglês, o ML Kit pode usar inglês como idioma intermediário, o que pode afetar a qualidade.
