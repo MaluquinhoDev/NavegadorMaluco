@@ -2691,7 +2691,8 @@ class MainActivity : ComponentActivity() {
                     } else {
                         Toast.makeText(
                             this@MainActivity,
-                            "Nenhum texto visível foi encontrado para traduzir",
+                            if (result.alreadyTargetLanguage) "A página já está em português"
+                            else "Nenhum texto visível foi encontrado para traduzir",
                             Toast.LENGTH_SHORT
                         ).show()
                     }
