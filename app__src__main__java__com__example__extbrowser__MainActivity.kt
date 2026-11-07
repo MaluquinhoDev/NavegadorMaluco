@@ -97,7 +97,8 @@ class MainActivity : ComponentActivity() {
         val id: String = UUID.randomUUID().toString(), val profile: String = "")
     private val parkedTabs = mutableListOf<ParkedTab>()
     private val pinnedTabIds = mutableSetOf<String>()
-    private val translationManagers = WeakHashMap<WebView, TranslationManager>()
+    private var translationManager: TranslationManager? = null
+    private var translationRequestView: WebView? = null
     private val translatedViews = WeakHashMap<WebView, Boolean>()
     private var automaticParkingInProgress = false
     private val constellations = mutableListOf("Exploração", "Estudos", "Entretenimento", "Trabalho")
@@ -1347,7 +1348,10 @@ class MainActivity : ComponentActivity() {
                 recordGoogleLoginAudit("Navegação iniciada · cookies terceiros: $cookieBefore → $cookieAfter", url, v)
                 recordGoogleLoginTransition(v, url, "início do documento")
                 val t = tabs.firstOrNull { it.view === v } ?: return
-                translationManagers[v]?.cancelPending()
+                if (translationRequestView === v) {
+                    translationManager?.cancelPending()
+                    translationRequestView = null
+                }
                 translatedViews.remove(v)
                 synchronized(mediaCandidateLock) { mediaCandidates.remove(v); mediaRequestOrigins.remove(v); mediaNetworkSignals.remove(v) }
                 val shownUrl = attentionBlockedSources[v] ?: url
@@ -2280,7 +2284,10 @@ class MainActivity : ComponentActivity() {
         attentionBlockedSources.remove(tab.view)
         pendingPopups.remove(tab.view)
         popupReviews.remove(tab.view)
-        translationManagers.remove(tab.view)?.close()
+        if (translationRequestView === tab.view) {
+            translationManager?.cancelPending()
+            translationRequestView = null
+        }
         translatedViews.remove(tab.view)
         synchronized(mediaCandidateLock) { mediaCandidates.remove(tab.view) }
         tab.view.stopLoading()
@@ -2644,12 +2651,14 @@ class MainActivity : ComponentActivity() {
             return
         }
 
-        val manager = translationManagers.getOrPut(current) {
-            TranslationManager(MlKitTranslationEngine())
+        val manager = translationManager ?: TranslationManager(MlKitTranslationEngine()).also {
+            translationManager = it
         }
 
         if (translatedViews[current] == true) {
+            translationRequestView = current
             manager.restorePage(current) { restored ->
+                translationRequestView = null
                 translatedViews.remove(current)
                 Toast.makeText(
                     this,
@@ -2660,6 +2669,7 @@ class MainActivity : ComponentActivity() {
             return
         }
 
+        translationRequestView = current
         Toast.makeText(
             this,
             "Preparando tradução local. O primeiro uso baixa o modelo de idioma.",
@@ -2669,6 +2679,7 @@ class MainActivity : ComponentActivity() {
         manager.translatePage(current, sourceLanguage = "auto", targetLanguage = "pt",
             callback = object : TranslationManager.Callback {
                 override fun onSuccess(result: TranslationManager.Result) {
+                    if (translationRequestView === current) translationRequestView = null
                     if (current.url != result.pageUrl || tabs.none { it.view === current }) return
                     if (result.translatedNodes > 0) {
                         translatedViews[current] = true
@@ -2687,6 +2698,7 @@ class MainActivity : ComponentActivity() {
                 }
 
                 override fun onError(error: Throwable) {
+                    if (translationRequestView === current) translationRequestView = null
                     if (current.url != currentUrl) return
                     Toast.makeText(
                         this@MainActivity,
@@ -6851,8 +6863,9 @@ class MainActivity : ComponentActivity() {
         miniControllerFuture = null
         miniController = null
         handler.removeCallbacks(ticker)
-        translationManagers.values.toList().forEach { it.close() }
-        translationManagers.clear()
+        translationManager?.close()
+        translationManager = null
+        translationRequestView = null
         translatedViews.clear()
         tabs.forEach { (it.view.parent as? android.view.ViewGroup)?.removeView(it.view); it.view.destroy() }
         store.close()
