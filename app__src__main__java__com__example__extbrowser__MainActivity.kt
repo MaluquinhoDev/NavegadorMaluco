@@ -1314,7 +1314,7 @@ class MainActivity : ComponentActivity() {
             .getFloat("playback_speed", 1.0f).coerceIn(0.5f, 2.5f)
 
     private fun formatVideoSpeed(speed: Float = preferredVideoSpeed()): String =
-        "\${speed.toString().removeSuffix(".0")}×"
+        "${speed.toString().removeSuffix(".0")}×"
 
     /** Injeta um controlador HTML5 sem substituir o motor Android WebView. */
     private fun videoSpeedBootstrapScript(): String = """
@@ -1421,7 +1421,7 @@ class MainActivity : ComponentActivity() {
                 tabs.forEach { applyVideoSpeedToWebView(it.view) }
                 Media3PlaybackService.setPlaybackSpeed(speed)
                 onChanged?.invoke()
-                Toast.makeText(this, "Velocidade: \${formatVideoSpeed(speed)}",
+                Toast.makeText(this, "Velocidade: ${formatVideoSpeed(speed)}",
                     Toast.LENGTH_SHORT).show()
                 dialog.dismiss()
             }
