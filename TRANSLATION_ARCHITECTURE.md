@@ -1,60 +1,60 @@
-# Tradução de páginas — arquitetura incremental
+# Tradução de páginas
 
-## Objetivo
+## Implementação
 
-Adicionar tradução de páginas sem substituir o motor de navegação. O Android WebView já utilizado pelas abas continua responsável por carregar, renderizar e executar os sites.
+O Navegador Maluco mantém o Android WebView como motor de navegação. A tradução é executada por uma camada Kotlin independente, usando **Google ML Kit Translation** e identificação de idioma no dispositivo.
 
-A tradução é uma camada independente que recebe nós de texto, chama um motor local e aplica somente os textos traduzidos. O conteúdo da página não precisa ser enviado a um serviço remoto.
+O ML Kit oferece tradução em mais de 50 idiomas, com modelos dinâmicos baixados sob demanda. Os modelos têm aproximadamente 30 MB cada. Após o download do par necessário, a inferência acontece localmente e o texto da página não é enviado para uma API de tradução.
 
-## Estado desta entrega
+## Como usar
 
-Esta alteração estabelece a primeira camada reutilizável:
+1. Abra uma página HTTP ou HTTPS.
+2. Abra **Menu**.
+3. Selecione **Traduzir página**.
+4. Na primeira utilização, o aplicativo baixa o modelo necessário para o idioma detectado e português.
+5. Depois do download, a tradução funciona sem conexão.
+6. Abra o Menu novamente e selecione **Restaurar texto original** para desfazer a tradução.
 
-- contrato TranslationEngine, sem acoplamento a um fornecedor;
-- extração de nós de texto visíveis;
-- exclusão de scripts, estilos, campos de formulário, código, conteúdo editável e elementos marcados para não tradução;
-- preservação dos textos originais para permitir restauração;
-- processamento em lotes;
-- execução da tradução fora da thread principal;
-- cache LRU em memória;
-- cancelamento lógico de resultados de páginas anteriores;
-- validação de quantidade de resultados do motor.
+O idioma é identificado pelo atributo `lang` do documento quando disponível; na ausência ou quando o código não é aceito, o identificador local do ML Kit analisa o texto da página. O destino desta implementação é português (`pt`).
 
-**O motor Bergamot, o Web Worker, o WebAssembly e os modelos de idiomas ainda não estão incluídos.** Portanto, esta entrega não ativa tradução no navegador nem deve ser apresentada como tradução offline pronta. A interface TranslationEngine é o ponto de integração para a implementação real.
+## Arquitetura
 
-## Fluxo planejado
+- `TranslationEngine.kt`: contrato do motor e resolução do idioma de origem.
+- `MlKitTranslationEngine.kt`: integração real com ML Kit, download de modelos e inferência.
+- `TranslationManager.kt`: extração, lotes, cache, execução em background, cancelamento e aplicação no WebView.
+- `TranslationCache.kt`: cache LRU em memória, separado por idioma de origem/destino e texto original.
+- `TranslationPageScript.kt`: extração de nós de texto visíveis, aplicação das traduções e restauração.
+- `MainActivity.kt`: ação no Menu do navegador.
 
-1. A aba solicita TranslationManager.translatePage().
-2. Um script isolado percorre os nós de texto visíveis do documento.
-3. O gerenciador consulta o cache e separa os textos ainda não traduzidos.
-4. Os textos pendentes são divididos em lotes limitados.
-5. TranslationEngine executa a inferência fora da thread principal.
-6. O gerenciador descarta resultados de solicitações antigas ou de uma URL que já mudou.
-7. Somente os nós de texto originais recebem as traduções.
-8. restorePage() recupera o texto original armazenado em memória.
+A implementação mantém um único gerenciador de tradução e um tradutor ativo por vez para evitar manter vários modelos de idioma carregados simultaneamente.
 
-## Integração futura com Bergamot
+## Segurança e privacidade
 
-A implementação do motor deverá usar um ambiente auxiliar confiável, carregado com WebViewAssetLoader, para hospedar o JavaScript/WASM e o Web Worker do Bergamot. Esse WebView auxiliar não deve navegar por sites externos.
+- O texto da página é processado no dispositivo.
+- O texto não é enviado a um serviço de tradução remoto.
+- Os downloads de modelos são feitos pela infraestrutura do ML Kit/Google.
+- Nenhuma interface JavaScript nativa privilegiada é adicionada aos sites.
+- A comunicação com o DOM usa `WebView.evaluateJavascript`.
+- Scripts, estilos, formulários, campos editáveis, código, SVG, MathML e elementos marcados com `translate="no"` são excluídos da extração.
 
-O WebView que abre páginas desconhecidas não deve receber uma interface JavaScript nativa privilegiada (addJavascriptInterface). A comunicação privilegiada deve permanecer restrita ao conteúdo local do auxiliar. A camada de página desta entrega usa evaluateJavascript para ler e alterar nós de texto, sem expor métodos Kotlin ao site.
+## Limitações
 
-Os modelos devem ser baixados sob demanda para armazenamento privado do aplicativo, com tamanho e hash SHA-256 definidos por um manifesto confiável. Não colocar modelos grandes dentro de assets nem baixar arquivos sem verificação de integridade.
+- A tradução é acionada manualmente pelo usuário; não ocorre automaticamente em toda navegação.
+- O destino atual é português.
+- A identificação de idioma é feita para a página como um conjunto; páginas com vários idiomas podem ter resultados mistos.
+- Canvas, imagens, conteúdo de vídeo, PDFs, shadow DOM e documentos de outros frames não são traduzidos por esta camada.
+- Conteúdo carregado dinamicamente depois da extração pode permanecer no idioma original.
+- A qualidade do ML Kit é indicada para tradução simples/casual. Para pares entre idiomas que não sejam inglês, o ML Kit pode usar inglês como idioma intermediário, o que pode afetar a qualidade.
+- Os modelos precisam ser baixados uma vez; a primeira tradução depende de conexão e espaço de armazenamento.
+- Os modelos do ML Kit são proprietários; esta implementação não é uma integração Bergamot/Mozilla.
 
-## Limitações conhecidas
+## Dependências
 
-- A implementação atual depende de um TranslationEngine fornecido por quem integra o motor; não há implementação Bergamot nesta entrega.
-- A detecção automática de idioma pertence ao motor.
-- Conteúdo em canvas, imagens, PDFs, shadow DOM e documentos de outros frames não é traduzido por esta camada.
-- Sites dinâmicos podem inserir novos textos depois da extração; observação incremental com MutationObserver será uma etapa posterior.
-- A aplicação é por nós de texto e não traduz atributos, URLs, nomes de classes ou código.
-- O cache atual é em memória e é descartado ao fechar o gerenciador.
+```kotlin
+implementation("com.google.mlkit:translate:17.0.3")
+implementation("com.google.mlkit:language-id:17.0.6")
+```
 
-## Critérios antes de ativar por padrão
-
-- testar modelos e pares de idioma em aparelhos ARM de 32 e 64 bits;
-- medir pico de RAM, CPU, bateria e tempo de inicialização;
-- validar cancelamento durante navegação e troca de abas;
-- testar páginas SPA, formulários, leitores de tela e conteúdo dinâmico;
-- verificar a licença dos binários, modelos e dados de treinamento distribuídos;
-- confirmar por inspeção de rede que o texto da página não sai do dispositivo.
+Documentação oficial:
+- https://developers.google.com/ml-kit/language/translation/android
+- https://developers.google.com/ml-kit/language/identification/android
