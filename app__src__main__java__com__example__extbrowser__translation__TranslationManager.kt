@@ -68,12 +68,21 @@ class TranslationManager(
                         return@evaluateJavascript
                     }
 
-                    val source = if (sourceLanguage == "auto") {
+                    val requestedSource = if (sourceLanguage == "auto") {
                         pageLanguage.takeIf { it.isNotBlank() } ?: "auto"
                     } else sourceLanguage
 
                     executor.execute {
                         try {
+                            val source = engine.resolveSourceLanguage(nodes.map { it.text }, requestedSource)
+                            if (source == targetLanguage) {
+                                mainHandler.post {
+                                    if (!closed && requestId == requestSequence.get() && webView.url == pageUrl) {
+                                        callback.onSuccess(Result(0, pageUrl))
+                                    }
+                                }
+                                return@execute
+                            }
                             val translated = translateNodes(nodes, source, targetLanguage)
                             mainHandler.post {
                                 if (closed || requestId != requestSequence.get() || webView.url != pageUrl) {
