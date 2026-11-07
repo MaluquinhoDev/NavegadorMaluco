@@ -4,14 +4,14 @@
 
 O Navegador Maluco mantém o Android WebView como motor de navegação. A tradução é executada por uma camada Kotlin independente, usando **Google ML Kit Translation** e identificação de idioma no dispositivo.
 
-O ML Kit oferece tradução em mais de 50 idiomas, com modelos dinâmicos baixados sob demanda. Os modelos têm aproximadamente 30 MB cada. Após o download do par necessário, a inferência acontece localmente e o texto da página não é enviado para uma API de tradução.
+O ML Kit oferece tradução em mais de 50 idiomas, com modelos dinâmicos baixados sob demanda. Os modelos têm aproximadamente 30 MB cada. O download é limitado a Wi-Fi para evitar consumo inesperado de dados móveis. Após o download do par necessário, a inferência acontece localmente e o texto da página não é enviado para uma API de tradução.
 
 ## Como usar
 
 1. Abra uma página HTTP ou HTTPS.
 2. Abra **Menu**.
 3. Selecione **Traduzir página**.
-4. Na primeira utilização, o aplicativo baixa o modelo necessário para o idioma detectado e português.
+4. Na primeira utilização, o aplicativo baixa o modelo necessário para o idioma detectado e português, somente por Wi-Fi.
 5. Depois do download, a tradução funciona sem conexão.
 6. Abra o Menu novamente e selecione **Restaurar texto original** para desfazer a tradução.
 
