@@ -12,6 +12,7 @@ internal object TranslationPageScript {
           let nodeIds = new WeakMap();
           const nodes = new Map();
           const originals = new Map();
+          const translated = new Map();
           let nextId = 1;
 
           const ignoredSelector = [
@@ -72,7 +73,9 @@ internal object TranslationPageScript {
             for (const item of translations) {
               const node = nodes.get(String(item.id));
               if (!node || !node.isConnected || typeof item.text !== 'string') continue;
+              if (node.nodeValue !== originals.get(String(item.id))) continue;
               node.nodeValue = item.text;
+              translated.set(String(item.id), item.text);
               applied++;
             }
             return applied;
@@ -82,13 +85,15 @@ internal object TranslationPageScript {
             let restored = 0;
             for (const [id, original] of originals.entries()) {
               const node = nodes.get(id);
-              if (node && node.isConnected) {
+              if (node && node.isConnected &&
+                  node.nodeValue === translated.get(id)) {
                 node.nodeValue = original;
                 restored++;
               }
             }
             nodes.clear();
             originals.clear();
+            translated.clear();
             nodeIds = new WeakMap();
             nextId = 1;
             return restored;
