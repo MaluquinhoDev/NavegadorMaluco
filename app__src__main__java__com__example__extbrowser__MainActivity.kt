@@ -1359,10 +1359,13 @@ class MainActivity : ComponentActivity() {
                 return true;
             };
             document.addEventListener('play', event => {
-                if (event.target instanceof HTMLVideoElement) apply(event.target);
+                if (event.target instanceof HTMLVideoElement && visibleArea(event.target) > 0)
+                    apply(event.target);
+                else apply();
             }, true);
             document.addEventListener('loadedmetadata', event => {
-                if (event.target instanceof HTMLVideoElement) apply(event.target);
+                if (event.target instanceof HTMLVideoElement && visibleArea(event.target) > 0)
+                    apply(event.target);
             }, true);
             document.addEventListener('ratechange', event => {
                 if (event.target instanceof HTMLVideoElement &&
@@ -1479,6 +1482,8 @@ class MainActivity : ComponentActivity() {
                 if (v === webView) { updateFavorite(); updateInstagramOverlay() }
             }
             override fun onPageFinished(v: WebView, url: String) {
+                if (!WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT))
+                    v.evaluateJavascript(videoSpeedBootstrapScript(), null)
                 applyVideoSpeedToWebView(v)
                 recordGoogleLoginAudit("Navegação concluída", url, v)
                 if (isSeuImposto(url)) {
@@ -6082,6 +6087,7 @@ class MainActivity : ComponentActivity() {
             override fun run() {
                 val c = player
                 if (!closed && c != null) {
+                    speedButton.text = formatVideoSpeed()
                     val currentAttentionPage = c.currentMediaItem?.mediaMetadata?.extras
                         ?.getString("nm_attention_page")
                     if (!currentAttentionPage.isNullOrBlank()) lastAttentionPage = currentAttentionPage
