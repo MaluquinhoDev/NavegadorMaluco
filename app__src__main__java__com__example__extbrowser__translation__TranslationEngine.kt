@@ -3,7 +3,7 @@ package com.example.extbrowser.translation
 /**
  * Contrato independente do motor de tradução.
  *
- * A implementação Bergamot deverá executar a inferência localmente e devolver
+ * A implementação concreta deverá executar a inferência localmente e devolver
  * exatamente uma tradução para cada texto recebido, mantendo a ordem.
  */
 interface TranslationEngine : AutoCloseable {
