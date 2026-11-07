@@ -9,23 +9,17 @@ import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicLong
 
 /**
- * Orquestra a extração do DOM, a tradução em background e a aplicação do
- * resultado no WebView existente. Uma instância deve pertencer a uma aba.
- *
- * O motor é injetado: esta camada não escolhe servidor, não envia texto para
- * a rede e não contém dependência de GeckoView.
+ * Coordena extração do DOM, tradução fora da thread principal e aplicação
+ * seletiva dos textos no WebView que já navega no aplicativo.
  */
 class TranslationManager(
     private val engine: TranslationEngine,
     private val cache: TranslationCache = TranslationCache(),
-    private val maxBatchItems: Int = 16,
-    private val maxBatchCharacters: Int = 4_000
+    private val maxBatchItems: Int = 12,
+    private val maxBatchCharacters: Int = 2_500
 ) : AutoCloseable {
 
-    data class Result(
-        val translatedNodes: Int,
-        val pageUrl: String
-    )
+    data class Result(val translatedNodes: Int, val pageUrl: String)
 
     interface Callback {
         fun onSuccess(result: Result)
@@ -37,22 +31,20 @@ class TranslationManager(
     private val mainHandler = Handler(Looper.getMainLooper())
     private val executor = Executors.newSingleThreadExecutor()
     private val requestSequence = AtomicLong(0)
+    @Volatile private var closed = false
 
     init {
         require(maxBatchItems > 0)
         require(maxBatchCharacters > 0)
     }
 
-    /**
-     * Traduz os textos visíveis da página atual. A detecção de idioma e a
-     * inferência pertencem à implementação de TranslationEngine.
-     */
     fun translatePage(
         webView: WebView,
         sourceLanguage: String = "auto",
         targetLanguage: String = "pt",
         callback: Callback
     ) {
+        check(!closed) { "O gerenciador de tradução já foi encerrado." }
         val requestId = requestSequence.incrementAndGet()
 
         mainHandler.post {
@@ -63,43 +55,45 @@ class TranslationManager(
             }
 
             webView.evaluateJavascript(
-                TranslationPageScript.INSTALL + "\nwindow.__nmTranslation.extract();"
+                TranslationPageScript.INSTALL + "\nJSON.stringify(window.__nmTranslation.extract());"
             ) { raw ->
-                if (requestId != requestSequence.get()) return@evaluateJavascript
+                if (requestId != requestSequence.get() || closed) return@evaluateJavascript
 
                 try {
-                    val nodes = parseNodes(raw)
+                    val payload = JSONObject(raw ?: "{}")
+                    val pageLanguage = payload.optString("language").substringBefore('-')
+                    val nodes = parseNodes(payload.optJSONArray("nodes"))
                     if (nodes.isEmpty()) {
                         callback.onSuccess(Result(0, pageUrl))
                         return@evaluateJavascript
                     }
 
+                    val source = if (sourceLanguage == "auto") {
+                        pageLanguage.takeIf { it.isNotBlank() } ?: "auto"
+                    } else sourceLanguage
+
                     executor.execute {
                         try {
-                            val translated = translateNodes(nodes, sourceLanguage, targetLanguage)
+                            val translated = translateNodes(nodes, source, targetLanguage)
                             mainHandler.post {
-                                if (requestId != requestSequence.get() || webView.url != pageUrl) {
+                                if (closed || requestId != requestSequence.get() || webView.url != pageUrl) {
                                     return@post
                                 }
 
-                                val payload = JSONArray()
-                                translated.forEach { (id, text) ->
-                                    payload.put(
-                                        JSONObject()
-                                            .put("id", id)
-                                            .put("text", text)
-                                    )
+                                val array = JSONArray()
+                                translated.forEach { (id, value) ->
+                                    array.put(JSONObject().put("id", id).put("text", value))
                                 }
 
                                 webView.evaluateJavascript(
-                                    "window.__nmTranslation.apply($payload);"
+                                    "window.__nmTranslation.apply($array);"
                                 ) {
                                     callback.onSuccess(Result(translated.size, pageUrl))
                                 }
                             }
                         } catch (error: Throwable) {
                             mainHandler.post {
-                                if (requestId == requestSequence.get()) callback.onError(error)
+                                if (!closed && requestId == requestSequence.get()) callback.onError(error)
                             }
                         }
                     }
@@ -110,29 +104,24 @@ class TranslationManager(
         }
     }
 
-    /** Invalida resultados ainda em processamento, por exemplo após navegar. */
     fun cancelPending() {
         requestSequence.incrementAndGet()
     }
 
-    /** Restaura os nós que este módulo modificou no documento atual. */
     fun restorePage(webView: WebView, callback: ((Int) -> Unit)? = null) {
         cancelPending()
         mainHandler.post {
+            if (closed) return@post
             webView.evaluateJavascript(
-                TranslationPageScript.INSTALL +
-                    "\nwindow.__nmTranslation.restore();"
+                TranslationPageScript.INSTALL + "\nwindow.__nmTranslation.restore();"
             ) { raw ->
-                val restored = raw?.trim('"')?.toIntOrNull() ?: 0
-                callback?.invoke(restored)
+                callback?.invoke(raw?.trim('"')?.toIntOrNull() ?: 0)
             }
         }
     }
 
-    private fun parseNodes(raw: String?): List<TextNode> {
-        if (raw.isNullOrBlank() || raw == "null") return emptyList()
-
-        val array = JSONArray(raw)
+    private fun parseNodes(array: JSONArray?): List<TextNode> {
+        if (array == null) return emptyList()
         return buildList(array.length()) {
             for (index in 0 until array.length()) {
                 val item = array.getJSONObject(index)
@@ -158,20 +147,16 @@ class TranslationManager(
         }
 
         for (batch in createBatches(pending)) {
-            val input = batch.map { it.text }
-            val output = engine.translate(input, sourceLanguage, targetLanguage)
-
+            val output = engine.translate(batch.map { it.text }, sourceLanguage, targetLanguage)
             check(output.size == batch.size) {
                 "O motor retornou ${output.size} traduções para ${batch.size} textos."
             }
-
             batch.forEachIndexed { index, node ->
                 val value = output[index]
                 cache.put(sourceLanguage, targetLanguage, node.text, value)
                 translated[node.id] = value
             }
         }
-
         return translated
     }
 
@@ -181,24 +166,23 @@ class TranslationManager(
         var characters = 0
 
         nodes.forEach { node ->
-            val length = node.text.length
             if (current.isNotEmpty() &&
-                (current.size >= maxBatchItems || characters + length > maxBatchCharacters)
+                (current.size >= maxBatchItems || characters + node.text.length > maxBatchCharacters)
             ) {
                 batches.add(current)
                 current = ArrayList()
                 characters = 0
             }
-
             current.add(node)
-            characters += length
+            characters += node.text.length
         }
-
         if (current.isNotEmpty()) batches.add(current)
         return batches
     }
 
     override fun close() {
+        if (closed) return
+        closed = true
         cancelPending()
         executor.shutdownNow()
         engine.close()
