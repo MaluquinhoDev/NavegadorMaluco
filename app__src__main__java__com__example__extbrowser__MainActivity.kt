@@ -1308,12 +1308,134 @@ class MainActivity : ComponentActivity() {
         })
     }
 
+    private val videoSpeedOptions = floatArrayOf(0.5f, 0.75f, 1.0f, 1.25f, 1.5f, 1.75f, 2.0f, 2.5f)
+    private fun preferredVideoSpeed(): Float =
+        getSharedPreferences("video_playback", MODE_PRIVATE)
+            .getFloat("playback_speed", 1.0f).coerceIn(0.5f, 2.5f)
+
+    private fun formatVideoSpeed(speed: Float = preferredVideoSpeed()): String =
+        "\${speed.toString().removeSuffix(".0")}×"
+
+    /** Injeta um controlador HTML5 sem substituir o motor Android WebView. */
+    private fun videoSpeedBootstrapScript(): String = """
+        (function() {
+            if (window.__nmVideoSpeedControllerV1) return;
+            const state = { speed: 1.0 };
+            window.__nmVideoSpeedControllerV1 = state;
+            const visibleArea = video => {
+                try {
+                    const rect = video.getBoundingClientRect();
+                    const style = getComputedStyle(video);
+                    if (style.display === 'none' || style.visibility === 'hidden' ||
+                        Number(style.opacity) === 0 || rect.width <= 0 || rect.height <= 0) return 0;
+                    const width = Math.max(0, Math.min(rect.right, innerWidth) - Math.max(rect.left, 0));
+                    const height = Math.max(0, Math.min(rect.bottom, innerHeight) - Math.max(rect.top, 0));
+                    return width * height;
+                } catch (_) { return 0; }
+            };
+            const chooseVideo = () => {
+                const visible = [...document.querySelectorAll('video')]
+                    .map(video => ({ video, area: visibleArea(video) }))
+                    .filter(item => item.area > 0);
+                const playing = visible.filter(item => !item.video.paused && !item.video.ended);
+                return (playing.length ? playing : visible)
+                    .sort((a, b) => b.area - a.area)[0]?.video || null;
+            };
+            const apply = target => {
+                const video = target || chooseVideo();
+                if (!video || !video.isConnected) return;
+                try {
+                    video.defaultPlaybackRate = state.speed;
+                    if (Math.abs(video.playbackRate - state.speed) > 0.001)
+                        video.playbackRate = state.speed;
+                } catch (_) {}
+            };
+            window.__nmSetVideoPlaybackSpeed = value => {
+                const speed = Number(value);
+                if (!Number.isFinite(speed) || speed < 0.5 || speed > 2.5) return false;
+                state.speed = speed;
+                apply();
+                return true;
+            };
+            document.addEventListener('play', event => {
+                if (event.target instanceof HTMLVideoElement && visibleArea(event.target) > 0)
+                    apply(event.target);
+                else apply();
+            }, true);
+            document.addEventListener('loadedmetadata', event => {
+                if (event.target instanceof HTMLVideoElement && visibleArea(event.target) > 0)
+                    apply(event.target);
+            }, true);
+            document.addEventListener('ratechange', event => {
+                if (event.target instanceof HTMLVideoElement &&
+                    event.target === chooseVideo() &&
+                    Math.abs(event.target.playbackRate - state.speed) > 0.001) apply(event.target);
+            }, true);
+            if (document.documentElement && window.MutationObserver) {
+                const observer = new MutationObserver(records => {
+                    for (const record of records) {
+                        for (const node of record.addedNodes) {
+                            if (node.nodeType !== 1) continue;
+                            if (node.matches?.('video') || node.querySelector?.('video')) {
+                                apply();
+                                return;
+                            }
+                        }
+                    }
+                });
+                observer.observe(document.documentElement, { childList: true, subtree: true });
+            }
+        })();
+    """.trimIndent()
+
+    private fun installVideoSpeedController(view: WebView) {
+        val script = videoSpeedBootstrapScript()
+        if (WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)) {
+            runCatching { WebViewCompat.addDocumentStartJavaScript(view, script, setOf("*")) }
+                .onFailure { android.util.Log.w("VideoSpeed", "Injeção no início do documento indisponível", it) }
+        } else {
+            view.evaluateJavascript(script, null)
+        }
+    }
+
+    private fun applyVideoSpeedToWebView(view: WebView) {
+        val speed = preferredVideoSpeed()
+        view.evaluateJavascript(
+            "(function(){return !!(window.__nmSetVideoPlaybackSpeed && " +
+                "window.__nmSetVideoPlaybackSpeed($speed));})()", null
+        )
+    }
+
+    private fun showVideoSpeedMenu(onChanged: (() -> Unit)? = null) {
+        val current = preferredVideoSpeed()
+        val selected = videoSpeedOptions.indices.minByOrNull {
+            kotlin.math.abs(videoSpeedOptions[it] - current)
+        } ?: 2
+        val labels = videoSpeedOptions.map(::formatVideoSpeed).toTypedArray()
+        AlertDialog.Builder(this)
+            .setTitle("Velocidade do vídeo")
+            .setSingleChoiceItems(labels, selected) { dialog, which ->
+                val speed = videoSpeedOptions[which]
+                getSharedPreferences("video_playback", MODE_PRIVATE).edit()
+                    .putFloat("playback_speed", speed).apply()
+                tabs.forEach { applyVideoSpeedToWebView(it.view) }
+                Media3PlaybackService.setPlaybackSpeed(speed)
+                onChanged?.invoke()
+                Toast.makeText(this, "Velocidade: \${formatVideoSpeed(speed)}",
+                    Toast.LENGTH_SHORT).show()
+                dialog.dismiss()
+            }
+            .setNegativeButton("Fechar", null)
+            .show()
+    }
+
     @SuppressLint("SetJavaScriptEnabled")
     private fun createWebView(profile: String = ""): WebView {
         val view = WebView(this)
         // Vincular ANTES de acessar settings, JavaScript ou navegar.
         if (profile == isolatedGoogleProfile && supportedGoogleProfile())
             WebViewCompat.setProfile(view, isolatedGoogleProfile)
+        installVideoSpeedController(view)
         view.settings.javaScriptEnabled = true
         view.settings.domStorageEnabled = true
         configureSiteDisplay(view, null)
@@ -1360,6 +1482,9 @@ class MainActivity : ComponentActivity() {
                 if (v === webView) { updateFavorite(); updateInstagramOverlay() }
             }
             override fun onPageFinished(v: WebView, url: String) {
+                if (!WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT))
+                    v.evaluateJavascript(videoSpeedBootstrapScript(), null)
+                applyVideoSpeedToWebView(v)
                 recordGoogleLoginAudit("Navegação concluída", url, v)
                 if (isSeuImposto(url)) {
                     recordSiteDiagnostic(v, "Navegação concluída")
@@ -2762,6 +2887,7 @@ class MainActivity : ComponentActivity() {
             MenuAction("Navegar", if (store.isFavorite(webView.url ?: "")) "Remover favorito" else "Favoritar página",
                 "Atualizar o favorito da página atual") { toggleFavorite() },
             MenuAction("Reprodução", "Reprodução e mídia", "Player nativo, fila e controles") { showMediaMenu() },
+            MenuAction("Reprodução", "Velocidade do vídeo", "Ajustar a velocidade dos vídeos da página e do player nativo") { showVideoSpeedMenu() },
             MenuAction("Conta", "Contas e perfis", "Alternar entre sessões Google") { showAccountProfilesMenu() },
             MenuAction("Configuração", "Ferramentas", "Extensões, aparência e Controle de Atenção") { showToolsMenu() },
             MenuAction("Avançado", "Diagnósticos e testes", "Ferramentas técnicas de investigação") { showDiagnosticsMenu() },
@@ -5826,6 +5952,13 @@ class MainActivity : ComponentActivity() {
         displayControls.addView(queueButton, LinearLayout.LayoutParams(0, dp(48), 1f).apply {
             marginStart = dp(2); marginEnd = dp(2)
         })
+        val speedButton = uiAction(formatVideoSpeed()).apply {
+            contentDescription = "Alterar velocidade do vídeo"
+            setOnClickListener { showVideoSpeedMenu { text = formatVideoSpeed() } }
+        }
+        displayControls.addView(speedButton, LinearLayout.LayoutParams(0, dp(48), 1f).apply {
+            marginStart = dp(2); marginEnd = dp(2)
+        })
         // Alterar o enquadramento nunca deve reativar áudio de uma sessão limitada.
         fun enforceAttentionForPlayerControls(): Boolean {
             val page = player?.currentMediaItem?.mediaMetadata?.extras
@@ -5954,6 +6087,7 @@ class MainActivity : ComponentActivity() {
             override fun run() {
                 val c = player
                 if (!closed && c != null) {
+                    speedButton.text = formatVideoSpeed()
                     val currentAttentionPage = c.currentMediaItem?.mediaMetadata?.extras
                         ?.getString("nm_attention_page")
                     if (!currentAttentionPage.isNullOrBlank()) lastAttentionPage = currentAttentionPage
