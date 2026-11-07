@@ -52,6 +52,11 @@ class Media3PlaybackService : MediaSessionService() {
             liveService?.stopAndClear()
         }
 
+        /** Atualiza a sessão Media3 ativa; a preferência é persistida pela MainActivity. */
+        fun setPlaybackSpeed(speed: Float) {
+            liveService?.player?.setPlaybackSpeed(speed.coerceIn(0.5f, 2.5f))
+        }
+
         /** Captura o ponto exato antes de uma tela de bloqueio limpar a sessão. */
         fun rememberPositionBeforeAttentionBlock() {
             liveService?.let { service ->
@@ -317,6 +322,9 @@ class Media3PlaybackService : MediaSessionService() {
         val dataSource = DefaultDataSource.Factory(this, http)
         val mediaSources = DefaultMediaSourceFactory(this).setDataSourceFactory(dataSource)
         val exo = ExoPlayer.Builder(this).setMediaSourceFactory(mediaSources).build()
+        val preferredSpeed = getSharedPreferences("video_playback", MODE_PRIVATE)
+            .getFloat("playback_speed", 1.0f).coerceIn(0.5f, 2.5f)
+        exo.setPlaybackSpeed(preferredSpeed)
         exo.addListener(object : Player.Listener {
             override fun onMediaItemTransition(item: MediaItem?, reason: Int) {
                 latestPlaybackHttpError = null
