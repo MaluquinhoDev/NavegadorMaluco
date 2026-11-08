@@ -2308,6 +2308,11 @@ class MainActivity : ComponentActivity() {
 
     /** Sonda conservadora: resultado incerto não autoriza descartar uma WebView. */
     private fun checkAutomaticParkingSafety(view: WebView, done: (Boolean) -> Unit) {
+        // Não descarta uma página ainda carregando ou sem URL verificável.
+        if (view.progress < 100 || view.url.isNullOrBlank()) {
+            done(false)
+            return
+        }
         val script = """(function(){try{
             const media=Array.from(document.querySelectorAll('audio,video'))
                 .some(m=>!m.paused&&!m.ended)||
@@ -2468,6 +2473,11 @@ class MainActivity : ComponentActivity() {
      * A sondagem é conservadora: qualquer resultado incerto mantém a página em memória.
      */
     private fun hibernateSafestInactiveTab(afterPark: () -> Unit = {}) {
+        if (automaticParkingInProgress) {
+            Toast.makeText(this, "Verificando abas inativas…", Toast.LENGTH_SHORT).show()
+            return
+        }
+        automaticParkingInProgress = true
         val candidates = tabs.filter { tab ->
             tab.id != tabs.getOrNull(activeIndex)?.id && tab.id !in pinnedTabIds &&
                 tab.view !in pendingPopups && tab.view !== queueSyncView &&
@@ -2475,8 +2485,12 @@ class MainActivity : ComponentActivity() {
         }.sortedBy { it.lastUsed }.map { it.id }
 
         fun tryCandidate(position: Int) {
-            if (isDestroyed || isFinishing) return
+            if (isDestroyed || isFinishing) {
+                automaticParkingInProgress = false
+                return
+            }
             if (position >= candidates.size) {
+                automaticParkingInProgress = false
                 Toast.makeText(
                     this,
                     "Nenhuma aba inativa pôde ser hibernada com segurança. As páginas foram preservadas.",
@@ -2502,6 +2516,7 @@ class MainActivity : ComponentActivity() {
                     val previousCount = tabs.size
                     parkTab(current)
                     if (tabs.size < previousCount) {
+                        automaticParkingInProgress = false
                         Toast.makeText(this, "Aba inativa hibernada automaticamente", Toast.LENGTH_SHORT).show()
                         afterPark()
                     } else tryCandidate(position + 1)
@@ -2510,6 +2525,7 @@ class MainActivity : ComponentActivity() {
         }
 
         if (candidates.isEmpty()) {
+            automaticParkingInProgress = false
             Toast.makeText(this, "Não há aba inativa elegível para hibernação", Toast.LENGTH_SHORT).show()
         } else tryCandidate(0)
     }
