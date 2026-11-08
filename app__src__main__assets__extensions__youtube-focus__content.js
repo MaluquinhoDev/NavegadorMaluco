@@ -5,6 +5,7 @@
 
   var defaults = {
     hide_homepage_feed: true,
+    hide_text_posts: true,
     hide_and_redirect_subscriptions: true,
     hide_explore_trending: true,
     hide_more_from_youtube: true,
@@ -131,6 +132,8 @@
   function buildCss() {
     var rules = [];
     addRule(rules, settings.hide_homepage_feed, 'ytd-browse[page-subtype="home"] #contents');
+    addRule(rules, settings.hide_text_posts,
+      '[data-nm-youtube-text-post-hidden="1"]');
     addRule(rules, settings.hide_video_sidebar, 'ytd-watch-flexy #secondary');
     addRule(rules, settings.hide_recommended, 'ytd-watch-next-secondary-results-renderer');
     addRule(rules, settings.hide_live_chat, 'ytd-live-chat-frame,ytd-live-chat-renderer');
@@ -159,7 +162,7 @@
       'ytd-guide-entry-renderer:has(a[href="/"]),ytd-mini-guide-entry-renderer:has(a[href="/"])');
     addRule(rules, settings.disable_annotations,
       '.annotation,.ytp-cards-teaser,.ytp-ce-element,.ytp-suggested-action');
-    rules.push('[data-nm-youtube-focus-hidden="1"],[data-nm-youtube-shorts-hidden="1"]{display:none!important}');
+    rules.push('[data-nm-youtube-focus-hidden="1"],[data-nm-youtube-shorts-hidden="1"],[data-nm-youtube-text-post-hidden="1"]{display:none!important}');
     return rules.join("\n");
   }
 
@@ -203,8 +206,54 @@
     });
   }
 
+  function hideTextOnlyCommunityPosts() {
+    var marker = "data-nm-youtube-text-post-hidden";
+    if (!settings.hide_text_posts) {
+      document.querySelectorAll("[" + marker + "='1']").forEach(function (node) {
+        node.removeAttribute(marker);
+      });
+      return;
+    }
+
+    // YouTube usa diferentes renderizadores para publicações da comunidade.
+    var postSelectors = [
+      "ytd-post-renderer",
+      "ytd-backstage-post-renderer",
+      "ytd-backstage-post-thread-renderer",
+      "ytd-post-thread-renderer",
+      "ytm-post-renderer",
+      "ytm-backstage-post-renderer"
+    ].join(",");
+
+    // Preserva publicações com mídia, enquetes ou cartões anexados.
+    var attachmentSelector = [
+      "ytd-backstage-image-renderer",
+      "ytd-backstage-poll-renderer",
+      "ytd-backstage-video-renderer",
+      "ytd-backstage-post-video-renderer",
+      "ytd-post-attachment-renderer",
+      "ytm-backstage-image-renderer",
+      "ytm-backstage-poll-renderer",
+      "ytm-backstage-video-renderer",
+      "video",
+      "ytd-thumbnail"
+    ].join(",");
+
+    document.querySelectorAll(postSelectors).forEach(function (post) {
+      if (post.querySelector(attachmentSelector)) {
+        post.removeAttribute(marker);
+        return;
+      }
+      var card = post.closest(
+        "ytd-rich-item-renderer,ytm-rich-item-renderer,ytd-backstage-post-thread-renderer,ytd-post-thread-renderer"
+      ) || post;
+      card.setAttribute(marker, "1");
+    });
+  }
+
   function hideMatchingBlocks() {
     hideShortsCards();
+    hideTextOnlyCommunityPosts();
     var searchNodes = document.querySelectorAll(
       "ytd-shelf-renderer,ytd-horizontal-card-list-renderer,ytd-search-pyv-renderer"
     );
