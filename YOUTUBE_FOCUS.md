@@ -45,3 +45,17 @@ As 25 opções são configuráveis individualmente no menu **Ferramentas → You
 O YouTube muda frequentemente sua estrutura HTML. Os seletores são compatíveis com os componentes atuais conhecidos, mas podem precisar de ajustes quando a plataforma mudar. A desativação de autoplay depende de o botão de autoplay estar presente e expor seu estado acessível. Anotações e cartões são ocultados visualmente; isso não desativa funcionalidades do servidor.
 
 O recurso aplica-se a `www.youtube.com` e `m.youtube.com` no motor WebView Chromium do navegador. A atividade GeckoView separada não compartilha o mecanismo de extensões do navegador principal.
+
+
+## Recursos adicionais
+
+A tela de preferências inclui ferramentas opcionais de organização e aprendizagem:
+
+- **Biblioteca e fila pessoal:** salva vídeos localmente e oferece acesso à lista.
+- **Marcar momentos:** registra o timestamp atual do vídeo.
+- **Anotações por vídeo:** salva texto associado ao vídeo e ao instante.
+- **Temporizador de sessão:** pausa o vídeo ao fim do período escolhido.
+- **Velocidade por canal:** memoriza a velocidade definida no player para cada canal.
+- **Modo estudo:** reúne os controles de marcação e anotação.
+
+Os dados são armazenados no armazenamento local privado da extensão, sem envio a servidor. As listas têm limites para evitar crescimento indefinido. O painel flutuante aparece apenas quando pelo menos uma ferramenta correspondente está ativa. O observador ignora suas próprias alterações de estilo para evitar ciclos de mutação.
