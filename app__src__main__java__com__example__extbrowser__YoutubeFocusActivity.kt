@@ -30,6 +30,8 @@ class YoutubeFocusActivity : ComponentActivity() {
     private val options = listOf(
         Option("hide_homepage_feed", "Ocultar feed da página inicial",
             "Remove a grade de recomendações da página inicial.", "Página inicial", true),
+        Option("hide_text_posts", "Ocultar publicações de texto",
+            "Remove publicações textuais da comunidade do YouTube, preservando posts com imagens, vídeos ou enquetes.", "Página inicial", true),
         Option("hide_and_redirect_subscriptions", "Redirecionar início para inscrições",
             "Ao abrir a página inicial do YouTube, abre diretamente os canais inscritos.", "Página inicial", true),
         Option("hide_explore_trending", "Ocultar Explorar e Em alta",
