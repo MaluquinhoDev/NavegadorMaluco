@@ -1452,6 +1452,11 @@ class MainActivity : ComponentActivity() {
         WebView.setWebContentsDebuggingEnabled((applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) != 0)
         view.webViewClient = object : WebViewClient() {
             override fun onPageStarted(v: WebView, url: String, favicon: Bitmap?) {
+                youtubeShortsWatchUrl(url)?.let { target ->
+                    v.stopLoading()
+                    v.loadUrl(target)
+                    return
+                }
                 if (inspectPopupNavigation(v, url)) return
                 applyTurboNetworkPolicy(v, url)
                 if (url.startsWith("http://") || url.startsWith("https://"))
@@ -1732,6 +1737,10 @@ class MainActivity : ComponentActivity() {
             override fun shouldOverrideUrlLoading(v: WebView, request: WebResourceRequest): Boolean {
                 val target = request.url
                 if (request.isForMainFrame) {
+                    youtubeShortsWatchUrl(target.toString())?.let { watchUrl ->
+                        v.loadUrl(watchUrl)
+                        return true
+                    }
                     val (before, after) = applyLoginCookiePolicy(v, target.toString())
                     if (before != after)
                         recordGoogleLoginAudit("Política antes da navegação: $before → $after", target.toString(), v)
@@ -2221,6 +2230,32 @@ class MainActivity : ComponentActivity() {
             Toast.makeText(this, "Não foi possível abrir este link", Toast.LENGTH_SHORT).show()
         }
         return true
+    }
+
+    /**
+     * Converte rotas Shorts em páginas normais de vídeo quando o bloqueio está ativo.
+     * Esta verificação nativa cobre a navegação principal mesmo antes da extensão carregar.
+     */
+    private fun youtubeShortsWatchUrl(rawUrl: String): String? {
+        val prefs = getSharedPreferences("ext_youtube-focus", MODE_PRIVATE)
+        val data = runCatching {
+            org.json.JSONObject(prefs.getString("data", "{}") ?: "{}")
+        }.getOrNull() ?: return null
+        if (!data.optBoolean("hide_youtube_shorts", true)) return null
+
+        val uri = runCatching { Uri.parse(rawUrl) }.getOrNull() ?: return null
+        val host = uri.host?.lowercase() ?: return null
+        if (host != "youtube.com" && !host.endsWith(".youtube.com")) return null
+        val segments = uri.pathSegments
+        if (segments.size < 2 || segments[0] != "shorts") return null
+        val videoId = segments[1].takeIf { it.matches(Regex("[A-Za-z0-9_-]{6,}")) } ?: return null
+
+        return uri.buildUpon()
+            .path("/watch")
+            .clearQuery()
+            .appendQueryParameter("v", videoId)
+            .build()
+            .toString()
     }
 
     private fun setupExtensions(view: WebView) {
