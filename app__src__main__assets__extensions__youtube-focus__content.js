@@ -151,7 +151,7 @@
       'ytd-guide-entry-renderer:has(a[href="/"]),ytd-mini-guide-entry-renderer:has(a[href="/"])');
     addRule(rules, settings.disable_annotations,
       '.annotation,.ytp-cards-teaser,.ytp-ce-element,.ytp-suggested-action');
-    rules.push('[data-nm-youtube-focus-hidden="1"]{display:none!important}');
+    rules.push('[data-nm-youtube-focus-hidden="1"],[data-nm-youtube-shorts-hidden="1"]{display:none!important}');
     return rules.join("\n");
   }
 
