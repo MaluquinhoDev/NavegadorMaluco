@@ -96,6 +96,14 @@
       if (!anchor) return;
       var target = shortsWatchUrl(anchor.href);
       if (!target) return;
+
+      // Mantém Ctrl/Cmd/Shift, botão do meio e target=_blank.
+      // Apenas troca o destino do link; o navegador conserva o comportamento original.
+      anchor.href = target;
+      if (event.defaultPrevented || event.button !== 0 ||
+          event.ctrlKey || event.metaKey || event.shiftKey || event.altKey ||
+          (anchor.target && anchor.target !== "_self")) return;
+
       event.preventDefault();
       event.stopPropagation();
       if (event.stopImmediatePropagation) event.stopImmediatePropagation();
@@ -128,7 +136,7 @@
     addRule(rules, settings.hide_live_chat, 'ytd-live-chat-frame,ytd-live-chat-renderer');
     addRule(rules, settings.hide_playlist, 'ytd-playlist-panel-renderer,ytd-compact-playlist-renderer');
     addRule(rules, settings.hide_youtube_shorts,
-      'ytd-reel-shelf-renderer,ytd-reel-item-renderer,ytd-rich-shelf-renderer[is-shorts],ytd-rich-section-renderer:has(ytd-reel-shelf-renderer),ytd-rich-item-renderer:has(a[href^="/shorts/"]),ytd-video-renderer:has(a[href^="/shorts/"]),ytd-grid-video-renderer:has(a[href^="/shorts/"]),ytd-compact-video-renderer:has(a[href^="/shorts/"]),ytm-reel-shelf-renderer,ytm-reel-item-renderer,ytm-shorts-lockup-view-model');
+      'ytd-reel-shelf-renderer,ytd-reel-item-renderer,ytd-rich-shelf-renderer[is-shorts],ytm-reel-shelf-renderer,ytm-reel-item-renderer,ytm-shorts-lockup-view-model');
     addRule(rules, settings.hide_shorts_tab,
       'ytd-guide-entry-renderer:has(a[href^="/shorts"]),ytd-mini-guide-entry-renderer:has(a[href^="/shorts"])');
     addRule(rules, settings.hide_end_screen_videowall, '.ytp-endscreen-content,.ytp-endscreen-previous,.ytp-endscreen-next');
@@ -180,9 +188,14 @@
       "ytd-grid-video-renderer",
       "ytd-compact-video-renderer",
       "ytd-reel-item-renderer",
+      "ytd-reel-shelf-renderer",
+      "ytd-rich-shelf-renderer",
+      "ytd-rich-section-renderer",
       "ytm-video-with-context-renderer",
       "ytm-compact-video-renderer",
-      "ytm-reel-item-renderer"
+      "ytm-reel-item-renderer",
+      "ytm-reel-shelf-renderer",
+      "ytm-shorts-lockup-view-model"
     ].join(",");
     document.querySelectorAll('a[href*="/shorts/"]').forEach(function (anchor) {
       var card = anchor.closest(selectors);
