@@ -49,17 +49,80 @@ class ExtensionManager(private val context: Context) {
         prefs.edit().putStringSet("disabled", s).apply()
     }
 
-    /** Copia cada extensão de assets/extensions uma única vez (se você remover, ela não volta). */
+    /**
+     * Instala extensões internas e atualiza cópias antigas quando a versão do asset aumenta.
+     * Os dados em ext_<id> e a lista de extensões desativadas não são alterados.
+     */
     fun seedFromAssets() {
         root.mkdirs()
         val seeded = (prefs.getStringSet("seeded", emptySet()) ?: emptySet()).toMutableSet()
         for (name in context.assets.list("extensions") ?: emptyArray()) {
-            if (name in seeded) continue
             val dest = File(root, name)
-            if (!dest.exists()) copyAsset("extensions/$name", dest)
+            if (!dest.exists()) {
+                copyAsset("extensions/$name", dest)
+                seeded.add(name)
+                continue
+            }
+
+            val bundledVersion = assetManifestVersion(name) ?: continue
+            val installedVersion = manifestVersion(File(dest, "manifest.json"))
+            if (installedVersion == null || compareVersions(bundledVersion, installedVersion) > 0) {
+                updateBundledExtension(name, dest, bundledVersion)
+            }
             seeded.add(name)
         }
         prefs.edit().putStringSet("seeded", seeded).apply()
+    }
+
+    private fun assetManifestVersion(name: String): String? = runCatching {
+        context.assets.open("extensions/$name/manifest.json").bufferedReader().use {
+            JSONObject(it.readText()).optString("version").takeIf(String::isNotBlank)
+        }
+    }.getOrNull()
+
+    private fun manifestVersion(file: File): String? = runCatching {
+        if (!file.isFile) return@runCatching null
+        JSONObject(file.readText()).optString("version").takeIf(String::isNotBlank)
+    }.getOrNull()
+
+    private fun compareVersions(left: String, right: String): Int {
+        val a = Regex("\\d+").findAll(left).map { it.value.toIntOrNull() ?: 0 }.toList()
+        val b = Regex("\\d+").findAll(right).map { it.value.toIntOrNull() ?: 0 }.toList()
+        if (a.isEmpty() || b.isEmpty()) return left.compareTo(right)
+        for (index in 0 until maxOf(a.size, b.size)) {
+            val comparison = (a.getOrNull(index) ?: 0).compareTo(b.getOrNull(index) ?: 0)
+            if (comparison != 0) return comparison
+        }
+        return 0
+    }
+
+    private fun updateBundledExtension(name: String, dest: File, version: String) {
+        val staged = File(root, ".$name-update")
+        val backup = File(root, ".$name-backup")
+        staged.deleteRecursively()
+        backup.deleteRecursively()
+        copyAsset("extensions/$name", staged)
+
+        val stagedVersion = manifestVersion(File(staged, "manifest.json"))
+        if (stagedVersion == null || compareVersions(stagedVersion, version) != 0) {
+            staged.deleteRecursively()
+            Log.e(tag, "Atualização de $name cancelada: manifest inválido")
+            return
+        }
+
+        if (dest.exists() && !dest.renameTo(backup)) {
+            staged.deleteRecursively()
+            Log.e(tag, "Não foi possível preparar atualização de $name")
+            return
+        }
+        if (!staged.renameTo(dest)) {
+            backup.renameTo(dest)
+            staged.deleteRecursively()
+            Log.e(tag, "Não foi possível concluir atualização de $name")
+            return
+        }
+        backup.deleteRecursively()
+        Log.i(tag, "Extensão interna $name atualizada para $version")
     }
 
     private fun copyAsset(path: String, dest: File) {
