@@ -2360,7 +2360,17 @@ class MainActivity : ComponentActivity() {
         }.sortedBy { it.lastUsed }.map { it.id }
         fun manualFallback() {
             automaticParkingInProgress = false
-            if (!isDestroyed && !isFinishing) selectTabToPark(reason, afterAvailable)
+            if (!isDestroyed && !isFinishing) {
+                // Não substitui a decisão automática por uma escolha manual insegura.
+                // Se todas as abas foram reprovadas (ou não puderam ser verificadas),
+                // preservamos o conteúdo e recusamos a nova WebView por enquanto.
+                Toast.makeText(
+                    this,
+                    "Nenhuma aba inativa pôde ser hibernada com segurança. " +
+                        "As páginas foram preservadas; feche ou proteja uma aba para liberar memória.",
+                    Toast.LENGTH_LONG
+                ).show()
+            }
         }
         fun tryCandidate(position: Int) {
             if (isDestroyed || isFinishing) { automaticParkingInProgress = false; return }
@@ -2451,19 +2461,6 @@ class MainActivity : ComponentActivity() {
         if (tab.view.url == null) warn(null)
         else runCatching { tab.view.evaluateJavascript(script) { answer -> warn(answer == "true") } }
             .onFailure { warn(null) }
-    }
-
-    private fun selectTabToPark(title: String, afterPark: () -> Unit = {}) {
-        val choices = tabs.indices.filter { it != activeIndex }.map { tabs[it].id }
-        if (choices.isEmpty()) {
-            Toast.makeText(this, "Não há aba inativa para hibernar", Toast.LENGTH_LONG).show()
-            return
-        }
-        AlertDialog.Builder(this).setTitle(title)
-            .setMessage("Escolha uma página. O navegador verificará a reprodução antes de confirmar a hibernação.")
-            .setItems(choices.mapNotNull { id -> tabs.firstOrNull { it.id == id }?.let { "${it.constellation} · ${it.view.title ?: it.title}" } }.toTypedArray()) { _, which ->
-                confirmParkTab(choices[which], afterPark)
-            }.setNegativeButton("Cancelar", null).show()
     }
 
     private fun restoreParkedTab(index: Int) {
