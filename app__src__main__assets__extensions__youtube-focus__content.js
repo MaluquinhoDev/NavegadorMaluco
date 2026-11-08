@@ -55,7 +55,7 @@
     try {
       var url = new URL(value, location.href);
       if (!isYoutubeHost(url.hostname)) return "";
-      var match = url.pathname.match(/^\\/shorts\\/([a-zA-Z0-9_-]+)/);
+      var match = url.pathname.match(/^\/shorts\/([a-zA-Z0-9_-]+)/);
       return match ? match[1] : "";
     } catch (_) {
       return "";
