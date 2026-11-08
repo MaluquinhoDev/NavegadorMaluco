@@ -208,12 +208,10 @@
 
   function hideTextOnlyCommunityPosts() {
     var marker = "data-nm-youtube-text-post-hidden";
-    if (!settings.hide_text_posts) {
-      document.querySelectorAll("[" + marker + "='1']").forEach(function (node) {
-        node.removeAttribute(marker);
-      });
-      return;
-    }
+    document.querySelectorAll("[" + marker + "='1']").forEach(function (node) {
+      node.removeAttribute(marker);
+    });
+    if (!settings.hide_text_posts) return;
 
     // YouTube usa diferentes renderizadores para publicações da comunidade.
     var postSelectors = [
