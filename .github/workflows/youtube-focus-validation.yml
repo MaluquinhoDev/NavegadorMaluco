@@ -1,0 +1,61 @@
+name: YouTube Focus validation
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "app/src/main/assets/extensions/youtube-focus/**"
+      - ".github/workflows/youtube-focus-validation.yml"
+  pull_request:
+    branches: [main]
+    paths:
+      - "app/src/main/assets/extensions/youtube-focus/**"
+      - ".github/workflows/youtube-focus-validation.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate-extension:
+    name: Validate extension files
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Validate manifest JSON
+        run: node -e "JSON.parse(require('node:fs').readFileSync('app/src/main/assets/extensions/youtube-focus/manifest.json', 'utf8')); console.log('manifest.json: valid JSON')"
+
+      - name: Validate content script syntax
+        run: node --check app/src/main/assets/extensions/youtube-focus/content.js
+
+      - name: Verify manifest references the content script
+        run: |
+          node <<'NODE'
+          const fs = require('node:fs');
+          const manifest = JSON.parse(fs.readFileSync(
+            'app/src/main/assets/extensions/youtube-focus/manifest.json',
+            'utf8'
+          ));
+
+          const scripts = (manifest.content_scripts || []).flatMap(item => item.js || []);
+          if (!scripts.includes('content.js')) {
+            throw new Error('manifest.json does not register content.js');
+          }
+
+          const matches = (manifest.content_scripts || []).flatMap(item => item.matches || []);
+          const hasYouTubeMatch = matches.some(pattern =>
+            pattern.includes('youtube.com')
+          );
+          if (!hasYouTubeMatch) {
+            throw new Error('No YouTube URL match found in content_scripts');
+          }
+
+          console.log('Manifest registers content.js and matches YouTube URLs.');
+          NODE
