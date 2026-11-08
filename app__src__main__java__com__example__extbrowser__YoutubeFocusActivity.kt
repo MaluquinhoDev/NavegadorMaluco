@@ -207,7 +207,10 @@ class YoutubeFocusActivity : ComponentActivity() {
     }
 
     private fun saveValues() {
-        val json = JSONObject()
+        // Preserva biblioteca, marcações, anotações e demais dados da extensão.
+        val json = runCatching {
+            JSONObject(prefs.getString("data", "{}") ?: "{}")
+        }.getOrElse { JSONObject() }
         values.forEach { (key, value) -> json.put(key, value) }
         prefs.edit().putString("data", json.toString()).apply()
         setResult(RESULT_OK)
