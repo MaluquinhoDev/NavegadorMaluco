@@ -58,7 +58,7 @@
     addRule(rules, settings.hide_live_chat, 'ytd-live-chat-frame,ytd-live-chat-renderer');
     addRule(rules, settings.hide_playlist, 'ytd-playlist-panel-renderer,ytd-compact-playlist-renderer');
     addRule(rules, settings.hide_youtube_shorts,
-      'ytd-reel-shelf-renderer,ytd-reel-item-renderer,ytd-rich-shelf-renderer[is-shorts]');
+      'ytd-reel-shelf-renderer,ytd-reel-item-renderer,ytd-rich-shelf-renderer[is-shorts],ytd-rich-section-renderer:has(ytd-reel-shelf-renderer),ytd-rich-item-renderer:has(a[href^="/shorts/"])');
     addRule(rules, settings.hide_shorts_tab,
       'ytd-guide-entry-renderer:has(a[href^="/shorts"]),ytd-mini-guide-entry-renderer:has(a[href^="/shorts"])');
     addRule(rules, settings.hide_end_screen_videowall, '.ytp-endscreen-content,.ytp-endscreen-previous,.ytp-endscreen-next');
@@ -77,8 +77,6 @@
     addRule(rules, settings.hide_notification_bell, 'ytd-notification-topbar-button-renderer,#notification-button');
     addRule(rules, settings.hide_explore_trending,
       'ytd-guide-entry-renderer:has(a[href^="/feed/trending"]),ytd-guide-entry-renderer:has(a[href^="/feed/explore"])');
-    addRule(rules, settings.hide_and_redirect_subscriptions,
-      'ytd-guide-entry-renderer:has(a[href^="/"]),ytd-mini-guide-entry-renderer:has(a[href^="/"])');
     addRule(rules, settings.hide_and_redirect_subscriptions,
       'ytd-guide-entry-renderer:has(a[href="/"]),ytd-mini-guide-entry-renderer:has(a[href="/"])');
     addRule(rules, settings.disable_annotations,
