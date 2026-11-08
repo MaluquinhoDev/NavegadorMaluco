@@ -77,7 +77,19 @@ class YoutubeFocusActivity : ComponentActivity() {
         Option("hide_top_header", "Ocultar cabeçalho superior",
             "Remove o cabeçalho do YouTube, incluindo a caixa de pesquisa.", "Interface"),
         Option("hide_notification_bell", "Ocultar sino de notificações",
-            "Remove o botão de notificações do cabeçalho.", "Interface")
+            "Remove o botão de notificações do cabeçalho.", "Interface"),
+        Option("enable_personal_library", "Biblioteca e fila pessoal",
+            "Adiciona controles para salvar vídeos e organizar uma fila manual.", "Organização"),
+        Option("enable_timestamp_bookmarks", "Marcar momentos do vídeo",
+            "Salva o instante atual do vídeo junto ao link para retomada.", "Aprendizagem"),
+        Option("enable_video_notes", "Anotações por vídeo",
+            "Permite registrar notas vinculadas ao vídeo atual.", "Aprendizagem"),
+        Option("enable_session_timer", "Temporizador de sessão",
+            "Exibe um controle de sessão com duração configurável.", "Uso consciente"),
+        Option("remember_channel_speed", "Velocidade por canal",
+            "Memoriza a velocidade de reprodução escolhida para cada canal.", "Experiência"),
+        Option("enable_study_mode", "Modo estudo",
+            "Reúne marcações e anotações em uma interface compacta.", "Aprendizagem")
     )
 
     private val defaults by lazy { options.associate { it.key to it.default } }
