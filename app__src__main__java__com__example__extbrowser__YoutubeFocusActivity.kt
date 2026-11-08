@@ -41,7 +41,7 @@ class YoutubeFocusActivity : ComponentActivity() {
         Option("hide_shorts_tab", "Ocultar a aba Shorts",
             "Remove o atalho de Shorts da navegação.", "Shorts e reprodução", true),
         Option("hide_youtube_shorts", "Ocultar vídeos Shorts",
-            "Remove prateleiras e cartões de Shorts dos resultados e páginas.", "Shorts e reprodução", true),
+            "Oculta cartões e converte links /shorts/ para a página normal do vídeo.", "Shorts e reprodução", true),
         Option("disable_autoplay", "Desativar reprodução automática",
             "Desliga a reprodução automática do próximo vídeo.", "Shorts e reprodução", true),
         Option("hide_end_screen_videowall", "Ocultar mural de vídeos no encerramento",
