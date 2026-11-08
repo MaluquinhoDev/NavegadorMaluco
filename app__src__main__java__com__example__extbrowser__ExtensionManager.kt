@@ -76,13 +76,13 @@ class ExtensionManager(private val context: Context) {
 
     private fun assetManifestVersion(name: String): String? = runCatching {
         context.assets.open("extensions/$name/manifest.json").bufferedReader().use {
-            JSONObject(it.readText()).optString("version").takeIf(String::isNotBlank)
+            JSONObject(it.readText()).optString("version").takeIf { it.isNotBlank() }
         }
     }.getOrNull()
 
     private fun manifestVersion(file: File): String? = runCatching {
         if (!file.isFile) return@runCatching null
-        JSONObject(file.readText()).optString("version").takeIf(String::isNotBlank)
+        JSONObject(file.readText()).optString("version").takeIf { it.isNotBlank() }
     }.getOrNull()
 
     private fun compareVersions(left: String, right: String): Int {
