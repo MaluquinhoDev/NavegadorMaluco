@@ -2308,6 +2308,11 @@ class MainActivity : ComponentActivity() {
 
     /** Sonda conservadora: resultado incerto não autoriza descartar uma WebView. */
     private fun checkAutomaticParkingSafety(view: WebView, done: (Boolean) -> Unit) {
+        // Não descarta uma página ainda carregando ou sem URL verificável.
+        if (view.progress < 100 || view.url.isNullOrBlank()) {
+            done(false)
+            return
+        }
         val script = """(function(){try{
             const media=Array.from(document.querySelectorAll('audio,video'))
                 .some(m=>!m.paused&&!m.ended)||
@@ -2360,7 +2365,17 @@ class MainActivity : ComponentActivity() {
         }.sortedBy { it.lastUsed }.map { it.id }
         fun manualFallback() {
             automaticParkingInProgress = false
-            if (!isDestroyed && !isFinishing) selectTabToPark(reason, afterAvailable)
+            if (!isDestroyed && !isFinishing) {
+                // Não substitui a decisão automática por uma escolha manual insegura.
+                // Se todas as abas foram reprovadas (ou não puderam ser verificadas),
+                // preservamos o conteúdo e recusamos a nova WebView por enquanto.
+                Toast.makeText(
+                    this,
+                    "$reason: nenhuma aba inativa pôde ser hibernada com segurança. " +
+                        "As páginas foram preservadas; feche ou proteja uma aba para liberar memória.",
+                    Toast.LENGTH_LONG
+                ).show()
+            }
         }
         fun tryCandidate(position: Int) {
             if (isDestroyed || isFinishing) { automaticParkingInProgress = false; return }
@@ -2453,17 +2468,66 @@ class MainActivity : ComponentActivity() {
             .onFailure { warn(null) }
     }
 
-    private fun selectTabToPark(title: String, afterPark: () -> Unit = {}) {
-        val choices = tabs.indices.filter { it != activeIndex }.map { tabs[it].id }
-        if (choices.isEmpty()) {
-            Toast.makeText(this, "Não há aba inativa para hibernar", Toast.LENGTH_LONG).show()
+    /**
+     * Hiberna automaticamente a aba inativa elegível menos recentemente usada.
+     * A sondagem é conservadora: qualquer resultado incerto mantém a página em memória.
+     */
+    private fun hibernateSafestInactiveTab(afterPark: () -> Unit = {}) {
+        if (automaticParkingInProgress) {
+            Toast.makeText(this, "Verificando abas inativas…", Toast.LENGTH_SHORT).show()
             return
         }
-        AlertDialog.Builder(this).setTitle(title)
-            .setMessage("Escolha uma página. O navegador verificará a reprodução antes de confirmar a hibernação.")
-            .setItems(choices.mapNotNull { id -> tabs.firstOrNull { it.id == id }?.let { "${it.constellation} · ${it.view.title ?: it.title}" } }.toTypedArray()) { _, which ->
-                confirmParkTab(choices[which], afterPark)
-            }.setNegativeButton("Cancelar", null).show()
+        automaticParkingInProgress = true
+        val candidates = tabs.filter { tab ->
+            tab.id != tabs.getOrNull(activeIndex)?.id && tab.id !in pinnedTabIds &&
+                tab.view !in pendingPopups && tab.view !== queueSyncView &&
+                tab.view !== media3OriginView
+        }.sortedBy { it.lastUsed }.map { it.id }
+
+        fun tryCandidate(position: Int) {
+            if (isDestroyed || isFinishing) {
+                automaticParkingInProgress = false
+                return
+            }
+            if (position >= candidates.size) {
+                automaticParkingInProgress = false
+                Toast.makeText(
+                    this,
+                    "Nenhuma aba inativa pôde ser hibernada com segurança. As páginas foram preservadas.",
+                    Toast.LENGTH_LONG
+                ).show()
+                return
+            }
+
+            val id = candidates[position]
+            val index = tabs.indexOfFirst { it.id == id }
+            if (index < 0 || index == activeIndex || id in pinnedTabIds) {
+                tryCandidate(position + 1)
+                return
+            }
+
+            val view = tabs[index].view
+            checkAutomaticParkingSafety(view) { safe ->
+                val current = tabs.indexOfFirst { it.id == id }
+                if (safe && current >= 0 && current != activeIndex &&
+                    view === tabs[current].view && id !in pinnedTabIds &&
+                    view !in pendingPopups && view !== queueSyncView &&
+                    view !== media3OriginView) {
+                    val previousCount = tabs.size
+                    parkTab(current)
+                    if (tabs.size < previousCount) {
+                        automaticParkingInProgress = false
+                        Toast.makeText(this, "Aba inativa hibernada automaticamente", Toast.LENGTH_SHORT).show()
+                        afterPark()
+                    } else tryCandidate(position + 1)
+                } else tryCandidate(position + 1)
+            }
+        }
+
+        if (candidates.isEmpty()) {
+            automaticParkingInProgress = false
+            Toast.makeText(this, "Não há aba inativa elegível para hibernação", Toast.LENGTH_SHORT).show()
+        } else tryCandidate(0)
     }
 
     private fun restoreParkedTab(index: Int) {
@@ -2571,7 +2635,7 @@ class MainActivity : ComponentActivity() {
             setOnClickListener { dialog.dismiss(); newTab() }
         }, LinearLayout.LayoutParams(0, dp(48), 1f))
         bottom.addView(uiAction("Hibernar").apply {
-            setOnClickListener { dialog.dismiss(); selectTabToPark("Escolher aba para hibernar") }
+            setOnClickListener { dialog.dismiss(); hibernateSafestInactiveTab() }
         }, LinearLayout.LayoutParams(0, dp(48), 1f).apply { marginStart = dp(8) })
         bottom.addView(uiAction("Perfis").apply {
             setOnClickListener { dialog.dismiss(); showAccountProfilesMenu() }
