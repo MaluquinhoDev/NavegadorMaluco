@@ -3711,6 +3711,9 @@ class MainActivity : ComponentActivity() {
     private fun showToolsMenu() {
         showActionHub("Ferramentas", "Controle da navegação e das permissões", listOf(
             MenuAction("Reprodução", "YouTube e YouTube Music", "Abrir no player nativo") { showYouTubeExtractor() },
+            MenuAction("Foco", "YouTube sem distrações", "Controlar recomendações, Shorts, autoplay e elementos da página") {
+                extLauncher.launch(Intent(this, YoutubeFocusActivity::class.java))
+            },
             MenuAction("Reprodução", "Opções de mídia", "Configurar reprodução em segundo plano") { showMediaOptions() },
             MenuAction("Desempenho", "Modo Turbo Maluco", "Otimizar e diagnosticar o site atual") { showTurboMenu() },
             MenuAction("Privacidade", "Fechamento automático de pop-ups",

@@ -1,0 +1,15 @@
+{
+  "name": "YouTube sem distrações",
+  "version": "1.0.0",
+  "description": "Controles locais para ocultar recomendações, Shorts, autoplay e elementos da interface do YouTube.",
+  "content_scripts": [
+    {
+      "matches": [
+        "https://www.youtube.com/*",
+        "https://m.youtube.com/*"
+      ],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}
