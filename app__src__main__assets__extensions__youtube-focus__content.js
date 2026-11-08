@@ -287,7 +287,7 @@
   function saveTimestamp() {
     var item = currentVideo();
     return readStore("nm_bookmarks").then(function (items) {
-      items.unshift({id:item.id,url:item.url,title:item.title,channel:item.channel,time:item.time,createdAt:Date.now()});
+      items.unshift({id:item.id,url:item.url + (item.url.indexOf("?") >= 0 ? "&" : "?") + "t=" + item.time + "s",title:item.title,channel:item.channel,time:item.time,createdAt:Date.now()});
       return writeStore("nm_bookmarks", items.slice(0, 1000));
     }).then(function () { alert("Momento salvo em " + formatTime(item.time) + "."); });
   }
@@ -344,9 +344,11 @@
   function applyChannelSpeed() {
     if (!settings.remember_channel_speed) return;
     var item = currentVideo();
+    if (!item.video || item.channel === "Canal desconhecido") return;
     var key = "nm_speed_" + item.channel.toLowerCase().replace(/[^a-z0-9]+/g, "_").slice(0, 70);
-    if (lastVideoKey === item.id) return;
-    lastVideoKey = item.id;
+    var identity = item.id + "|" + item.channel;
+    if (lastVideoKey === identity) return;
+    lastVideoKey = identity;
     browser.storage.local.get(key).then(function (stored) {
       var rate = Number(stored[key]);
       if (item.video && Number.isFinite(rate) && rate >= 0.25 && rate <= 3) item.video.playbackRate = rate;
