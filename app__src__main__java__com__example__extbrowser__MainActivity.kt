@@ -2366,7 +2366,7 @@ class MainActivity : ComponentActivity() {
                 // preservamos o conteúdo e recusamos a nova WebView por enquanto.
                 Toast.makeText(
                     this,
-                    "Nenhuma aba inativa pôde ser hibernada com segurança. " +
+                    "$reason: nenhuma aba inativa pôde ser hibernada com segurança. " +
                         "As páginas foram preservadas; feche ou proteja uma aba para liberar memória.",
                     Toast.LENGTH_LONG
                 ).show()
@@ -2461,6 +2461,57 @@ class MainActivity : ComponentActivity() {
         if (tab.view.url == null) warn(null)
         else runCatching { tab.view.evaluateJavascript(script) { answer -> warn(answer == "true") } }
             .onFailure { warn(null) }
+    }
+
+    /**
+     * Hiberna automaticamente a aba inativa elegível menos recentemente usada.
+     * A sondagem é conservadora: qualquer resultado incerto mantém a página em memória.
+     */
+    private fun hibernateSafestInactiveTab(afterPark: () -> Unit = {}) {
+        val candidates = tabs.filter { tab ->
+            tab.id != tabs.getOrNull(activeIndex)?.id && tab.id !in pinnedTabIds &&
+                tab.view !in pendingPopups && tab.view !== queueSyncView &&
+                tab.view !== media3OriginView
+        }.sortedBy { it.lastUsed }.map { it.id }
+
+        fun tryCandidate(position: Int) {
+            if (isDestroyed || isFinishing) return
+            if (position >= candidates.size) {
+                Toast.makeText(
+                    this,
+                    "Nenhuma aba inativa pôde ser hibernada com segurança. As páginas foram preservadas.",
+                    Toast.LENGTH_LONG
+                ).show()
+                return
+            }
+
+            val id = candidates[position]
+            val index = tabs.indexOfFirst { it.id == id }
+            if (index < 0 || index == activeIndex || id in pinnedTabIds) {
+                tryCandidate(position + 1)
+                return
+            }
+
+            val view = tabs[index].view
+            checkAutomaticParkingSafety(view) { safe ->
+                val current = tabs.indexOfFirst { it.id == id }
+                if (safe && current >= 0 && current != activeIndex &&
+                    view === tabs[current].view && id !in pinnedTabIds &&
+                    view !in pendingPopups && view !== queueSyncView &&
+                    view !== media3OriginView) {
+                    val previousCount = tabs.size
+                    parkTab(current)
+                    if (tabs.size < previousCount) {
+                        Toast.makeText(this, "Aba inativa hibernada automaticamente", Toast.LENGTH_SHORT).show()
+                        afterPark()
+                    } else tryCandidate(position + 1)
+                } else tryCandidate(position + 1)
+            }
+        }
+
+        if (candidates.isEmpty()) {
+            Toast.makeText(this, "Não há aba inativa elegível para hibernação", Toast.LENGTH_SHORT).show()
+        } else tryCandidate(0)
     }
 
     private fun restoreParkedTab(index: Int) {
@@ -2568,7 +2619,7 @@ class MainActivity : ComponentActivity() {
             setOnClickListener { dialog.dismiss(); newTab() }
         }, LinearLayout.LayoutParams(0, dp(48), 1f))
         bottom.addView(uiAction("Hibernar").apply {
-            setOnClickListener { dialog.dismiss(); selectTabToPark("Escolher aba para hibernar") }
+            setOnClickListener { dialog.dismiss(); hibernateSafestInactiveTab() }
         }, LinearLayout.LayoutParams(0, dp(48), 1f).apply { marginStart = dp(8) })
         bottom.addView(uiAction("Perfis").apply {
             setOnClickListener { dialog.dismiss(); showAccountProfilesMenu() }
