@@ -168,7 +168,7 @@ class YoutubeFocusActivity : ComponentActivity() {
                 changed = true
                 saveValues()
                 Toast.makeText(this@YoutubeFocusActivity, "Padrões restaurados", Toast.LENGTH_SHORT).show()
-                recreate()
+                finishWithResult()
             }
         }, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
         actions.addView(Button(this).apply {
@@ -198,6 +198,7 @@ class YoutubeFocusActivity : ComponentActivity() {
         val json = JSONObject()
         values.forEach { (key, value) -> json.put(key, value) }
         prefs.edit().putString("data", json.toString()).apply()
+        setResult(RESULT_OK)
     }
 
     private fun finishWithResult() {
