@@ -4,7 +4,7 @@ O NavegadorMaluco inclui uma extensão local chamada **YouTube sem distrações*
 
 ## Preferências
 
-As 25 opções são configuráveis individualmente no menu **Ferramentas → YouTube sem distrações**:
+As opções são configuráveis individualmente no menu **Ferramentas → YouTube sem distrações**:
 
 - Ocultar feed da página inicial
 - Redirecionar a página inicial para inscrições
@@ -31,6 +31,16 @@ As 25 opções são configuráveis individualmente no menu **Ferramentas → You
 - Ocultar descrição
 - Ocultar cabeçalho superior
 - Ocultar sino de notificações
+
+## Controles adicionais inspirados no Unhook
+
+- Ocultar prateleiras de Shorts separadamente na página inicial, pesquisa, canais e recomendações.
+- Bloquear a navegação para vídeos em `/shorts/`, inclusive por URL direta no WebView principal.
+- Ocultar sugestões automáticas da caixa de pesquisa.
+- Ocultar miniplayer e filtros dos feeds.
+- Ocultar conteúdo promovido, banners comerciais e promoções de membros.
+
+O bloqueio de navegação é diferente da ocultação visual: a configuração é consultada pelo Kotlin antes de carregar uma URL principal de Shorts. Links internos também são interceptados pelo content script. O bloqueio não afeta vídeos longos nem resultados de pesquisa que não sejam Shorts.
 
 ## Comportamento
 
