@@ -179,7 +179,7 @@ class YoutubeFocusActivity : ComponentActivity() {
         val search = EditText(this).apply {
             hint = "Buscar configuração..."
             textSize = 14f
-            singleLine = true
+            setSingleLine(true)
             setPadding(dp(14), dp(8), dp(14), dp(8))
             background = rounded(if (isDark()) Color.rgb(38, 42, 50) else Color.WHITE, 12)
         }
