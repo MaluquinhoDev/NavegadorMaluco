@@ -316,13 +316,18 @@
     var style = document.createElement("style");
     style.id = "nm-youtube-tools-style";
     style.textContent =
-      "#nm-youtube-tools{position:fixed;z-index:2147483646;right:14px;bottom:76px;font:13px/1.4 Arial,sans-serif;color:var(--yt-spec-text-primary,#fff)}" +
-      "#nm-youtube-tools button{font:inherit;cursor:pointer;border:1px solid var(--yt-spec-10-percent-layer,rgba(255,255,255,.2));border-radius:9px;padding:8px 10px;background:var(--yt-spec-badge-chip-background,rgba(35,35,35,.96));color:inherit}" +
-      "#nm-youtube-tools .nm-panel{display:none;max-width:min(310px,calc(100vw - 28px));max-height:55vh;overflow:auto;margin-bottom:8px;padding:10px;border-radius:13px;background:var(--yt-spec-menu-background,rgba(25,25,25,.97));box-shadow:0 4px 24px #0008}" +
-      "#nm-youtube-tools.open .nm-panel{display:block}#nm-youtube-tools .nm-actions{display:flex;flex-wrap:wrap;gap:6px}" +
-      "#nm-youtube-tools .nm-list{margin-top:8px;display:grid;gap:6px}#nm-youtube-tools .nm-entry{padding:7px;border-radius:8px;background:var(--yt-spec-10-percent-layer,rgba(255,255,255,.08));overflow-wrap:anywhere}" +
-      "#nm-youtube-tools .nm-muted{opacity:.72;font-size:11px;margin:5px 0}" +
-      "@media(prefers-color-scheme:light){#nm-youtube-tools{color:#202124}#nm-youtube-tools .nm-panel{background:#fff;box-shadow:0 4px 24px #0003}#nm-youtube-tools button{background:#f1f3f4;color:#202124;border-color:#dadce0}}";
+      "#nm-youtube-tools{position:fixed;z-index:2147483646;right:14px;bottom:76px;font:13px/1.45 Arial,sans-serif;color:var(--yt-spec-text-primary,#fff);max-width:calc(100vw - 28px)}" +
+      "#nm-youtube-tools button{font:inherit;cursor:pointer;border:1px solid var(--yt-spec-10-percent-layer,rgba(255,255,255,.2));border-radius:11px;padding:9px 11px;background:var(--yt-spec-badge-chip-background,rgba(35,35,35,.96));color:inherit;min-height:38px}" +
+      "#nm-youtube-tools .nm-toggle{border-radius:22px;padding:10px 15px;font-weight:700;box-shadow:0 3px 15px #0005}" +
+      "#nm-youtube-tools .nm-panel{display:none;width:min(340px,calc(100vw - 28px));max-height:62vh;overflow:auto;margin-bottom:9px;padding:13px;border:1px solid var(--yt-spec-10-percent-layer,rgba(255,255,255,.16));border-radius:17px;background:var(--yt-spec-menu-background,rgba(25,25,25,.98));box-shadow:0 8px 30px #0008;box-sizing:border-box}" +
+      "#nm-youtube-tools.open .nm-panel{display:block}#nm-youtube-tools .nm-head{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:3px}" +
+      "#nm-youtube-tools .nm-title{font-size:15px;font-weight:700}#nm-youtube-tools .nm-close{padding:4px 9px;min-height:30px}" +
+      "#nm-youtube-tools .nm-actions{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:7px;margin-top:11px}" +
+      "#nm-youtube-tools .nm-actions button{width:100%;text-align:left;background:var(--yt-spec-10-percent-layer,rgba(255,255,255,.08))}" +
+      "#nm-youtube-tools .nm-list{margin-top:11px;display:grid;gap:7px}#nm-youtube-tools .nm-entry{padding:9px;border-radius:10px;background:var(--yt-spec-10-percent-layer,rgba(255,255,255,.08));overflow-wrap:anywhere}" +
+      "#nm-youtube-tools .nm-entry a{text-decoration:none;font-weight:600}#nm-youtube-tools .nm-empty{padding:14px 8px;text-align:center;opacity:.75}" +
+      "#nm-youtube-tools .nm-muted{opacity:.72;font-size:11px;margin:4px 0}" +
+      "@media(prefers-color-scheme:light){#nm-youtube-tools{color:#202124}#nm-youtube-tools .nm-panel{background:#fff;box-shadow:0 8px 30px #0003}#nm-youtube-tools button{background:#f1f3f4;color:#202124;border-color:#dadce0}#nm-youtube-tools .nm-actions button{background:#f5f7fa}}";
     (document.head || document.documentElement).appendChild(style);
   }
   function renderPersonalTools() {
@@ -333,11 +338,14 @@
     if (!root) {
       ensureToolsStyle();
       root = document.createElement("div"); root.id = toolsId;
-      root.innerHTML = '<div class="nm-panel"><div class="nm-muted">Ferramentas pessoais · dados salvos neste navegador</div><div class="nm-actions"></div><div class="nm-list"></div></div><button class="nm-toggle" type="button">Ferramentas</button>';
+      root.innerHTML = '<section class="nm-panel" aria-label="Ferramentas pessoais"><div class="nm-head"><div class="nm-title">Seu espaço de estudo</div><button class="nm-close" type="button" aria-label="Fechar painel">×</button></div><div class="nm-muted">Biblioteca, momentos e anotações ficam salvos neste navegador.</div><div class="nm-actions"></div><div class="nm-list"><div class="nm-empty">Abra a biblioteca para ver seus registros.</div></div></section><button class="nm-toggle" type="button">✦ Ferramentas</button>';
       (document.body || document.documentElement).appendChild(root);
       root.querySelector(".nm-toggle").addEventListener("click", function () {
         toolsOpen = !toolsOpen; root.classList.toggle("open", toolsOpen);
         if (toolsOpen) refreshLibraryList(root);
+      });
+      root.querySelector(".nm-close").addEventListener("click", function () {
+        toolsOpen = false; root.classList.remove("open");
       });
     }
     var actions = root.querySelector(".nm-actions"); actions.textContent = "";
@@ -401,7 +409,11 @@
           if (entry.item.note) { var note = document.createElement("div"); note.textContent = entry.item.note; card.appendChild(note); }
           list.appendChild(card);
         });
-        if (!entries.length) list.textContent = "Sua biblioteca ainda está vazia.";
+        if (!entries.length) {
+          var empty = document.createElement("div"); empty.className = "nm-empty";
+          empty.textContent = "Sua biblioteca ainda está vazia. Salve um vídeo ou marque um momento para começar.";
+          list.appendChild(empty);
+        }
       });
   }
   function configureSessionTimer() {
