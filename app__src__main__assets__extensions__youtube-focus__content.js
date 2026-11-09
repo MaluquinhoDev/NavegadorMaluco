@@ -325,7 +325,7 @@
       "#nm-youtube-tools .nm-actions{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:7px;margin-top:11px}" +
       "#nm-youtube-tools .nm-actions button{width:100%;text-align:left;background:var(--yt-spec-10-percent-layer,rgba(255,255,255,.08))}" +
       "#nm-youtube-tools .nm-list{margin-top:11px;display:grid;gap:7px}#nm-youtube-tools .nm-entry{padding:9px;border-radius:10px;background:var(--yt-spec-10-percent-layer,rgba(255,255,255,.08));overflow-wrap:anywhere}" +
-      "#nm-youtube-tools .nm-entry a{text-decoration:none;font-weight:600}#nm-youtube-tools .nm-empty{padding:14px 8px;text-align:center;opacity:.75}" +
+      "#nm-youtube-tools .nm-entry a{text-decoration:none;font-weight:600;flex:1;min-width:0}#nm-youtube-tools .nm-entry-row{display:flex;align-items:center;gap:8px}#nm-youtube-tools .nm-delete{padding:3px 8px;min-height:28px;font-size:11px}#nm-youtube-tools .nm-empty{padding:14px 8px;text-align:center;opacity:.75}" +
       "#nm-youtube-tools .nm-muted{opacity:.72;font-size:11px;margin:4px 0}" +
       "@media(prefers-color-scheme:light){#nm-youtube-tools{color:#202124}#nm-youtube-tools .nm-panel{background:#fff;box-shadow:0 8px 30px #0003}#nm-youtube-tools button{background:#f1f3f4;color:#202124;border-color:#dadce0}#nm-youtube-tools .nm-actions button{background:#f5f7fa}}";
     (document.head || document.documentElement).appendChild(style);
@@ -396,16 +396,24 @@
       .then(function (groups) {
         list.textContent = "";
         var entries = [];
-        groups[0].forEach(function (x) { entries.push({kind:"Biblioteca",item:x}); });
-        groups[1].forEach(function (x) { entries.push({kind:"Momento " + formatTime(x.time),item:x}); });
-        groups[2].forEach(function (x) { entries.push({kind:"Anotação · " + formatTime(x.time),item:x}); });
+        groups[0].forEach(function (x) { entries.push({kind:"Biblioteca",store:"nm_library",item:x,stamp:x.savedAt}); });
+        groups[1].forEach(function (x) { entries.push({kind:"Momento " + formatTime(x.time),store:"nm_bookmarks",item:x,stamp:x.createdAt}); });
+        groups[2].forEach(function (x) { entries.push({kind:"Anotação · " + formatTime(x.time),store:"nm_notes",item:x,stamp:x.createdAt}); });
         entries.slice(0, 30).forEach(function (entry) {
           var card = document.createElement("div"); card.className = "nm-entry";
+          var row = document.createElement("div"); row.className = "nm-entry-row";
           var link = document.createElement("a"); link.href = entry.item.url;
           link.textContent = entry.item.title || "Vídeo salvo"; link.style.color = "inherit"; link.style.display = "block";
+          var remove = document.createElement("button"); remove.className = "nm-delete"; remove.type = "button"; remove.textContent = "Excluir";
+          remove.setAttribute("aria-label", "Excluir registro");
+          remove.addEventListener("click", function (event) {
+            event.preventDefault(); event.stopPropagation();
+            deleteSavedEntry(entry, root);
+          });
+          row.appendChild(link); row.appendChild(remove);
           var meta = document.createElement("div"); meta.className = "nm-muted";
           meta.textContent = entry.kind + " · " + (entry.item.channel || "");
-          card.appendChild(link); card.appendChild(meta);
+          card.appendChild(row); card.appendChild(meta);
           if (entry.item.note) { var note = document.createElement("div"); note.textContent = entry.item.note; card.appendChild(note); }
           list.appendChild(card);
         });
@@ -415,6 +423,16 @@
           list.appendChild(empty);
         }
       });
+  }
+  function deleteSavedEntry(entry, root) {
+    if (!window.confirm("Excluir este registro salvo?")) return;
+    readStore(entry.store).then(function (items) {
+      var index = items.findIndex(function (item) {
+        return item.id === entry.item.id && (item.createdAt || item.savedAt || 0) === (entry.stamp || 0);
+      });
+      if (index >= 0) items.splice(index, 1);
+      return writeStore(entry.store, items);
+    }).then(function () { return refreshLibraryList(root); });
   }
   function configureSessionTimer() {
     var raw = prompt("Duração da sessão em minutos:", "25");
