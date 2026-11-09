@@ -100,7 +100,7 @@
     addRule(rules, settings.hide_related_shorts,
       'ytd-watch-next-secondary-results-renderer ytd-reel-shelf-renderer,ytd-compact-video-renderer:has(a[href^="/shorts/"])');
     addRule(rules, settings.hide_search_suggestions,
-      'ytd-searchbox[has-focus] # پیشنهاد,ytd-searchbox #suggestions,ytd-searchbox #search-suggestions');
+      'ytd-searchbox[has-focus] #suggestions,ytd-searchbox #search-suggestions');
     addRule(rules, settings.hide_miniplayer, 'ytd-miniplayer,ytd-miniplayer-container');
     addRule(rules, settings.hide_feed_filters, 'yt-chip-cloud-renderer');
     addRule(rules, settings.hide_promoted_content,
