@@ -30,6 +30,8 @@ class YoutubeFocusActivity : ComponentActivity() {
     private val options = listOf(
         Option("hide_homepage_feed", "Ocultar feed da página inicial",
             "Remove a grade de recomendações da página inicial.", "Página inicial", true),
+        Option("hide_text_posts", "Ocultar publicações de texto",
+            "Oculta posts textuais da comunidade, preservando publicações com imagens, vídeos ou enquetes.", "Página inicial", true),
         Option("hide_and_redirect_subscriptions", "Redirecionar início para inscrições",
             "Ao abrir a página inicial do YouTube, abre diretamente os canais inscritos.", "Página inicial", true),
         Option("hide_explore_trending", "Ocultar Explorar e Em alta",
@@ -95,7 +97,7 @@ class YoutubeFocusActivity : ComponentActivity() {
         Option("hide_feed_filters", "Ocultar filtros do feed",
             "Remove a faixa de filtros e chips de navegação dos feeds.", "Página inicial"),
         Option("hide_promoted_content", "Ocultar conteúdo promovido",
-            "Remove anúncios e vídeos promovidos identificados na interface do YouTube.", "Conteúdo e informações", true),
+            "Oculta espaços publicitários identificáveis no feed; não bloqueia anúncios dentro do player nem requisições de anúncios.", "Conteúdo e informações", true),
         Option("hide_membership_promotions", "Ocultar promoções de membros",
             "Remove chamadas de adesão, banners e promoções de marcas/canais.", "Conteúdo e informações", true),
         Option("enable_personal_library", "Biblioteca e fila pessoal",

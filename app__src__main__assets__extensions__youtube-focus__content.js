@@ -5,6 +5,7 @@
 
   var defaults = {
     hide_homepage_feed: true,
+    hide_text_posts: true,
     hide_and_redirect_subscriptions: true,
     hide_explore_trending: true,
     hide_more_from_youtube: true,
@@ -74,7 +75,7 @@
     addRule(rules, settings.hide_live_chat, 'ytd-live-chat-frame,ytd-live-chat-renderer');
     addRule(rules, settings.hide_playlist, 'ytd-playlist-panel-renderer,ytd-compact-playlist-renderer');
     addRule(rules, settings.hide_youtube_shorts,
-      'ytd-reel-shelf-renderer,ytd-reel-item-renderer,ytd-rich-shelf-renderer[is-shorts],ytd-rich-section-renderer:has(ytd-reel-shelf-renderer),ytd-rich-item-renderer:has(a[href^="/shorts/"])');
+      'ytd-reel-shelf-renderer,ytd-reel-item-renderer,ytd-rich-shelf-renderer[is-shorts],ytd-rich-section-renderer:has(ytd-reel-shelf-renderer),ytd-rich-item-renderer:has(a[href^="/shorts/"]),ytm-reel-shelf-renderer,ytm-reel-item-renderer,ytm-shorts-lockup-view-model');
     addRule(rules, settings.hide_shorts_tab,
       'ytd-guide-entry-renderer:has(a[href^="/shorts"]),ytd-mini-guide-entry-renderer:has(a[href^="/shorts"])');
     addRule(rules, settings.hide_end_screen_videowall, '.ytp-endscreen-content,.ytp-endscreen-previous,.ytp-endscreen-next');
@@ -92,21 +93,22 @@
     addRule(rules, settings.hide_top_header, 'ytd-masthead');
     addRule(rules, settings.hide_notification_bell, 'ytd-notification-topbar-button-renderer,#notification-button');
     addRule(rules, settings.hide_homepage_shorts,
-      'ytd-browse[page-subtype="home"] ytd-reel-shelf-renderer,ytd-browse[page-subtype="home"] ytd-rich-section-renderer:has(ytd-reel-shelf-renderer)');
+      'ytd-browse[page-subtype="home"] ytd-reel-shelf-renderer,ytd-browse[page-subtype="home"] ytd-rich-section-renderer:has(ytd-reel-shelf-renderer),ytm-browse[page-subtype="home"] ytm-reel-shelf-renderer,ytm-browse[page-subtype="home"] ytm-rich-section-renderer:has(ytm-reel-shelf-renderer)');
     addRule(rules, settings.hide_search_shorts,
-      'ytd-search ytd-reel-shelf-renderer,ytd-search ytd-rich-section-renderer:has(ytd-reel-shelf-renderer)');
+      'ytd-search ytd-reel-shelf-renderer,ytd-search ytd-rich-section-renderer:has(ytd-reel-shelf-renderer),ytm-search ytm-reel-shelf-renderer,ytm-search ytm-rich-section-renderer:has(ytm-reel-shelf-renderer)');
     addRule(rules, settings.hide_channel_shorts,
-      'ytd-browse[page-subtype="channels"] ytd-tab-renderer a[href*="/shorts"],ytd-c4-tabbed-header-renderer a[href*="/shorts"]');
+      'ytd-browse[page-subtype="channels"] ytd-tab-renderer a[href*="/shorts"],ytd-c4-tabbed-header-renderer a[href*="/shorts"],ytm-channel-tab-renderer a[href*="/shorts"]');
     addRule(rules, settings.hide_related_shorts,
-      'ytd-watch-next-secondary-results-renderer ytd-reel-shelf-renderer,ytd-compact-video-renderer:has(a[href^="/shorts/"])');
+      'ytd-watch-next-secondary-results-renderer ytd-reel-shelf-renderer,ytd-compact-video-renderer:has(a[href^="/shorts/"]),ytm-watch-next-secondary-results-renderer ytm-reel-shelf-renderer');
     addRule(rules, settings.hide_search_suggestions,
-      'ytd-searchbox[has-focus] #suggestions,ytd-searchbox #search-suggestions');
-    addRule(rules, settings.hide_miniplayer, 'ytd-miniplayer,ytd-miniplayer-container');
-    addRule(rules, settings.hide_feed_filters, 'yt-chip-cloud-renderer');
+      'ytd-searchbox[has-focus] #suggestions,ytd-searchbox #search-suggestions,ytm-searchbox #suggestions,ytm-searchbox #search-suggestions');
+    addRule(rules, settings.hide_miniplayer, 'ytd-miniplayer,ytd-miniplayer-container,ytm-miniplayer');
+    addRule(rules, settings.hide_feed_filters, 'yt-chip-cloud-renderer,ytm-chip-cloud-renderer');
     addRule(rules, settings.hide_promoted_content,
-      'ytd-promoted-sparkles-web-renderer,ytd-promoted-video-renderer,ytd-display-ad-renderer,ytd-in-feed-ad-layout-renderer');
+      'ytd-promoted-sparkles-web-renderer,ytd-promoted-video-renderer,ytd-display-ad-renderer,ytd-in-feed-ad-layout-renderer,ytd-ad-slot-renderer,ytd-companion-slot-renderer,ytd-action-companion-ad-renderer,ytm-promoted-sparkles-web-renderer,ytm-promoted-video-renderer,ytm-ad-slot-renderer,ytm-companion-ad-renderer');
     addRule(rules, settings.hide_membership_promotions,
-      'ytd-membership-promo-renderer,ytd-brand-video-shelf-renderer,ytd-statement-banner-renderer');
+      'ytd-membership-promo-renderer,ytm-membership-promo-renderer');
+    addRule(rules, settings.hide_text_posts, '[data-nm-youtube-text-post-hidden="1"]');
     addRule(rules, settings.hide_explore_trending,
       'ytd-guide-entry-renderer:has(a[href^="/feed/trending"]),ytd-guide-entry-renderer:has(a[href^="/feed/explore"])');
     addRule(rules, settings.hide_and_redirect_subscriptions,
@@ -155,6 +157,27 @@
         node.setAttribute("data-nm-youtube-focus-hidden", "1");
       });
     }
+
+    markTextOnlyCommunityPosts();
+  }
+
+  function markTextOnlyCommunityPosts() {
+    var postSelector = "ytd-backstage-post-renderer,ytm-backstage-post-renderer";
+    var mediaSelector = [
+      "ytd-backstage-image-renderer", "ytd-post-multi-image-renderer",
+      "ytd-backstage-video-renderer", "ytd-backstage-poll-renderer",
+      "ytm-backstage-image-renderer", "ytm-backstage-video-renderer",
+      "ytm-backstage-poll-renderer", "ytd-post-video-renderer"
+    ].join(",");
+    document.querySelectorAll(postSelector).forEach(function (post) {
+      var hasMedia = !!post.querySelector(mediaSelector);
+      var hasText = !!post.querySelector("#content-text,#post-text,yt-formatted-string");
+      if (settings.hide_text_posts && hasText && !hasMedia) {
+        post.setAttribute("data-nm-youtube-text-post-hidden", "1");
+      } else {
+        post.removeAttribute("data-nm-youtube-text-post-hidden");
+      }
+    });
   }
 
   function disableAutoplay() {
@@ -192,12 +215,19 @@
       if (!anchor) return;
       try {
         var target = new URL(anchor.href, location.href);
-        if ((target.hostname === "www.youtube.com" || target.hostname === "m.youtube.com") &&
-            target.pathname.indexOf("/shorts/") === 0) {
-          event.preventDefault();
-          event.stopImmediatePropagation();
-          location.assign("/feed/subscriptions");
-        }
+        if ((target.hostname !== "www.youtube.com" && target.hostname !== "m.youtube.com") ||
+            target.pathname.indexOf("/shorts/") !== 0) return;
+
+        // Mantém o comportamento de nova aba, botão do meio e modificadores:
+        // o destino é trocado para inscrições, sem sequestrar o gesto original.
+        anchor.href = new URL("/feed/subscriptions", location.origin).href;
+        if (event.button !== 0 || event.ctrlKey || event.metaKey || event.shiftKey ||
+            event.altKey || (anchor.target && anchor.target !== "_self")) return;
+
+        event.preventDefault();
+        event.stopPropagation();
+        if (event.stopImmediatePropagation) event.stopImmediatePropagation();
+        location.assign("/feed/subscriptions");
       } catch (_) {}
     }, true);
   }

@@ -43,6 +43,10 @@ class ExtensionManager(private val context: Context) {
     private fun disabledIds(): Set<String> =
         (prefs.getStringSet("disabled", emptySet()) ?: emptySet()).toSet()
 
+    /** Retorna false também quando a extensão interna foi removida. */
+    fun isEnabled(id: String): Boolean =
+        id !in disabledIds() && File(root, id).isDirectory
+
     fun setEnabled(id: String, on: Boolean) {
         val s = disabledIds().toMutableSet()
         if (on) s.remove(id) else s.add(id)
