@@ -106,7 +106,7 @@ class YoutubeFocusActivity : ComponentActivity() {
         Option("hide_membership_promotions", "Ocultar promoções de membros",
             "Remove chamadas de adesão, banners e promoções de marcas/canais.", "Conteúdo e informações", true),
         Option("enable_personal_library", "Biblioteca e fila pessoal",
-            "Adiciona controles para salvar vídeos e organizar uma fila manual.", "Organização"),
+            "Adiciona ações para salvar vídeos e consultar sua coleção pessoal.", "Organização"),
         Option("enable_timestamp_bookmarks", "Marcar momentos do vídeo",
             "Salva o instante atual do vídeo junto ao link para retomada.", "Aprendizagem"),
         Option("enable_video_notes", "Anotações por vídeo",
