@@ -29,6 +29,16 @@
     hide_video_description: false,
     hide_top_header: false,
     hide_notification_bell: false,
+    hide_homepage_shorts: true,
+    hide_search_shorts: true,
+    hide_channel_shorts: true,
+    hide_related_shorts: true,
+    hide_search_suggestions: false,
+    hide_miniplayer: false,
+    hide_feed_filters: false,
+    hide_promoted_content: true,
+    hide_membership_promotions: true,
+    block_shorts_navigation: true,
     enable_personal_library: false,
     enable_timestamp_bookmarks: false,
     enable_video_notes: false,
@@ -81,6 +91,22 @@
     addRule(rules, settings.hide_video_description, '#description,ytd-text-inline-expander');
     addRule(rules, settings.hide_top_header, 'ytd-masthead');
     addRule(rules, settings.hide_notification_bell, 'ytd-notification-topbar-button-renderer,#notification-button');
+    addRule(rules, settings.hide_homepage_shorts,
+      'ytd-browse[page-subtype="home"] ytd-reel-shelf-renderer,ytd-browse[page-subtype="home"] ytd-rich-section-renderer:has(ytd-reel-shelf-renderer)');
+    addRule(rules, settings.hide_search_shorts,
+      'ytd-search ytd-reel-shelf-renderer,ytd-search ytd-rich-section-renderer:has(ytd-reel-shelf-renderer)');
+    addRule(rules, settings.hide_channel_shorts,
+      'ytd-browse[page-subtype="channels"] ytd-tab-renderer a[href*="/shorts"],ytd-c4-tabbed-header-renderer a[href*="/shorts"]');
+    addRule(rules, settings.hide_related_shorts,
+      'ytd-watch-next-secondary-results-renderer ytd-reel-shelf-renderer,ytd-compact-video-renderer:has(a[href^="/shorts/"])');
+    addRule(rules, settings.hide_search_suggestions,
+      'ytd-searchbox[has-focus] # پیشنهاد,ytd-searchbox #suggestions,ytd-searchbox #search-suggestions');
+    addRule(rules, settings.hide_miniplayer, 'ytd-miniplayer,ytd-miniplayer-container');
+    addRule(rules, settings.hide_feed_filters, 'yt-chip-cloud-renderer');
+    addRule(rules, settings.hide_promoted_content,
+      'ytd-promoted-sparkles-web-renderer,ytd-promoted-video-renderer,ytd-display-ad-renderer,ytd-in-feed-ad-layout-renderer');
+    addRule(rules, settings.hide_membership_promotions,
+      'ytd-membership-promo-renderer,ytd-brand-video-shelf-renderer,ytd-statement-banner-renderer');
     addRule(rules, settings.hide_explore_trending,
       'ytd-guide-entry-renderer:has(a[href^="/feed/trending"]),ytd-guide-entry-renderer:has(a[href^="/feed/explore"])');
     addRule(rules, settings.hide_and_redirect_subscriptions,
@@ -144,11 +170,36 @@
 
   function apply() {
     redirectHome();
+    enforceShortsRoute();
     ensureStyle();
     hideMatchingBlocks();
     disableAutoplay();
     renderPersonalTools();
     applyChannelSpeed();
+  }
+
+  function enforceShortsRoute() {
+    if (!settings.block_shorts_navigation) return;
+    if (location.pathname.indexOf("/shorts/") === 0) {
+      location.replace("/feed/subscriptions");
+    }
+  }
+
+  function installShortsClickGuard() {
+    document.addEventListener("click", function (event) {
+      if (!settings.block_shorts_navigation) return;
+      var anchor = event.target && event.target.closest ? event.target.closest("a[href]") : null;
+      if (!anchor) return;
+      try {
+        var target = new URL(anchor.href, location.href);
+        if ((target.hostname === "www.youtube.com" || target.hostname === "m.youtube.com") &&
+            target.pathname.indexOf("/shorts/") === 0) {
+          event.preventDefault();
+          event.stopImmediatePropagation();
+          location.assign("/feed/subscriptions");
+        }
+      } catch (_) {}
+    }, true);
   }
 
   function scheduleApply() {
@@ -164,6 +215,7 @@
     if (settingsFromStorage && typeof settingsFromStorage === "object")
       settings = Object.assign({}, defaults, settingsFromStorage);
     apply();
+    installShortsClickGuard();
     document.addEventListener("yt-navigate-finish", scheduleApply, true);
     document.addEventListener("yt-page-data-updated", scheduleApply, true);
     window.addEventListener("popstate", scheduleApply, true);
