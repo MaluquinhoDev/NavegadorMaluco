@@ -1756,6 +1756,19 @@ class MainActivity : ComponentActivity() {
             }
             override fun shouldInterceptRequest(v: WebView, request: WebResourceRequest): WebResourceResponse? {
                 val url = request.url.toString()
+                if (request.isForMainFrame &&
+                    (request.url.host == "youtube.com" || request.url.host == "www.youtube.com" ||
+                        request.url.host == "m.youtube.com") &&
+                    request.url.path?.startsWith("/shorts/") == true &&
+                    extensionManager?.isEnabled("youtube-focus") == true) {
+                    val blockShorts = runCatching {
+                        org.json.JSONObject(getSharedPreferences("ext_youtube-focus", MODE_PRIVATE)
+                            .getString("data", "{}") ?: "{}").optBoolean("block_shorts_navigation", true)
+                    }.getOrDefault(true)
+                    if (blockShorts) return htmlResponse(
+                        BlockPage.html("Shorts bloqueados", "YouTube", "A abertura de vídeos Shorts está desativada nas configurações de foco.")
+                    )
+                }
                 if (!request.isForMainFrame && request.url.scheme == "https") {
                     mediaSignal(request.url)?.let { category ->
                         synchronized(mediaCandidateLock) {

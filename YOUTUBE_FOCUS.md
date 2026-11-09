@@ -4,7 +4,7 @@ O NavegadorMaluco inclui uma extensão local chamada **YouTube sem distrações*
 
 ## Preferências
 
-As 25 opções são configuráveis individualmente no menu **Ferramentas → YouTube sem distrações**:
+As opções são configuráveis individualmente no menu **Ferramentas → YouTube sem distrações**:
 
 - Ocultar feed da página inicial
 - Redirecionar a página inicial para inscrições
@@ -32,17 +32,31 @@ As 25 opções são configuráveis individualmente no menu **Ferramentas → You
 - Ocultar cabeçalho superior
 - Ocultar sino de notificações
 
+## Controles adicionais inspirados no Unhook
+
+- Ocultar prateleiras de Shorts separadamente na página inicial, pesquisa, canais e recomendações.
+- Bloquear a navegação para vídeos em `/shorts/`, inclusive por URL direta no WebView principal.
+- Ocultar sugestões automáticas da caixa de pesquisa.
+- Ocultar miniplayer e filtros dos feeds.
+- Ocultar espaços publicitários identificáveis no feed e na interface móvel.
+- Ocultar publicações textuais da comunidade, preservando posts com imagens, vídeos ou enquetes.
+
+O bloqueio de navegação é diferente da ocultação visual: a configuração é consultada pelo Kotlin antes de carregar uma URL principal de Shorts, mas somente enquanto a extensão estiver instalada e habilitada. Links internos são interceptados pelo content script. Cliques modificados e botão do meio preservam a ação original, com o destino substituído pela página de inscrições.
+
 ## Comportamento
 
 - As preferências são armazenadas localmente no armazenamento privado da extensão.
 - Os padrões priorizam retirar feed, Shorts, recomendações e autoplay, preservando pesquisa, vídeos longos e reprodução manual.
 - O filtro acompanha a navegação interna do YouTube (SPA) e elementos adicionados dinamicamente.
 - O redirecionamento para inscrições só ocorre ao abrir a raiz do YouTube; links diretos e páginas de vídeos continuam funcionando.
-- As opções de ocultação atuam na interface. Não alteram o algoritmo do YouTube nem bloqueiam o acesso direto a URLs.
+- As opções de ocultação atuam na interface. Não alteram o algoritmo do YouTube.
+- A ocultação de anúncios é visual e limitada a espaços publicitários reconhecidos no feed. Não bloqueia requisições, não economiza necessariamente banda e não remove anúncios pre-roll, mid-roll, post-roll, anúncios entre Shorts ou formatos exibidos dentro do player.
+- A cobertura móvel usa seletores adicionais `ytm-*`, mas o YouTube altera componentes e experimentos por conta, região e versão. A compatibilidade não é garantida apenas pela presença de um seletor no código.
+- Publicações textuais são identificadas pela ausência de componentes de imagem, vídeo e enquete conhecidos. Mudanças no DOM podem causar falsos positivos ou deixar posts passarem.
 
 ## Limitações técnicas
 
-O YouTube muda frequentemente sua estrutura HTML. Os seletores são compatíveis com os componentes atuais conhecidos, mas podem precisar de ajustes quando a plataforma mudar. A desativação de autoplay depende de o botão de autoplay estar presente e expor seu estado acessível. Anotações e cartões são ocultados visualmente; isso não desativa funcionalidades do servidor.
+O YouTube muda frequentemente sua estrutura HTML. Os seletores cobrem componentes conhecidos da interface desktop e móvel, mas podem precisar de ajustes quando a plataforma mudar. A desativação de autoplay depende de o botão de autoplay estar presente e expor seu estado acessível. Anotações e cartões são ocultados visualmente; isso não desativa funcionalidades do servidor.
 
 O recurso aplica-se a `www.youtube.com` e `m.youtube.com` no motor WebView Chromium do navegador. A atividade GeckoView separada não compartilha o mecanismo de extensões do navegador principal.
 
