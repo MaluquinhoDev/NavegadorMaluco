@@ -2892,6 +2892,7 @@ class MainActivity : ComponentActivity() {
             setBackgroundColor(uiBackground())
             setPadding(dp(8), dp(8), dp(8), 0)
         }
+        lateinit var renderReader: () -> Unit
         val toolbar = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = android.view.Gravity.CENTER_VERTICAL
@@ -2969,22 +2970,23 @@ class MainActivity : ComponentActivity() {
         }
         root.addView(reader, LinearLayout.LayoutParams(MATCH_PARENT, 0, 1f))
 
-        fun renderReader() {
-            val safeHtml = cleanContent ?: return
-            restoreScrollY = reader.scrollY
-            awaitingRender = true
-            reader.setBackgroundColor(when (theme) {
-                "dark" -> Color.rgb(23, 25, 29)
-                "sepia" -> Color.rgb(243, 234, 216)
-                else -> Color.WHITE
-            })
-            reader.loadDataWithBaseURL(
-                pageUrl,
-                ReaderMode.buildHtml(article, safeHtml, theme, fontSize),
-                "text/html",
-                "UTF-8",
-                null
-            )
+        renderReader = {
+            cleanContent?.let { safeHtml ->
+                restoreScrollY = reader.scrollY
+                awaitingRender = true
+                reader.setBackgroundColor(when (theme) {
+                    "dark" -> Color.rgb(23, 25, 29)
+                    "sepia" -> Color.rgb(243, 234, 216)
+                    else -> Color.WHITE
+                })
+                reader.loadDataWithBaseURL(
+                    pageUrl,
+                    ReaderMode.buildHtml(article, safeHtml, theme, fontSize),
+                    "text/html",
+                    "UTF-8",
+                    null
+                )
+            }
         }
 
         reader.webViewClient = object : WebViewClient() {
@@ -3032,7 +3034,7 @@ class MainActivity : ComponentActivity() {
         dialog.window?.setLayout(MATCH_PARENT, MATCH_PARENT)
         reader.loadDataWithBaseURL(
             "https://reader.local/",
-            "<!doctype html><html><head><meta charset=\\"utf-8\\"></head><body></body></html>",
+            "<!doctype html><html><head><meta charset=\"utf-8\"></head><body></body></html>",
             "text/html",
             "UTF-8",
             null
