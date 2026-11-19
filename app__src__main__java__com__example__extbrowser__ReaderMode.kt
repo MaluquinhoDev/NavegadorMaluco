@@ -74,7 +74,7 @@ internal object ReaderMode {
                   "svg", "math", "canvas", "template"
                 ],
                 FORBID_ATTR: [
-                  "style", "srcdoc", "srcset", "onerror", "onclick", "onload"
+                  "style", "srcdoc", "srcset", "target", "onerror", "onclick", "onload"
                 ],
                 ALLOW_DATA_ATTR: false
               });
