@@ -18,7 +18,8 @@ internal object ReaderMode {
         val textContent: String,
         val direction: String,
         val language: String,
-        val publishedTime: String
+        val publishedTime: String,
+        val extractionMethod: String
     ) {
         val readingMinutes: Int
             get() = (textContent.trim().split(Regex("\\s+")).size / 220.0).toInt().coerceAtLeast(1)
@@ -30,30 +31,130 @@ internal object ReaderMode {
             (function () {
               try {
                 $readability
-                var sourceDocument = document.cloneNode(true);
-                var article = new Readability(sourceDocument, {
+                var article = new Readability(document.cloneNode(true), {
                   charThreshold: 250,
                   maxElemsToParse: 6000,
                   nbTopCandidates: 5
                 }).parse();
 
-                if (!article || !article.content || article.length < 250) {
-                  return JSON.stringify({ error: "Esta página não contém um artigo compatível." });
+                if (article && article.content && article.length >= 250) {
+                  return JSON.stringify({
+                    title: article.title || document.title || "Artigo",
+                    byline: article.byline || "",
+                    siteName: article.siteName || location.hostname || "",
+                    excerpt: article.excerpt || "",
+                    content: article.content || "",
+                    textContent: article.textContent || "",
+                    direction: article.dir || "ltr",
+                    language: article.lang || document.documentElement.lang || "",
+                    publishedTime: article.publishedTime || "",
+                    extractionMethod: "Mozilla Readability"
+                  });
+                }
+
+                // Fallback 1: dados estruturados Article/NewsArticle já entregues pela página.
+                var structuredNodes = [];
+                function collectStructured(value, depth) {
+                  if (!value || depth > 8 || structuredNodes.length > 300) return;
+                  if (Array.isArray(value)) {
+                    value.slice(0, 100).forEach(function (item) {
+                      collectStructured(item, depth + 1);
+                    });
+                    return;
+                  }
+                  if (typeof value !== "object") return;
+                  structuredNodes.push(value);
+                  Object.keys(value).forEach(function (key) {
+                    collectStructured(value[key], depth + 1);
+                  });
+                }
+                Array.prototype.slice.call(
+                  document.querySelectorAll('script[type="application/ld+json"]'), 0, 30
+                ).forEach(function (script) {
+                  try { collectStructured(JSON.parse(script.textContent || ""), 0); }
+                  catch (_) {}
+                });
+                var structured = structuredNodes.find(function (item) {
+                  return typeof item.articleBody === "string" &&
+                    item.articleBody.trim().length >= 250;
+                });
+                if (structured) {
+                  var bodyText = structured.articleBody.trim();
+                  var safeBody = document.createElement("div");
+                  bodyText.split(/\n{2,}/).forEach(function (paragraph) {
+                    if (!paragraph.trim()) return;
+                    var p = document.createElement("p");
+                    p.textContent = paragraph.trim();
+                    safeBody.appendChild(p);
+                  });
+                  var author = structured.author;
+                  if (Array.isArray(author)) author = author.map(function (a) {
+                    return a && a.name ? a.name : "";
+                  }).filter(Boolean).join(", ");
+                  else if (author && typeof author === "object") author = author.name || "";
+                  return JSON.stringify({
+                    title: structured.headline || structured.name || document.title || "Artigo",
+                    byline: typeof author === "string" ? author : "",
+                    siteName: (structured.publisher && structured.publisher.name) ||
+                      location.hostname || "",
+                    excerpt: structured.description || "",
+                    content: safeBody.innerHTML,
+                    textContent: bodyText,
+                    direction: document.documentElement.dir || "ltr",
+                    language: structured.inLanguage || document.documentElement.lang || "",
+                    publishedTime: structured.datePublished || "",
+                    extractionMethod: "JSON-LD articleBody"
+                  });
+                }
+
+                // Fallback 2: contêineres editoriais comuns, inclusive texto presente no DOM
+                // mas oculto visualmente por CSS. Não solicita conteúdo adicional ao servidor.
+                var selectors = [
+                  '[itemprop="articleBody"]',
+                  'article',
+                  'main article',
+                  '[role="main"] article',
+                  '.article-body',
+                  '.article-content',
+                  '.post-content',
+                  '.entry-content',
+                  '.story-body',
+                  '.story-content',
+                  '.article__body',
+                  '.content__article-body',
+                  '[class*="article-body"]',
+                  '[class*="story-body"]'
+                ];
+                for (var i = 0; i < selectors.length; i++) {
+                  var candidate = document.querySelector(selectors[i]);
+                  if (!candidate) continue;
+                  var candidateText = (candidate.innerText || candidate.textContent || "")
+                    .replace(/\s+/g, " ").trim();
+                  if (candidateText.length < 250) continue;
+                  return JSON.stringify({
+                    title: document.querySelector('meta[property="og:title"]')?.content ||
+                      document.title || "Artigo",
+                    byline: document.querySelector('[rel="author"]')?.textContent?.trim() || "",
+                    siteName: document.querySelector('meta[property="og:site_name"]')?.content ||
+                      location.hostname || "",
+                    excerpt: document.querySelector('meta[name="description"]')?.content || "",
+                    content: candidate.innerHTML,
+                    textContent: candidateText,
+                    direction: document.documentElement.dir || "ltr",
+                    language: document.documentElement.lang || "",
+                    publishedTime: document.querySelector('meta[property="article:published_time"]')?.content || "",
+                    extractionMethod: "DOM editorial fallback"
+                  });
                 }
 
                 return JSON.stringify({
-                  title: article.title || document.title || "Artigo",
-                  byline: article.byline || "",
-                  siteName: article.siteName || location.hostname || "",
-                  excerpt: article.excerpt || "",
-                  content: article.content || "",
-                  textContent: article.textContent || "",
-                  direction: article.dir || "ltr",
-                  language: article.lang || document.documentElement.lang || "",
-                  publishedTime: article.publishedTime || ""
+                  error: "Não foi encontrado conteúdo editorial suficiente no DOM desta página."
                 });
               } catch (error) {
-                return JSON.stringify({ error: "Não foi possível extrair o artigo desta página." });
+                return JSON.stringify({
+                  error: "Falha na extração local: " +
+                    (error && error.name ? error.name : "erro desconhecido")
+                });
               }
             })()
         """.trimIndent()
@@ -102,7 +203,8 @@ internal object ReaderMode {
             textContent = text,
             direction = json.optString("direction", "ltr"),
             language = json.optString("language"),
-            publishedTime = json.optString("publishedTime")
+            publishedTime = json.optString("publishedTime"),
+            extractionMethod = json.optString("extractionMethod", "Mozilla Readability")
         )
     }
 
@@ -172,7 +274,7 @@ article hr { border:0; border-top:1px solid var(--reader-border); margin:2em 0; 
 $excerpt
 </header>
 <article>$cleanContent</article>
-<footer class="reader-footer">Fim do artigo · Navegador Maluco</footer>
+<footer class="reader-footer">Fim do artigo · Extração: ${escapeHtml(article.extractionMethod)} · Navegador Maluco</footer>
 </main>
 </body>
 </html>"""
