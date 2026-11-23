@@ -127,7 +127,11 @@ internal object ReaderMode {
                 ];
                 for (var i = 0; i < selectors.length; i++) {
                   var candidate = document.querySelector(selectors[i]);
-                  if (!candidate) continue;
+                  if (!candidate || !candidate.getClientRects().length) continue;
+                  var candidateStyle = window.getComputedStyle(candidate);
+                  if (candidateStyle.display === "none" ||
+                      candidateStyle.visibility === "hidden" ||
+                      Number(candidateStyle.opacity) === 0) continue;
                   var candidateText = (candidate.innerText || candidate.textContent || "")
                     .replace(/\s+/g, " ").trim();
                   if (candidateText.length < 250) continue;
