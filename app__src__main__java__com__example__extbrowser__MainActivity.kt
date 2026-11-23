@@ -2573,20 +2573,46 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun closeTab(index: Int) {
-        val tab = tabs.removeAt(index)
-        pinnedTabIds.remove(tab.id)
+        if (index !in tabs.indices) return
+
+        // Escolhe o destino por identidade antes de remover a aba; índices mudam após a remoção.
+        val closing = tabs[index]
+        val activeId = tabs.getOrNull(activeIndex)?.id
+        val nextId = BrowserTabPolicy.nextTabIdAfterClose(
+            activeTabId = activeId,
+            closingTabId = closing.id,
+            closingIndex = index,
+            tabs = tabs.map { BrowserTabPolicy.TabCandidate(it.id, it.constellation, it.lastUsed) }
+        )
+
+        // A aba sai do modelo antes de a WebView ser destruída.
+        tabs.removeAt(index)
+        pinnedTabIds.remove(closing.id)
         persistPinnedTabs()
-        deleteTabNavigation(tab.id)
-        attentionBlockedSources.remove(tab.view)
-        if (webHost.childCount > 0 && webHost.getChildAt(0) === tab.view) webHost.removeView(tab.view)
-        pendingPopups.remove(tab.view)
-        popupReviews.remove(tab.view)
-        synchronized(mediaCandidateLock) { mediaCandidates.remove(tab.view) }
-        tab.view.stopLoading()
-        tab.view.destroy()
-        if (tabs.isEmpty()) { tabs.add(Tab(createWebView())) ; activeIndex = 0 }
-        else activeIndex = BrowserTabPolicy.indexAfterClose(activeIndex, index, tabs.size)
-        showActive()
+        deleteTabNavigation(closing.id)
+        attentionBlockedSources.remove(closing.view)
+        if (webHost.childCount > 0 && webHost.getChildAt(0) === closing.view) {
+            webHost.removeView(closing.view)
+        }
+        pendingPopups.remove(closing.view)
+        popupReviews.remove(closing.view)
+        synchronized(mediaCandidateLock) { mediaCandidates.remove(closing.view) }
+        closing.view.stopLoading()
+        closing.view.destroy()
+
+        if (tabs.isNotEmpty()) {
+            activeIndex = tabs.indexOfFirst { it.id == nextId }
+                .takeIf { it >= 0 }
+                ?: BrowserTabPolicy.indexAfterClose(activeIndex, index, tabs.size)
+            showActive()
+        } else if (parkedTabs.isNotEmpty()) {
+            // Não cria uma aba vazia enquanto ainda existem páginas hibernadas.
+            restoreParkedTab(parkedTabs.lastIndex)
+        } else {
+            tabs.add(Tab(createWebView()))
+            activeIndex = 0
+            showActive()
+        }
     }
 
     private fun showTabs() {
@@ -3003,6 +3029,8 @@ class MainActivity : ComponentActivity() {
                     view.evaluateJavascript(sanitizer) { sanitizedResult ->
                         if (isFinishing || isDestroyed || !dialog.isShowing) return@evaluateJavascript
                         cleanContent = ReaderMode.decodeSanitizedHtml(sanitizedResult)
+                        // DOMPurify já terminou: a WebView passa a exibir somente HTML estático.
+                        reader.settings.javaScriptEnabled = false
                         if (cleanContent.isNullOrBlank()) {
                             dialog.dismiss()
                             Toast.makeText(this@MainActivity, "Não foi possível preparar o conteúdo para leitura", Toast.LENGTH_LONG).show()
