@@ -255,9 +255,12 @@ class MainActivity : ComponentActivity() {
         view: WebView, url: String, reason: String, method: String = "GET"
     ) {
         if (!url.startsWith("https://") && !url.startsWith("http://")) return
+        val normalizedMethod = method.uppercase(java.util.Locale.ROOT)
+        if (normalizedMethod != "GET") synchronized(pendingNonGetNavigation) {
+            pendingNonGetNavigation[view] = url
+        }
         handler.post {
             val tab = tabs.firstOrNull { it.view === view } ?: return@post
-            val normalizedMethod = method.uppercase(java.util.Locale.ROOT)
             tab.pendingNavigationUrl = url
             tab.pendingNavigationReason = reason.take(120)
             tab.pendingNavigationMethod = normalizedMethod
@@ -345,6 +348,10 @@ class MainActivity : ComponentActivity() {
     }
     // WebViews em espera pelo transporte de uma nova janela.
     private val pendingPopups = mutableSetOf<WebView>()
+    // Sinal síncrono para não transformar um POST interceptado em GET ao persistir a aba.
+    private val pendingNonGetNavigation = java.util.Collections.synchronizedMap(
+        WeakHashMap<WebView, String>()
+    )
     private data class PopupReview(val sourceHost: String?, val mode: String)
     private val popupReviews = mutableMapOf<WebView, PopupReview>()
     private var popupsAutomaticallyClosed = 0
@@ -1520,6 +1527,10 @@ class MainActivity : ComponentActivity() {
                     t.pendingNavigationUrl = null
                     t.pendingNavigationReason = null
                     t.pendingNavigationMethod = "GET"
+                    synchronized(pendingNonGetNavigation) { pendingNonGetNavigation.remove(v) }
+                }
+                val isNonReplayableRequest = synchronized(pendingNonGetNavigation) {
+                    pendingNonGetNavigation[v] == url
                 }
                 if (translationRequestView === v) {
                     translationManager?.cancelPending()
@@ -1527,7 +1538,8 @@ class MainActivity : ComponentActivity() {
                 }
                 translatedViews.remove(v)
                 synchronized(mediaCandidateLock) { mediaCandidates.remove(v); mediaRequestOrigins.remove(v); mediaNetworkSignals.remove(v) }
-                val shownUrl = attentionBlockedSources[v] ?: url
+                val shownUrl = if (isNonReplayableRequest) t.url
+                    else attentionBlockedSources[v] ?: url
                 t.url = shownUrl
                 if (v === webView && !urlBar.hasFocus()) urlBar.setText(shownUrl)
                 if (v === webView) { updateFavorite(); updateInstagramOverlay() }
@@ -1768,6 +1780,7 @@ class MainActivity : ComponentActivity() {
                         t.pendingNavigationReason = null
                         t.pendingNavigationMethod = "GET"
                         attentionBlockedSources.remove(v)
+                        synchronized(pendingNonGetNavigation) { pendingNonGetNavigation.remove(v) }
                         pendingCleared = true
                     }
                 }
@@ -2521,6 +2534,7 @@ class MainActivity : ComponentActivity() {
             tab.parentTabId, tab.pendingNavigationUrl, tab.pendingNavigationReason,
             tab.pendingNavigationMethod))
         attentionBlockedSources.remove(tab.view)
+        synchronized(pendingNonGetNavigation) { pendingNonGetNavigation.remove(tab.view) }
         pendingPopups.remove(tab.view)
         popupReviews.remove(tab.view)
         if (translationRequestView === tab.view) {
@@ -2674,6 +2688,7 @@ class MainActivity : ComponentActivity() {
         persistPinnedTabs()
         deleteTabNavigation(tab.id)
         attentionBlockedSources.remove(tab.view)
+        synchronized(pendingNonGetNavigation) { pendingNonGetNavigation.remove(tab.view) }
         if (webHost.childCount > 0 && webHost.getChildAt(0) === tab.view) webHost.removeView(tab.view)
         pendingPopups.remove(tab.view)
         popupReviews.remove(tab.view)
