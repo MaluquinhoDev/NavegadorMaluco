@@ -1784,8 +1784,12 @@ class MainActivity : ComponentActivity() {
                         pendingCleared = true
                     }
                 }
-                val shownUrl = attentionBlockedSources[v] ?: url
-                if (attentionBlockedSources[v] == null) t.title = v.title ?: url
+                val isNonReplayableRequest = synchronized(pendingNonGetNavigation) {
+                    pendingNonGetNavigation[v] == url
+                }
+                val shownUrl = if (isNonReplayableRequest) t.url
+                    else attentionBlockedSources[v] ?: url
+                if (attentionBlockedSources[v] == null && !isNonReplayableRequest) t.title = v.title ?: url
                 t.url = shownUrl
                 if (v === webView) { updateFavorite(); persistTabs() }
                 else if (pendingCleared) persistTabs()
@@ -2524,8 +2528,9 @@ class MainActivity : ComponentActivity() {
         if (index !in tabs.indices || index == activeIndex) return
         val tab = tabs.removeAt(index)
         saveTabNavigation(tab)
-        val address = tab.pendingNavigationUrl?.takeIf { tab.pendingNavigationMethod == "GET" }
-            ?: attentionBlockedSources[tab.view] ?: tab.view.url ?: tab.url
+        val address = if (tab.pendingNavigationUrl != null && tab.pendingNavigationMethod != "GET") tab.url
+            else tab.pendingNavigationUrl?.takeIf { tab.pendingNavigationMethod == "GET" }
+                ?: attentionBlockedSources[tab.view] ?: tab.view.url ?: tab.url
         if (address.startsWith("http://") || address.startsWith("https://")) {
             parkedTabs.add(ParkedTab(address, tab.view.title ?: tab.title,
                 tab.constellation, tab.id, tab.profile, tab.parentTabId, tab.pendingNavigationUrl,
@@ -7049,8 +7054,9 @@ class MainActivity : ComponentActivity() {
         if (!loaded) return
         val entries = org.json.JSONArray()
         tabs.forEach { tab ->
-            val url = tab.pendingNavigationUrl?.takeIf { tab.pendingNavigationMethod == "GET" }
-                ?: attentionBlockedSources[tab.view] ?: tab.view.url ?: tab.url
+            val url = if (tab.pendingNavigationUrl != null && tab.pendingNavigationMethod != "GET") tab.url
+                else tab.pendingNavigationUrl?.takeIf { tab.pendingNavigationMethod == "GET" }
+                    ?: attentionBlockedSources[tab.view] ?: tab.view.url ?: tab.url
             entries.put(org.json.JSONObject().put("url", url)
                 .put("title", tab.view.title ?: tab.title)
                 .put("group", tab.constellation).put("id", tab.id)
@@ -7070,7 +7076,8 @@ class MainActivity : ComponentActivity() {
         }
         getSharedPreferences("tabs", MODE_PRIVATE).edit()
             .putString("urls", tabs.joinToString("\n") {
-                it.pendingNavigationUrl?.takeIf { it.pendingNavigationMethod == "GET" }
+                if (it.pendingNavigationUrl != null && it.pendingNavigationMethod != "GET") it.url
+                else it.pendingNavigationUrl?.takeIf { it.pendingNavigationMethod == "GET" }
                     ?: attentionBlockedSources[it.view] ?: it.view.url ?: it.url
             })
             .putString("constellations_v1", entries.toString())
