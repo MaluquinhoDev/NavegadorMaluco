@@ -55,10 +55,14 @@ object BlockPage {
      * Página da pausa obrigatória, com contagem regressiva e o botão "Dispensar pausa".
      * dismissWaitSec == null: ainda não pediu para dispensar. Caso contrário, é quanto falta esperar.
      */
-    fun breakHtml(v: AttentionVerdict, dismissWaitSec: Int?): String {
+    fun breakHtml(v: AttentionVerdict, dismissWaitSec: Int?, returnUrl: String? = null): String {
         val leftSec = (maxOf(0L, v.untilMs - Attention.wallNow()) + 999L) / 1000L
         val id = TextUtils.htmlEncode(v.site.id)
         val domain = TextUtils.htmlEncode(v.site.domain)
+        val safeReturnUrl = TextUtils.htmlEncode(
+            returnUrl?.takeIf { it.startsWith("https://") || it.startsWith("http://") }
+                ?: "https://${v.site.domain}/"
+        )
         val waiting = dismissWaitSec != null
         val wait = dismissWaitSec ?: 0
 
@@ -97,8 +101,8 @@ object BlockPage {
             "<p style='font-size:18px'>Volta às " + AttentionLogic.clockOf(v.untilMs) +
             " (faltam <b id=t>--:--</b>)</p>" +
             dismissArea +
-            "<p id=end style='display:none'>Pausa concluída.<br><br><a href='https://" + domain +
-            "/' style='" + LINK + "'>Voltar ao site</a></p>" +
+            "<p id=end style='display:none'>Pausa concluída.<br><br><a href='" + safeReturnUrl +
+            "' style='" + LINK + "'>Voltar ao site</a></p>" +
             "</main><script>" + script + "</script></body>"
     }
 }
