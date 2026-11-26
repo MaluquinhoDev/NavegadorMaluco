@@ -193,19 +193,11 @@
 
   function apply() {
     redirectHome();
-    enforceShortsRoute();
     ensureStyle();
     hideMatchingBlocks();
     disableAutoplay();
     renderPersonalTools();
     applyChannelSpeed();
-  }
-
-  function enforceShortsRoute() {
-    if (!settings.block_shorts_navigation) return;
-    if (location.pathname.indexOf("/shorts/") === 0) {
-      location.replace("/feed/subscriptions");
-    }
   }
 
   function installShortsClickGuard() {
@@ -215,19 +207,15 @@
       if (!anchor) return;
       try {
         var target = new URL(anchor.href, location.href);
-        if ((target.hostname !== "www.youtube.com" && target.hostname !== "m.youtube.com") ||
+        if ((target.hostname !== "youtube.com" && target.hostname !== "www.youtube.com" &&
+             target.hostname !== "m.youtube.com") ||
             target.pathname.indexOf("/shorts/") !== 0) return;
 
-        // Mantém o comportamento de nova aba, botão do meio e modificadores:
-        // o destino é trocado para inscrições, sem sequestrar o gesto original.
-        anchor.href = new URL("/feed/subscriptions", location.origin).href;
-        if (event.button !== 0 || event.ctrlKey || event.metaKey || event.shiftKey ||
-            event.altKey || (anchor.target && anchor.target !== "_self")) return;
-
+        // Não reescreve href nem substitui a URL original. A interceptação nativa
+        // registra o destino; ao desativar o bloqueio, o link continua íntegro.
         event.preventDefault();
         event.stopPropagation();
         if (event.stopImmediatePropagation) event.stopImmediatePropagation();
-        location.assign("/feed/subscriptions");
       } catch (_) {}
     }, true);
   }
