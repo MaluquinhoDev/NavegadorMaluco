@@ -7075,10 +7075,10 @@ class MainActivity : ComponentActivity() {
                 .put("pendingNavigationMethod", tab.pendingNavigationMethod).put("live", false))
         }
         getSharedPreferences("tabs", MODE_PRIVATE).edit()
-            .putString("urls", tabs.joinToString("\n") {
-                if (it.pendingNavigationUrl != null && it.pendingNavigationMethod != "GET") it.url
-                else it.pendingNavigationUrl?.takeIf { it.pendingNavigationMethod == "GET" }
-                    ?: attentionBlockedSources[it.view] ?: it.view.url ?: it.url
+            .putString("urls", tabs.joinToString("\n") { tab ->
+                if (tab.pendingNavigationUrl != null && tab.pendingNavigationMethod != "GET") tab.url
+                else tab.pendingNavigationUrl?.takeIf { tab.pendingNavigationMethod == "GET" }
+                    ?: attentionBlockedSources[tab.view] ?: tab.view.url ?: tab.url
             })
             .putString("constellations_v1", entries.toString())
             .putString("active_id", tabs.getOrNull(activeIndex)?.id)
