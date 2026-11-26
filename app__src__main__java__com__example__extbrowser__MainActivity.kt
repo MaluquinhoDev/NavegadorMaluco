@@ -1360,6 +1360,34 @@ class MainActivity : ComponentActivity() {
         })
     }
 
+    /**
+     * Retorna à aba usada mais recentemente quando a página atual não possui histórico.
+     * Abas hibernadas são restauradas antes de permanecer na aba atual.
+     */
+    private fun returnToPreviousTab(): Boolean {
+        val previousIndex = tabs.indices
+            .filter { index ->
+                index != activeIndex &&
+                    tabs[index].view !in pendingPopups &&
+                    tabs[index].view !== queueSyncView &&
+                    tabs[index].view !== media3OriginView
+            }
+            .maxByOrNull { tabs[it].lastUsed }
+
+        if (previousIndex != null) {
+            activeIndex = previousIndex
+            showActive()
+            return true
+        }
+
+        if (parkedTabs.isNotEmpty()) {
+            restoreParkedTab(parkedTabs.lastIndex)
+            return true
+        }
+
+        return false
+    }
+
     private val videoSpeedOptions = floatArrayOf(0.5f, 0.75f, 1.0f, 1.25f, 1.5f, 1.75f, 2.0f, 2.5f)
     private fun preferredVideoSpeed(): Float =
         getSharedPreferences("video_playback", MODE_PRIVATE)
