@@ -1529,9 +1529,9 @@ class MainActivity : ComponentActivity() {
                     t.pendingNavigationMethod = "GET"
                     synchronized(pendingNonGetNavigation) { pendingNonGetNavigation.remove(v) }
                 }
-                val isNonReplayableRequest = synchronized(pendingNonGetNavigation) {
-                    pendingNonGetNavigation[v] == url
-                }
+                val isNonReplayableRequest =
+                    (t.pendingNavigationUrl == url && t.pendingNavigationMethod != "GET") ||
+                    synchronized(pendingNonGetNavigation) { pendingNonGetNavigation[v] == url }
                 if (translationRequestView === v) {
                     translationManager?.cancelPending()
                     translationRequestView = null
@@ -1772,7 +1772,7 @@ class MainActivity : ComponentActivity() {
                 }
                 val t = tabs.firstOrNull { it.view === v } ?: return
                 var pendingCleared = false
-                if (t.pendingNavigationUrl == url) {
+                if (t.pendingNavigationUrl == url && t.pendingNavigationMethod == "GET") {
                     val blockedByExtension = blockerList.any { it.regex.matches(url) }
                     val blockedByAttention = Attention.checkNavigation(url) != null
                     if (!blockedByExtension && !blockedByAttention) {
