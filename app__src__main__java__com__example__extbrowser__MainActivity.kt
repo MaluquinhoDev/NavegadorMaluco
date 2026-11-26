@@ -2573,20 +2573,46 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun closeTab(index: Int) {
-        val tab = tabs.removeAt(index)
-        pinnedTabIds.remove(tab.id)
+        if (index !in tabs.indices) return
+
+        // Escolhe o destino por identidade antes de remover a aba; índices mudam após a remoção.
+        val closing = tabs[index]
+        val activeId = tabs.getOrNull(activeIndex)?.id
+        val nextId = BrowserTabPolicy.nextTabIdAfterClose(
+            activeTabId = activeId,
+            closingTabId = closing.id,
+            closingIndex = index,
+            tabs = tabs.map { BrowserTabPolicy.TabCandidate(it.id, it.constellation, it.lastUsed) }
+        )
+
+        // A aba sai do modelo antes de a WebView ser destruída.
+        tabs.removeAt(index)
+        pinnedTabIds.remove(closing.id)
         persistPinnedTabs()
-        deleteTabNavigation(tab.id)
-        attentionBlockedSources.remove(tab.view)
-        if (webHost.childCount > 0 && webHost.getChildAt(0) === tab.view) webHost.removeView(tab.view)
-        pendingPopups.remove(tab.view)
-        popupReviews.remove(tab.view)
-        synchronized(mediaCandidateLock) { mediaCandidates.remove(tab.view) }
-        tab.view.stopLoading()
-        tab.view.destroy()
-        if (tabs.isEmpty()) { tabs.add(Tab(createWebView())) ; activeIndex = 0 }
-        else activeIndex = BrowserTabPolicy.indexAfterClose(activeIndex, index, tabs.size)
-        showActive()
+        deleteTabNavigation(closing.id)
+        attentionBlockedSources.remove(closing.view)
+        if (webHost.childCount > 0 && webHost.getChildAt(0) === closing.view) {
+            webHost.removeView(closing.view)
+        }
+        pendingPopups.remove(closing.view)
+        popupReviews.remove(closing.view)
+        synchronized(mediaCandidateLock) { mediaCandidates.remove(closing.view) }
+        closing.view.stopLoading()
+        closing.view.destroy()
+
+        if (tabs.isNotEmpty()) {
+            activeIndex = tabs.indexOfFirst { it.id == nextId }
+                .takeIf { it >= 0 }
+                ?: BrowserTabPolicy.indexAfterClose(activeIndex, index, tabs.size)
+            showActive()
+        } else if (parkedTabs.isNotEmpty()) {
+            // Não cria uma aba vazia enquanto ainda existem páginas hibernadas.
+            restoreParkedTab(parkedTabs.lastIndex)
+        } else {
+            tabs.add(Tab(createWebView()))
+            activeIndex = 0
+            showActive()
+        }
     }
 
     private fun showTabs() {
@@ -2845,6 +2871,204 @@ class MainActivity : ComponentActivity() {
      * Traduz os textos da página atual para português. O primeiro uso baixa
      * o modelo necessário; depois disso, a tradução ocorre localmente.
      */
+    /** Extrai um artigo da página atual sem navegar nem alterar o DOM original. */
+    private fun openReaderMode() {
+        val current = tabs.getOrNull(activeIndex)?.view ?: return
+        val pageUrl = current.url.orEmpty()
+        if (!pageUrl.startsWith("https://") && !pageUrl.startsWith("http://")) {
+            Toast.makeText(this, "Abra uma página da web para usar o modo de leitura", Toast.LENGTH_SHORT).show()
+            return
+        }
+
+        val script = runCatching { ReaderMode.extractionScript(this) }.getOrElse {
+            Toast.makeText(this, "Os componentes do modo de leitura não foram carregados", Toast.LENGTH_LONG).show()
+            return
+        }
+        Toast.makeText(this, "Preparando modo de leitura…", Toast.LENGTH_SHORT).show()
+
+        current.evaluateJavascript(script) { result ->
+            if (isFinishing || isDestroyed || current.url != pageUrl ||
+                tabs.none { it.view === current }) return@evaluateJavascript
+
+            val article = runCatching { ReaderMode.decodeArticle(result) }.getOrElse {
+                Toast.makeText(this, it.message ?: "Não foi possível ler esta página", Toast.LENGTH_LONG).show()
+                null
+            }
+            if (article == null) {
+                Toast.makeText(this, "Não foi encontrado um artigo principal nesta página", Toast.LENGTH_LONG).show()
+                return@evaluateJavascript
+            }
+            showReaderDialog(current, pageUrl, article)
+        }
+    }
+
+    /** A página original permanece carregada na WebView da aba. */
+    private fun showReaderDialog(sourceView: WebView, pageUrl: String, article: ReaderMode.Article) {
+        val preferences = getSharedPreferences("reader_mode", MODE_PRIVATE)
+        var fontSize = preferences.getInt("font_size", 18).coerceIn(14, 28)
+        var theme = preferences.getString("theme", "light") ?: "light"
+        var cleanContent: String? = null
+        var sanitizationStarted = false
+        var restoreScrollY = 0
+        var awaitingRender = false
+
+        val dialog = Dialog(this)
+        val root = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setBackgroundColor(uiBackground())
+            setPadding(dp(8), dp(8), dp(8), 0)
+        }
+        lateinit var renderReader: () -> Unit
+        val toolbar = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = android.view.Gravity.CENTER_VERTICAL
+        }
+        toolbar.addView(TextView(this).apply {
+            text = "Aa · Leitura"
+            textSize = 17f
+            setTypeface(null, android.graphics.Typeface.BOLD)
+            setTextColor(uiForeground())
+            contentDescription = "Modo de leitura"
+        }, LinearLayout.LayoutParams(0, dp(48), 1f))
+
+        val smaller = uiAction("A−").apply {
+            contentDescription = "Diminuir tamanho do texto"
+            setOnClickListener {
+                fontSize = (fontSize - 1).coerceAtLeast(14)
+                preferences.edit().putInt("font_size", fontSize).apply()
+                renderReader()
+            }
+        }
+        val larger = uiAction("A+").apply {
+            contentDescription = "Aumentar tamanho do texto"
+            setOnClickListener {
+                fontSize = (fontSize + 1).coerceAtMost(28)
+                preferences.edit().putInt("font_size", fontSize).apply()
+                renderReader()
+            }
+        }
+        val themeButton = uiAction("Tema").apply {
+            contentDescription = "Alternar tema do modo de leitura"
+            setOnClickListener {
+                theme = when (theme) {
+                    "light" -> "sepia"
+                    "sepia" -> "dark"
+                    else -> "light"
+                }
+                preferences.edit().putString("theme", theme).apply()
+                text = when (theme) {
+                    "sepia" -> "Sépia"
+                    "dark" -> "Escuro"
+                    else -> "Claro"
+                }
+                renderReader()
+            }
+        }
+        val close = uiAction("Fechar").apply {
+            contentDescription = "Fechar modo de leitura"
+            setOnClickListener { dialog.dismiss() }
+        }
+        listOf(smaller, larger, themeButton, close).forEach { button ->
+            toolbar.addView(button, LinearLayout.LayoutParams(0, dp(44), 1f).apply {
+                marginStart = dp(2)
+            })
+        }
+        themeButton.text = when (theme) {
+            "sepia" -> "Sépia"
+            "dark" -> "Escuro"
+            else -> "Claro"
+        }
+        root.addView(toolbar)
+
+        val reader = WebView(this).apply {
+            setBackgroundColor(Color.WHITE)
+            isVerticalScrollBarEnabled = true
+            settings.apply {
+                javaScriptEnabled = true // Apenas para executar DOMPurify na página vazia de preparação.
+                domStorageEnabled = false
+                allowFileAccess = false
+                allowContentAccess = false
+                mixedContentMode = WebSettings.MIXED_CONTENT_NEVER_ALLOW
+                setSupportZoom(false)
+                builtInZoomControls = false
+                displayZoomControls = false
+            }
+        }
+        root.addView(reader, LinearLayout.LayoutParams(MATCH_PARENT, 0, 1f))
+
+        renderReader = {
+            cleanContent?.let { safeHtml ->
+                restoreScrollY = reader.scrollY
+                awaitingRender = true
+                reader.setBackgroundColor(when (theme) {
+                    "dark" -> Color.rgb(23, 25, 29)
+                    "sepia" -> Color.rgb(243, 234, 216)
+                    else -> Color.WHITE
+                })
+                reader.loadDataWithBaseURL(
+                    pageUrl,
+                    ReaderMode.buildHtml(article, safeHtml, theme, fontSize),
+                    "text/html",
+                    "UTF-8",
+                    null
+                )
+            }
+        }
+
+        reader.webViewClient = object : WebViewClient() {
+            override fun onPageFinished(view: WebView, url: String) {
+                if (!sanitizationStarted) {
+                    sanitizationStarted = true
+                    val sanitizer = runCatching {
+                        ReaderMode.sanitizationScript(this@MainActivity, article.contentHtml)
+                    }.getOrElse {
+                        dialog.dismiss()
+                        Toast.makeText(this@MainActivity, "Falha ao preparar o conteúdo com segurança", Toast.LENGTH_LONG).show()
+                        return
+                    }
+                    view.evaluateJavascript(sanitizer) { sanitizedResult ->
+                        if (isFinishing || isDestroyed || !dialog.isShowing) return@evaluateJavascript
+                        cleanContent = ReaderMode.decodeSanitizedHtml(sanitizedResult)
+                        // DOMPurify já terminou: a WebView passa a exibir somente HTML estático.
+                        reader.settings.javaScriptEnabled = false
+                        if (cleanContent.isNullOrBlank()) {
+                            dialog.dismiss()
+                            Toast.makeText(this@MainActivity, "Não foi possível preparar o conteúdo para leitura", Toast.LENGTH_LONG).show()
+                        } else {
+                            renderReader()
+                        }
+                    }
+                    return
+                }
+                if (awaitingRender) {
+                    awaitingRender = false
+                    view.post { view.scrollTo(0, restoreScrollY) }
+                }
+            }
+
+            override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
+                val target = request.url
+                if (target.scheme == "http" || target.scheme == "https") {
+                    dialog.dismiss()
+                    sourceView.loadUrl(target.toString())
+                }
+                return true
+            }
+        }
+
+        dialog.setContentView(root)
+        dialog.setOnDismissListener { reader.stopLoading(); reader.destroy() }
+        dialog.show()
+        dialog.window?.setLayout(MATCH_PARENT, MATCH_PARENT)
+        reader.loadDataWithBaseURL(
+            "https://reader.local/",
+            "<!doctype html><html><head><meta charset=\"utf-8\"></head><body></body></html>",
+            "text/html",
+            "UTF-8",
+            null
+        )
+    }
+
     private fun translateCurrentPage() {
         val current = webView
         val currentUrl = current.url.orEmpty()
@@ -2961,6 +3185,8 @@ class MainActivity : ComponentActivity() {
             MenuAction("Navegar", "Biblioteca", "Favoritos e histórico pesquisáveis") { showLibrary() },
             MenuAction("Página", if (translatedViews[webView] == true) "Restaurar texto original" else "Traduzir página",
                 "Traduzir o conteúdo para português no próprio aparelho") { translateCurrentPage() },
+            MenuAction("Página", "Modo de leitura",
+                "Extrair o artigo e exibir texto, imagens e estrutura sem menus e distrações") { openReaderMode() },
             MenuAction("Navegar", if (store.isFavorite(webView.url ?: "")) "Remover favorito" else "Favoritar página",
                 "Atualizar o favorito da página atual") { toggleFavorite() },
             MenuAction("Reprodução", "Reprodução e mídia", "Player nativo, fila e controles") { showMediaMenu() },
