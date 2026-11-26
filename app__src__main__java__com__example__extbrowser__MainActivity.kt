@@ -91,10 +91,14 @@ class MainActivity : ComponentActivity() {
     private data class Tab(
         val view: WebView, var title: String = "Nova aba", var url: String = HOME,
         var constellation: String = "Exploração", var lastUsed: Long = SystemClock.elapsedRealtime(),
-        val id: String = UUID.randomUUID().toString(), val profile: String = ""
+        val id: String = UUID.randomUUID().toString(), val profile: String = "",
+        var parentTabId: String? = null, var pendingNavigationUrl: String? = null,
+        var pendingNavigationReason: String? = null, var pendingNavigationMethod: String = "GET"
     )
     private data class ParkedTab(val url: String, val title: String, val constellation: String,
-        val id: String = UUID.randomUUID().toString(), val profile: String = "")
+        val id: String = UUID.randomUUID().toString(), val profile: String = "",
+        val parentTabId: String? = null, val pendingNavigationUrl: String? = null,
+        val pendingNavigationReason: String? = null, val pendingNavigationMethod: String = "GET")
     private val parkedTabs = mutableListOf<ParkedTab>()
     private val pinnedTabIds = mutableSetOf<String>()
     private var translationManager: TranslationManager? = null
@@ -244,6 +248,28 @@ class MainActivity : ComponentActivity() {
         UUID.fromString(candidate).toString()
     }.getOrElse { UUID.randomUUID().toString() }
 
+    private fun optionalTabId(candidate: String?): String? =
+        runCatching { UUID.fromString(candidate).toString() }.getOrNull()
+
+    private fun rememberPendingNavigation(
+        view: WebView, url: String, reason: String, method: String = "GET"
+    ) {
+        if (!url.startsWith("https://") && !url.startsWith("http://")) return
+        val normalizedMethod = method.uppercase(java.util.Locale.ROOT)
+        if (normalizedMethod != "GET") synchronized(pendingNonGetNavigation) {
+            pendingNonGetNavigation[view] = url
+        }
+        handler.post {
+            val tab = tabs.firstOrNull { it.view === view } ?: return@post
+            tab.pendingNavigationUrl = url
+            tab.pendingNavigationReason = reason.take(120)
+            tab.pendingNavigationMethod = normalizedMethod
+            // A POST body is unavailable in shouldInterceptRequest; never replay it as GET.
+            if (normalizedMethod == "GET") tab.url = url
+            persistTabs()
+        }
+    }
+
     private fun sessionStateFile(id: String): File = File(File(filesDir, "tab_navigation"), "$id.bin")
 
     /** Histórico de navegação privado e limitado; nunca promete restaurar DOM, senha ou reprodução. */
@@ -322,6 +348,10 @@ class MainActivity : ComponentActivity() {
     }
     // WebViews em espera pelo transporte de uma nova janela.
     private val pendingPopups = mutableSetOf<WebView>()
+    // Sinal síncrono para não transformar um POST interceptado em GET ao persistir a aba.
+    private val pendingNonGetNavigation = java.util.Collections.synchronizedMap(
+        WeakHashMap<WebView, String>()
+    )
     private data class PopupReview(val sourceHost: String?, val mode: String)
     private val popupReviews = mutableMapOf<WebView, PopupReview>()
     private var popupsAutomaticallyClosed = 0
@@ -346,7 +376,10 @@ class MainActivity : ComponentActivity() {
     ).any { host == it }
 
     private fun inspectPopupNavigation(view: WebView, url: String): Boolean {
-        val review = popupReviews[view] ?: return false
+        val review = popupReviews[view] ?: run {
+            pendingPopups.remove(view)
+            return false
+        }
         val uri = Uri.parse(url)
         if (uri.scheme != "http" && uri.scheme != "https") return false
         val host = websiteHost(url) ?: return false
@@ -859,7 +892,13 @@ class MainActivity : ComponentActivity() {
         val candidate = attentionBlockedSources[view] ?: originalUrl.orEmpty()
         if (candidate.startsWith("https://") || candidate.startsWith("http://")) {
             attentionBlockedSources[view] = candidate
-            tabs.firstOrNull { it.view === view }?.url = candidate
+            tabs.firstOrNull { it.view === view }?.let { tab ->
+                tab.url = candidate
+                tab.pendingNavigationUrl = candidate
+                tab.pendingNavigationReason = "attention-limit"
+                tab.pendingNavigationMethod = "GET"
+                persistTabs()
+            }
         }
     }
     private fun forceStopWebMedia() {
@@ -1260,11 +1299,20 @@ class MainActivity : ComponentActivity() {
                     val group = item.optString("group", "Exploração").takeIf { it in constellations } ?: "Exploração"
                     val id = safeTabId(item.optString("id", ""))
                     val profile = storedProfile(item.optString("profile", ""))
+                    val parentId = optionalTabId(item.optString("parentTabId", null))
+                    val pendingUrl = item.optString("pendingNavigationUrl", "")
+                        .takeIf { it.startsWith("https://") || it.startsWith("http://") }
+                    val pendingReason = item.optString("pendingNavigationReason", "").takeIf { it.isNotBlank() }
+                    val pendingMethod = item.optString("pendingNavigationMethod", "GET")
+                        .uppercase(java.util.Locale.ROOT).take(12)
                     if (item.optBoolean("live", false) && tabs.size < BrowserTabPolicy.MAX_RESIDENT_TABS) {
-                        val tab = Tab(createWebView(profile), title, url, group, id = id, profile = profile)
+                        val tab = Tab(createWebView(profile), title, url, group, id = id, profile = profile,
+                            parentTabId = parentId, pendingNavigationUrl = pendingUrl,
+                            pendingNavigationReason = pendingReason, pendingNavigationMethod = pendingMethod)
                         tabs.add(tab)
                         restoreTabNavigation(tab)
-                    } else parkedTabs.add(ParkedTab(url, title, group, id, profile))
+                    } else parkedTabs.add(ParkedTab(url, title, group, id, profile, parentId,
+                        pendingUrl, pendingReason, pendingMethod))
                 }
             }.onFailure {
                 tabs.forEach { it.view.destroy() }
@@ -1276,7 +1324,10 @@ class MainActivity : ComponentActivity() {
                 // Sessão válida somente com abas guardadas: recupera uma, sem duplicar o legado.
                 val first = parkedTabs.removeAt(0)
                 val tab = Tab(createWebView(first.profile), first.title, first.url,
-                    first.constellation, id = first.id, profile = first.profile)
+                    first.constellation, id = first.id, profile = first.profile,
+                    parentTabId = first.parentTabId, pendingNavigationUrl = first.pendingNavigationUrl,
+                    pendingNavigationReason = first.pendingNavigationReason,
+                    pendingNavigationMethod = first.pendingNavigationMethod)
                 tabs.add(tab)
                 restoreTabNavigation(tab)
             } else {
@@ -1303,9 +1354,38 @@ class MainActivity : ComponentActivity() {
                 if (playerPanel != null) closeNativePlayer()
                 else if (fullscreenView != null) exitFullscreen()
                 else if (webView.canGoBack()) webView.goBack()
-                else { isEnabled = false; onBackPressedDispatcher.onBackPressed() }
+                else if (tabs.getOrNull(activeIndex)?.parentTabId != null) closeTab(activeIndex)
+                else returnToPreviousTab()
             }
         })
+    }
+
+    /**
+     * Retorna à aba usada mais recentemente quando a página atual não possui histórico.
+     * Abas hibernadas são restauradas antes de permanecer na aba atual.
+     */
+    private fun returnToPreviousTab(): Boolean {
+        val previousIndex = tabs.indices
+            .filter { index ->
+                index != activeIndex &&
+                    tabs[index].view !in pendingPopups &&
+                    tabs[index].view !== queueSyncView &&
+                    tabs[index].view !== media3OriginView
+            }
+            .maxByOrNull { tabs[it].lastUsed }
+
+        if (previousIndex != null) {
+            activeIndex = previousIndex
+            showActive()
+            return true
+        }
+
+        if (parkedTabs.isNotEmpty()) {
+            restoreParkedTab(parkedTabs.lastIndex)
+            return true
+        }
+
+        return false
     }
 
     private val videoSpeedOptions = floatArrayOf(0.5f, 0.75f, 1.0f, 1.25f, 1.5f, 1.75f, 2.0f, 2.5f)
@@ -1470,13 +1550,24 @@ class MainActivity : ComponentActivity() {
                 recordGoogleLoginAudit("Navegação iniciada · cookies terceiros: $cookieBefore → $cookieAfter", url, v)
                 recordGoogleLoginTransition(v, url, "início do documento")
                 val t = tabs.firstOrNull { it.view === v } ?: return
+                if ((url.startsWith("http://") || url.startsWith("https://")) &&
+                    t.pendingNavigationUrl != null && t.pendingNavigationUrl != url) {
+                    t.pendingNavigationUrl = null
+                    t.pendingNavigationReason = null
+                    t.pendingNavigationMethod = "GET"
+                    synchronized(pendingNonGetNavigation) { pendingNonGetNavigation.remove(v) }
+                }
+                val isNonReplayableRequest =
+                    (t.pendingNavigationUrl == url && t.pendingNavigationMethod != "GET") ||
+                    synchronized(pendingNonGetNavigation) { pendingNonGetNavigation[v] == url }
                 if (translationRequestView === v) {
                     translationManager?.cancelPending()
                     translationRequestView = null
                 }
                 translatedViews.remove(v)
                 synchronized(mediaCandidateLock) { mediaCandidates.remove(v); mediaRequestOrigins.remove(v); mediaNetworkSignals.remove(v) }
-                val shownUrl = attentionBlockedSources[v] ?: url
+                val shownUrl = if (isNonReplayableRequest) t.url
+                    else attentionBlockedSources[v] ?: url
                 t.url = shownUrl
                 if (v === webView && !urlBar.hasFocus()) urlBar.setText(shownUrl)
                 if (v === webView) { updateFavorite(); updateInstagramOverlay() }
@@ -1708,10 +1799,28 @@ class MainActivity : ComponentActivity() {
                     })()""", null)
                 }
                 val t = tabs.firstOrNull { it.view === v } ?: return
-                val shownUrl = attentionBlockedSources[v] ?: url
-                if (attentionBlockedSources[v] == null) t.title = v.title ?: url
+                var pendingCleared = false
+                if (t.pendingNavigationUrl == url && t.pendingNavigationMethod == "GET") {
+                    val blockedByExtension = blockerList.any { it.regex.matches(url) }
+                    val blockedByAttention = Attention.checkNavigation(url) != null
+                    if (!blockedByExtension && !blockedByAttention) {
+                        t.pendingNavigationUrl = null
+                        t.pendingNavigationReason = null
+                        t.pendingNavigationMethod = "GET"
+                        attentionBlockedSources.remove(v)
+                        synchronized(pendingNonGetNavigation) { pendingNonGetNavigation.remove(v) }
+                        pendingCleared = true
+                    }
+                }
+                val isNonReplayableRequest = synchronized(pendingNonGetNavigation) {
+                    pendingNonGetNavigation[v] == url
+                }
+                val shownUrl = if (isNonReplayableRequest) t.url
+                    else attentionBlockedSources[v] ?: url
+                if (attentionBlockedSources[v] == null && !isNonReplayableRequest) t.title = v.title ?: url
                 t.url = shownUrl
                 if (v === webView) { updateFavorite(); persistTabs() }
+                else if (pendingCleared) persistTabs()
                 scanDeclaredMedia(v)
                 val pageHost = websiteHost(url)
                 if ((pageHost == "instagram.com" || pageHost?.endsWith(".instagram.com") == true) &&
@@ -1765,9 +1874,12 @@ class MainActivity : ComponentActivity() {
                         org.json.JSONObject(getSharedPreferences("ext_youtube-focus", MODE_PRIVATE)
                             .getString("data", "{}") ?: "{}").optBoolean("block_shorts_navigation", true)
                     }.getOrDefault(true)
-                    if (blockShorts) return htmlResponse(
-                        BlockPage.html("Shorts bloqueados", "YouTube", "A abertura de vídeos Shorts está desativada nas configurações de foco.")
-                    )
+                    if (blockShorts) {
+                        rememberPendingNavigation(v, url, "youtube-focus:shorts", request.method)
+                        return htmlResponse(
+                            BlockPage.html("Shorts bloqueados", "YouTube", "A abertura de vídeos Shorts está desativada nas configurações de foco.")
+                        )
+                    }
                 }
                 if (!request.isForMainFrame && request.url.scheme == "https") {
                     mediaSignal(request.url)?.let { category ->
@@ -1796,12 +1908,17 @@ class MainActivity : ComponentActivity() {
                 if (hit != null && synchronized(siteDiagnostics) { siteDiagnostics.containsKey(v) })
                     recordSiteDiagnostic(v, "Extensão ${hit.name} bloqueou " +
                         "${request.method} ${request.url.host}${safeDiagnosticPath(request.url)}")
-                if (hit != null) return if (request.isForMainFrame)
-                    htmlResponse(BlockPage.html("Bloqueado", hit.name, ""))
-                    else WebResourceResponse("text/plain", "utf-8", 403, "Blocked", emptyMap(), ByteArrayInputStream(ByteArray(0)))
+                if (hit != null) return if (request.isForMainFrame) {
+                    rememberPendingNavigation(v, url, "extension:${hit.name}", request.method)
+                    htmlResponse(BlockPage.html("Bloqueado", hit.name,
+                        "Destino preservado. A navegação será retomada quando esta regra deixar de bloquear o endereço."))
+                } else WebResourceResponse("text/plain", "utf-8", 403, "Blocked", emptyMap(), ByteArrayInputStream(ByteArray(0)))
                 if (request.isForMainFrame) {
                     val verdict = Attention.checkNavigation(url)
-                    if (verdict != null) return htmlResponse(blockHtmlFor(verdict))
+                    if (verdict != null) {
+                        rememberPendingNavigation(v, url, "attention:${verdict.site.id}", request.method)
+                        return htmlResponse(blockHtmlFor(verdict, url))
+                    }
                 }
                 return null
             }
@@ -1940,14 +2057,19 @@ class MainActivity : ComponentActivity() {
                 recordGoogleLoginAudit("Popup permitido", source?.url, source)
                 // Uma nova WebView recebe a navegação diretamente do mecanismo Android.
                 // Não reconstruímos URL, preservando POST e scripts de abertura.
-                val profile = tabs.firstOrNull { it.view === source }?.profile ?: ""
+                val sourceTab = tabs.firstOrNull { it.view === source }
+                val profile = sourceTab?.profile ?: ""
                 val mode = popupMode(source?.url)
                 val popup = createWebView(profile)
-                tabs.add(Tab(popup, title = "Nova aba", url = "about:blank", profile = profile))
+                tabs.add(Tab(popup, title = "Nova aba", url = "about:blank", profile = profile,
+                    parentTabId = sourceTab?.id))
                 pendingPopups.add(popup)
                 if (mode == "off") {
                     activeIndex = tabs.lastIndex
                     showActive()
+                    // Keep the blank popup protected until WebViewTransport is delivered;
+                    // clean it after the navigation window even when the site never navigates.
+                    handler.postDelayed({ pendingPopups.remove(popup) }, 1800L)
                 } else {
                     popupReviews[popup] = PopupReview(websiteHost(source?.url), mode)
                     // Alguns sites abrem about:blank para preencher por script. A janela
@@ -2270,12 +2392,17 @@ class MainActivity : ComponentActivity() {
         (newView.parent as? android.view.ViewGroup)?.removeView(newView)
         webHost.addView(newView, LinearLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT))
         newView.onResume()
-        if (newView.url == null && newView !in pendingPopups) {
-            applyLoginCookiePolicy(newView, tabs[activeIndex].url)
-            recordGoogleLoginAppNavigation(newView, tabs[activeIndex].url, "reativação de aba")
-            newView.loadUrl(tabs[activeIndex].url)
+        val activeTab = tabs[activeIndex]
+        val retryUrl = activeTab.pendingNavigationUrl
+            ?.takeIf { activeTab.pendingNavigationMethod == "GET" }
+        val targetUrl = retryUrl ?: activeTab.url
+        if ((retryUrl != null || newView.url == null) && newView !in pendingPopups) {
+            applyLoginCookiePolicy(newView, targetUrl)
+            recordGoogleLoginAppNavigation(newView, targetUrl,
+                if (retryUrl != null) "retomada de navegação pendente" else "reativação de aba")
+            newView.loadUrl(targetUrl)
         }
-        urlBar.setText(attentionBlockedSources[newView] ?: newView.url ?: tabs[activeIndex].url)
+        urlBar.setText(activeTab.pendingNavigationUrl ?: attentionBlockedSources[newView] ?: newView.url ?: activeTab.url)
         tabs[activeIndex].lastUsed = SystemClock.elapsedRealtime()
         updateProfileIndicator()
         servedBlockUrl = null
@@ -2429,12 +2556,18 @@ class MainActivity : ComponentActivity() {
         if (index !in tabs.indices || index == activeIndex) return
         val tab = tabs.removeAt(index)
         saveTabNavigation(tab)
-        val address = attentionBlockedSources[tab.view] ?: tab.view.url ?: tab.url
+        val address = if (tab.pendingNavigationUrl != null && tab.pendingNavigationMethod != "GET") tab.url
+            else tab.pendingNavigationUrl?.takeIf { tab.pendingNavigationMethod == "GET" }
+                ?: attentionBlockedSources[tab.view] ?: tab.view.url ?: tab.url
         if (address.startsWith("http://") || address.startsWith("https://")) {
             parkedTabs.add(ParkedTab(address, tab.view.title ?: tab.title,
-                tab.constellation, tab.id, tab.profile))
-        } else parkedTabs.add(ParkedTab(HOME, tab.title, tab.constellation, tab.id, tab.profile))
+                tab.constellation, tab.id, tab.profile, tab.parentTabId, tab.pendingNavigationUrl,
+                tab.pendingNavigationReason, tab.pendingNavigationMethod))
+        } else parkedTabs.add(ParkedTab(HOME, tab.title, tab.constellation, tab.id, tab.profile,
+            tab.parentTabId, tab.pendingNavigationUrl, tab.pendingNavigationReason,
+            tab.pendingNavigationMethod))
         attentionBlockedSources.remove(tab.view)
+        synchronized(pendingNonGetNavigation) { pendingNonGetNavigation.remove(tab.view) }
         pendingPopups.remove(tab.view)
         popupReviews.remove(tab.view)
         if (translationRequestView === tab.view) {
@@ -2550,7 +2683,10 @@ class MainActivity : ComponentActivity() {
             if (currentIndex >= 0) {
                 val stored = parkedTabs.removeAt(currentIndex)
                 val tab = Tab(createWebView(stored.profile), stored.title, stored.url,
-                    stored.constellation, id = stored.id, profile = stored.profile)
+                    stored.constellation, id = stored.id, profile = stored.profile,
+                    parentTabId = stored.parentTabId, pendingNavigationUrl = stored.pendingNavigationUrl,
+                    pendingNavigationReason = stored.pendingNavigationReason,
+                    pendingNavigationMethod = stored.pendingNavigationMethod)
                 tabs.add(tab)
                 restoreTabNavigation(tab)
                 activeIndex = tabs.lastIndex
@@ -2575,9 +2711,12 @@ class MainActivity : ComponentActivity() {
     private fun closeTab(index: Int) {
         if (index !in tabs.indices) return
 
-        // Escolhe o destino por identidade antes de remover a aba; índices mudam após a remoção.
         val closing = tabs[index]
         val activeId = tabs.getOrNull(activeIndex)?.id
+        val wasActive = closing.id == activeId
+        val openerId = closing.parentTabId
+        val openerIndex = tabs.indexOfFirst { it.id == openerId && it.id != closing.id }
+        val parkedOpenerIndex = parkedTabs.indexOfFirst { it.id == openerId }
         val nextId = BrowserTabPolicy.nextTabIdAfterClose(
             activeTabId = activeId,
             closingTabId = closing.id,
@@ -2585,12 +2724,12 @@ class MainActivity : ComponentActivity() {
             tabs = tabs.map { BrowserTabPolicy.TabCandidate(it.id, it.constellation, it.lastUsed) }
         )
 
-        // A aba sai do modelo antes de a WebView ser destruída.
         tabs.removeAt(index)
         pinnedTabIds.remove(closing.id)
         persistPinnedTabs()
         deleteTabNavigation(closing.id)
         attentionBlockedSources.remove(closing.view)
+        synchronized(pendingNonGetNavigation) { pendingNonGetNavigation.remove(closing.view) }
         if (webHost.childCount > 0 && webHost.getChildAt(0) === closing.view) {
             webHost.removeView(closing.view)
         }
@@ -2600,21 +2739,29 @@ class MainActivity : ComponentActivity() {
         closing.view.stopLoading()
         closing.view.destroy()
 
+        // Ao fechar um popup, o opener real tem prioridade, mesmo hibernado.
+        if (wasActive && parkedOpenerIndex >= 0) {
+            restoreParkedTab(parkedOpenerIndex)
+            return
+        }
         if (tabs.isNotEmpty()) {
-            activeIndex = tabs.indexOfFirst { it.id == nextId }
-                .takeIf { it >= 0 }
-                ?: BrowserTabPolicy.indexAfterClose(activeIndex, index, tabs.size)
+            val openerNow = if (wasActive && openerIndex >= 0)
+                tabs.indexOfFirst { it.id == openerId } else -1
+            activeIndex = when {
+                openerNow >= 0 -> openerNow
+                else -> tabs.indexOfFirst { it.id == nextId }
+                    .takeIf { it >= 0 }
+                    ?: BrowserTabPolicy.indexAfterClose(activeIndex, index, tabs.size)
+            }
             showActive()
         } else if (parkedTabs.isNotEmpty()) {
-            // Não cria uma aba vazia enquanto ainda existem páginas hibernadas.
-            restoreParkedTab(parkedTabs.lastIndex)
+            restoreParkedTab(if (parkedOpenerIndex >= 0) parkedOpenerIndex else parkedTabs.lastIndex)
         } else {
             tabs.add(Tab(createWebView()))
             activeIndex = 0
             showActive()
         }
     }
-
     private fun showTabs() {
         val dialog = Dialog(this)
         val root = LinearLayout(this).apply {
@@ -7139,20 +7286,31 @@ class MainActivity : ComponentActivity() {
         if (!loaded) return
         val entries = org.json.JSONArray()
         tabs.forEach { tab ->
-            val url = attentionBlockedSources[tab.view] ?: tab.view.url ?: tab.url
+            val url = if (tab.pendingNavigationUrl != null && tab.pendingNavigationMethod != "GET") tab.url
+                else tab.pendingNavigationUrl?.takeIf { tab.pendingNavigationMethod == "GET" }
+                    ?: attentionBlockedSources[tab.view] ?: tab.view.url ?: tab.url
             entries.put(org.json.JSONObject().put("url", url)
                 .put("title", tab.view.title ?: tab.title)
                 .put("group", tab.constellation).put("id", tab.id)
-                .put("profile", tab.profile).put("live", true))
+                .put("profile", tab.profile).put("parentTabId", tab.parentTabId)
+                .put("pendingNavigationUrl", tab.pendingNavigationUrl)
+                .put("pendingNavigationReason", tab.pendingNavigationReason)
+                .put("pendingNavigationMethod", tab.pendingNavigationMethod).put("live", true))
         }
         parkedTabs.forEach { tab ->
-            entries.put(org.json.JSONObject().put("url", tab.url)
+            entries.put(org.json.JSONObject().put("url",
+                tab.pendingNavigationUrl?.takeIf { tab.pendingNavigationMethod == "GET" } ?: tab.url)
                 .put("title", tab.title).put("group", tab.constellation)
-                .put("id", tab.id).put("profile", tab.profile).put("live", false))
+                .put("id", tab.id).put("profile", tab.profile).put("parentTabId", tab.parentTabId)
+                .put("pendingNavigationUrl", tab.pendingNavigationUrl)
+                .put("pendingNavigationReason", tab.pendingNavigationReason)
+                .put("pendingNavigationMethod", tab.pendingNavigationMethod).put("live", false))
         }
         getSharedPreferences("tabs", MODE_PRIVATE).edit()
-            .putString("urls", tabs.joinToString("\n") {
-                attentionBlockedSources[it.view] ?: it.view.url ?: it.url
+            .putString("urls", tabs.joinToString("\n") { tab ->
+                if (tab.pendingNavigationUrl != null && tab.pendingNavigationMethod != "GET") tab.url
+                else tab.pendingNavigationUrl?.takeIf { tab.pendingNavigationMethod == "GET" }
+                    ?: attentionBlockedSources[tab.view] ?: tab.view.url ?: tab.url
             })
             .putString("constellations_v1", entries.toString())
             .putString("active_id", tabs.getOrNull(activeIndex)?.id)
@@ -7176,8 +7334,12 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun htmlResponse(html: String) = WebResourceResponse("text/html", "utf-8", 200, "OK", emptyMap(), ByteArrayInputStream(html.toByteArray(Charsets.UTF_8)))
-    private fun blockHtmlFor(v: AttentionVerdict): String {
-        if (v.untilMs > 0L) return BlockPage.breakHtml(v, Attention.dismissWaitLeft(v.site.id))
+    private fun blockHtmlFor(v: AttentionVerdict, returnUrl: String? = null): String {
+        if (v.untilMs > 0L) return BlockPage.breakHtml(
+            v, Attention.dismissWaitLeft(v.site.id),
+            returnUrl ?: tabs.getOrNull(activeIndex)?.pendingNavigationUrl
+                ?: attentionBlockedSources[webView]
+        )
         val html = BlockPage.html("Acesso encerrado", v.site.domain, v.reason)
         if (v.reason != "O limite diário foi atingido." || AttentionRewards.balance() < 5) return html
         val link = "<p>Créditos disponíveis: ${AttentionRewards.balance()} min</p>" +
@@ -7198,7 +7360,8 @@ class MainActivity : ComponentActivity() {
     private fun handleBreakAction(u: Uri) {
         val id = u.pathSegments.firstOrNull() ?: return
         val site = Attention.sites().firstOrNull { it.id == id } ?: return
-        val returnUrl = attentionBlockedSources[webView] ?: "https://${site.domain}/"
+        val returnUrl = tabs.getOrNull(activeIndex)?.pendingNavigationUrl
+            ?: attentionBlockedSources[webView] ?: "https://${site.domain}/"
         when (u.host) {
             "resgatar" -> {
                 if (Attention.verdictForSite(id)?.reason == "O limite diário foi atingido." &&
