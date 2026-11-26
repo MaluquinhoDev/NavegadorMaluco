@@ -257,10 +257,12 @@ class MainActivity : ComponentActivity() {
         if (!url.startsWith("https://") && !url.startsWith("http://")) return
         handler.post {
             val tab = tabs.firstOrNull { it.view === view } ?: return@post
+            val normalizedMethod = method.uppercase(java.util.Locale.ROOT)
             tab.pendingNavigationUrl = url
             tab.pendingNavigationReason = reason.take(120)
-            tab.pendingNavigationMethod = method.uppercase(java.util.Locale.ROOT)
-            tab.url = url
+            tab.pendingNavigationMethod = normalizedMethod
+            // A POST body is unavailable in shouldInterceptRequest; never replay it as GET.
+            if (normalizedMethod == "GET") tab.url = url
             persistTabs()
         }
     }
@@ -2018,9 +2020,11 @@ class MainActivity : ComponentActivity() {
                     parentTabId = sourceTab?.id))
                 pendingPopups.add(popup)
                 if (mode == "off") {
-                    pendingPopups.remove(popup)
                     activeIndex = tabs.lastIndex
                     showActive()
+                    // Keep the blank popup protected until WebViewTransport is delivered;
+                    // clean it after the navigation window even when the site never navigates.
+                    handler.postDelayed({ pendingPopups.remove(popup) }, 1800L)
                 } else {
                     popupReviews[popup] = PopupReview(websiteHost(source?.url), mode)
                     // Alguns sites abrem about:blank para preencher por script. A janela
@@ -2507,7 +2511,8 @@ class MainActivity : ComponentActivity() {
         if (index !in tabs.indices || index == activeIndex) return
         val tab = tabs.removeAt(index)
         saveTabNavigation(tab)
-        val address = tab.pendingNavigationUrl ?: attentionBlockedSources[tab.view] ?: tab.view.url ?: tab.url
+        val address = tab.pendingNavigationUrl?.takeIf { tab.pendingNavigationMethod == "GET" }
+            ?: attentionBlockedSources[tab.view] ?: tab.view.url ?: tab.url
         if (address.startsWith("http://") || address.startsWith("https://")) {
             parkedTabs.add(ParkedTab(address, tab.view.title ?: tab.title,
                 tab.constellation, tab.id, tab.profile, tab.parentTabId, tab.pendingNavigationUrl,
@@ -7029,7 +7034,8 @@ class MainActivity : ComponentActivity() {
         if (!loaded) return
         val entries = org.json.JSONArray()
         tabs.forEach { tab ->
-            val url = tab.pendingNavigationUrl ?: attentionBlockedSources[tab.view] ?: tab.view.url ?: tab.url
+            val url = tab.pendingNavigationUrl?.takeIf { tab.pendingNavigationMethod == "GET" }
+                ?: attentionBlockedSources[tab.view] ?: tab.view.url ?: tab.url
             entries.put(org.json.JSONObject().put("url", url)
                 .put("title", tab.view.title ?: tab.title)
                 .put("group", tab.constellation).put("id", tab.id)
@@ -7039,7 +7045,8 @@ class MainActivity : ComponentActivity() {
                 .put("pendingNavigationMethod", tab.pendingNavigationMethod).put("live", true))
         }
         parkedTabs.forEach { tab ->
-            entries.put(org.json.JSONObject().put("url", tab.pendingNavigationUrl ?: tab.url)
+            entries.put(org.json.JSONObject().put("url",
+                tab.pendingNavigationUrl?.takeIf { tab.pendingNavigationMethod == "GET" } ?: tab.url)
                 .put("title", tab.title).put("group", tab.constellation)
                 .put("id", tab.id).put("profile", tab.profile).put("parentTabId", tab.parentTabId)
                 .put("pendingNavigationUrl", tab.pendingNavigationUrl)
@@ -7048,7 +7055,8 @@ class MainActivity : ComponentActivity() {
         }
         getSharedPreferences("tabs", MODE_PRIVATE).edit()
             .putString("urls", tabs.joinToString("\n") {
-                it.pendingNavigationUrl ?: attentionBlockedSources[it.view] ?: it.view.url ?: it.url
+                it.pendingNavigationUrl?.takeIf { it.pendingNavigationMethod == "GET" }
+                    ?: attentionBlockedSources[it.view] ?: it.view.url ?: it.url
             })
             .putString("constellations_v1", entries.toString())
             .putString("active_id", tabs.getOrNull(activeIndex)?.id)
